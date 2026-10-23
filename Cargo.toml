@@ -1,0 +1,20 @@
+[package]
+name = "cuttlebone"
+version = "0.0.0"
+edition = "2024"
+publish = false
+default-run = "dump-types"
+
+[dependencies]
+# The pinned upstream release with patches/upstream.patch applied, prepared by
+# scripts/upstream.sh.
+compiler = { path = ".upstream/inko/compiler" }
+types = { path = ".upstream/inko/types" }
+location = { path = ".upstream/inko/location" }
+
+[[bin]]
+name = "dump-types"
+path = "src/bin/dump-types.rs"
+
+[profile.release]
+debug = "line-tables-only"

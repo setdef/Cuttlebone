@@ -1,0 +1,5 @@
+# The upstream compiler crate links LLVM 18 through inkwell, even though
+# Cuttlebone never generates code. An LLVM_SYS_181_PREFIX in the environment
+# takes precedence over this Homebrew default.
+[env]
+LLVM_SYS_181_PREFIX = { value = "/opt/homebrew/opt/llvm@18", force = false }

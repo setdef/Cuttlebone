@@ -1,0 +1,1438 @@
+diff --git a/compiler/src/compiler.rs b/compiler/src/compiler.rs
+index 42fad9f..f8f9598 100644
+--- a/compiler/src/compiler.rs
++++ b/compiler/src/compiler.rs
+@@ -256,6 +256,16 @@ impl Compiler {
+     /// Unlike a regular build we _do_ allow concurrent checks as `inko check`
+     /// doesn't modify anything on disk.
+     pub fn check(&mut self, file: Option<PathBuf>) -> Result<(), CompileError> {
++        self.check_with(file, |_, _| {})
++    }
++
++    /// Type checks like `check`, passing the typed HIR to `inspect` before
++    /// it's lowered to MIR. `inspect` also runs if type checking fails.
++    pub fn check_with<F: FnOnce(&types::Database, &[hir::Module])>(
++        &mut self,
++        file: Option<PathBuf>,
++        inspect: F,
++    ) -> Result<(), CompileError> {
+         self.prepare()?;
+ 
+         let start = Instant::now();
+@@ -276,8 +286,10 @@ impl Compiler {
+ 
+         let ast = self.parse(input);
+         let mut hir = self.compile_hir(ast)?;
++        let typed = self.check_types(&mut hir);
+ 
+-        self.check_types(&mut hir)?;
++        inspect(&self.state.db, &hir);
++        typed?;
+ 
+         let res = self.compile_mir(hir).map(|_| ());
+ 
+diff --git a/compiler/src/hir.rs b/compiler/src/hir.rs
+index e9c45b3..97bbea5 100644
+--- a/compiler/src/hir.rs
++++ b/compiler/src/hir.rs
+@@ -90,34 +90,34 @@ impl Comments {
+ }
+ 
+ #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum Usage {
++pub enum Usage {
+     Unused,
+     Discarded,
+     Used,
+ }
+ 
+ impl Usage {
+-    pub(crate) fn is_used(self) -> bool {
++    pub fn is_used(self) -> bool {
+         matches!(self, Usage::Used)
+     }
+ 
+-    pub(crate) fn is_unused(self) -> bool {
++    pub fn is_unused(self) -> bool {
+         matches!(self, Usage::Unused)
+     }
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct IntLiteral {
+-    pub(crate) value: i64,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct IntLiteral {
++    pub value: i64,
++    pub resolved_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug)]
+-pub(crate) struct FloatLiteral {
+-    pub(crate) value: f64,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct FloatLiteral {
++    pub value: f64,
++    pub resolved_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ impl PartialEq for FloatLiteral {
+@@ -130,65 +130,65 @@ impl PartialEq for FloatLiteral {
+ impl Eq for FloatLiteral {}
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct StringLiteral {
+-    pub(crate) value: String,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct StringLiteral {
++    pub value: String,
++    pub resolved_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ConstStringLiteral {
+-    pub(crate) value: String,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct ConstStringLiteral {
++    pub value: String,
++    pub resolved_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct TupleLiteral {
+-    pub(crate) type_id: Option<types::TypeId>,
+-    pub(crate) value_types: Vec<types::TypeRef>,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) values: Vec<Expression>,
+-    pub(crate) location: Location,
++pub struct TupleLiteral {
++    pub type_id: Option<types::TypeId>,
++    pub value_types: Vec<types::TypeRef>,
++    pub resolved_type: types::TypeRef,
++    pub values: Vec<Expression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Identifier {
+-    pub(crate) name: String,
+-    pub(crate) location: Location,
++pub struct Identifier {
++    pub name: String,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Constant {
+-    pub(crate) name: String,
+-    pub(crate) location: Location,
++pub struct Constant {
++    pub name: String,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ConstantRef {
+-    pub(crate) kind: types::ConstantKind,
+-    pub(crate) source: Option<Identifier>,
+-    pub(crate) name: String,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) usage: Usage,
+-    pub(crate) location: Location,
++pub struct ConstantRef {
++    pub kind: types::ConstantKind,
++    pub source: Option<Identifier>,
++    pub name: String,
++    pub resolved_type: types::TypeRef,
++    pub usage: Usage,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct IdentifierRef {
+-    pub(crate) name: String,
+-    pub(crate) kind: types::IdentifierKind,
+-    pub(crate) usage: Usage,
+-    pub(crate) location: Location,
++pub struct IdentifierRef {
++    pub name: String,
++    pub kind: types::IdentifierKind,
++    pub usage: Usage,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Call {
+-    pub(crate) kind: types::CallKind,
+-    pub(crate) receiver: Option<Expression>,
+-    pub(crate) name: Identifier,
+-    pub(crate) type_arguments: Vec<Type>,
+-    pub(crate) arguments: Vec<Argument>,
++pub struct Call {
++    pub kind: types::CallKind,
++    pub receiver: Option<Expression>,
++    pub name: Identifier,
++    pub type_arguments: Vec<Type>,
++    pub arguments: Vec<Argument>,
+     /// A flag that signals parentheses are used, even if no arguments are
+     /// specified. This is used to disambiguate between `Foo` referring to a
+     /// type, and `Foo()` that creates an instance of a type.
+@@ -196,211 +196,211 @@ pub(crate) struct Call {
+     /// We use this flag instead of turning `arguments` into
+     /// `Option<Vec<Argument>>` since we don't care about the presence (or lack)
+     /// of parentheses 99% of the time.
+-    pub(crate) parens: bool,
++    pub parens: bool,
+     /// A flag indicating if the call resides directly in a `mut` expression.
+-    pub(crate) in_mut: bool,
+-    pub(crate) usage: Usage,
+-    pub(crate) location: Location,
++    pub in_mut: bool,
++    pub usage: Usage,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct BuiltinCall {
+-    pub(crate) info: Option<types::IntrinsicCall>,
+-    pub(crate) name: Identifier,
+-    pub(crate) arguments: Vec<Expression>,
+-    pub(crate) location: Location,
++pub struct BuiltinCall {
++    pub info: Option<types::IntrinsicCall>,
++    pub name: Identifier,
++    pub arguments: Vec<Expression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct AssignField {
+-    pub(crate) field_id: Option<types::FieldId>,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) field: Field,
+-    pub(crate) value: Expression,
+-    pub(crate) location: Location,
++pub struct AssignField {
++    pub field_id: Option<types::FieldId>,
++    pub resolved_type: types::TypeRef,
++    pub field: Field,
++    pub value: Expression,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ReplaceField {
+-    pub(crate) field_id: Option<types::FieldId>,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) field: Field,
+-    pub(crate) value: Expression,
+-    pub(crate) location: Location,
++pub struct ReplaceField {
++    pub field_id: Option<types::FieldId>,
++    pub resolved_type: types::TypeRef,
++    pub field: Field,
++    pub value: Expression,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct AssignVariable {
+-    pub(crate) variable_id: Option<types::VariableId>,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) variable: Identifier,
+-    pub(crate) value: Expression,
+-    pub(crate) location: Location,
++pub struct AssignVariable {
++    pub variable_id: Option<types::VariableId>,
++    pub resolved_type: types::TypeRef,
++    pub variable: Identifier,
++    pub value: Expression,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ReplaceVariable {
+-    pub(crate) variable_id: Option<types::VariableId>,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) variable: Identifier,
+-    pub(crate) value: Expression,
+-    pub(crate) location: Location,
++pub struct ReplaceVariable {
++    pub variable_id: Option<types::VariableId>,
++    pub resolved_type: types::TypeRef,
++    pub variable: Identifier,
++    pub value: Expression,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct AssignSetter {
+-    pub(crate) kind: types::CallKind,
+-    pub(crate) receiver: Expression,
+-    pub(crate) name: Identifier,
+-    pub(crate) value: Expression,
+-    pub(crate) location: Location,
+-    pub(crate) usage: Usage,
+-    pub(crate) expected_type: types::TypeRef,
++pub struct AssignSetter {
++    pub kind: types::CallKind,
++    pub receiver: Expression,
++    pub name: Identifier,
++    pub value: Expression,
++    pub location: Location,
++    pub usage: Usage,
++    pub expected_type: types::TypeRef,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ReplaceSetter {
+-    pub(crate) field_id: Option<types::FieldId>,
+-    pub(crate) receiver: Expression,
+-    pub(crate) name: Identifier,
+-    pub(crate) value: Expression,
+-    pub(crate) location: Location,
+-    pub(crate) resolved_type: types::TypeRef,
++pub struct ReplaceSetter {
++    pub field_id: Option<types::FieldId>,
++    pub receiver: Expression,
++    pub name: Identifier,
++    pub value: Expression,
++    pub location: Location,
++    pub resolved_type: types::TypeRef,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ImportSymbol {
+-    pub(crate) name: Identifier,
+-    pub(crate) import_as: Identifier,
+-    pub(crate) location: Location,
++pub struct ImportSymbol {
++    pub name: Identifier,
++    pub import_as: Identifier,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Import {
+-    pub(crate) source: Vec<Identifier>,
+-    pub(crate) symbols: Vec<ImportSymbol>,
+-    pub(crate) location: Location,
++pub struct Import {
++    pub source: Vec<Identifier>,
++    pub symbols: Vec<ImportSymbol>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ExternImport {
+-    pub(crate) source: String,
+-    pub(crate) location: Location,
++pub struct ExternImport {
++    pub source: String,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineConstant {
+-    pub(crate) public: bool,
+-    pub(crate) documentation: String,
+-    pub(crate) constant_id: Option<types::ConstantId>,
+-    pub(crate) name: Constant,
+-    pub(crate) value: ConstExpression,
+-    pub(crate) location: Location,
++pub struct DefineConstant {
++    pub public: bool,
++    pub documentation: String,
++    pub constant_id: Option<types::ConstantId>,
++    pub name: Constant,
++    pub value: ConstExpression,
++    pub location: Location,
+ }
+ 
+ #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum MethodKind {
++pub enum MethodKind {
+     Regular,
+     Moving,
+     Mutable,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineInstanceMethod {
+-    pub(crate) documentation: String,
+-    pub(crate) public: bool,
+-    pub(crate) inline: Inline,
+-    pub(crate) kind: MethodKind,
+-    pub(crate) name: Identifier,
+-    pub(crate) type_parameters: Vec<TypeParameter>,
+-    pub(crate) arguments: Vec<MethodArgument>,
+-    pub(crate) return_type: Option<Type>,
+-    pub(crate) body: Vec<Expression>,
+-    pub(crate) location: Location,
+-    pub(crate) method_id: Option<types::MethodId>,
++pub struct DefineInstanceMethod {
++    pub documentation: String,
++    pub public: bool,
++    pub inline: Inline,
++    pub kind: MethodKind,
++    pub name: Identifier,
++    pub type_parameters: Vec<TypeParameter>,
++    pub arguments: Vec<MethodArgument>,
++    pub return_type: Option<Type>,
++    pub body: Vec<Expression>,
++    pub location: Location,
++    pub method_id: Option<types::MethodId>,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineModuleMethod {
+-    pub(crate) documentation: String,
+-    pub(crate) public: bool,
+-    pub(crate) inline: Inline,
+-    pub(crate) c_calling_convention: bool,
+-    pub(crate) name: Identifier,
+-    pub(crate) type_parameters: Vec<TypeParameter>,
+-    pub(crate) arguments: Vec<MethodArgument>,
+-    pub(crate) return_type: Option<Type>,
+-    pub(crate) body: Vec<Expression>,
+-    pub(crate) location: Location,
+-    pub(crate) method_id: Option<types::MethodId>,
++pub struct DefineModuleMethod {
++    pub documentation: String,
++    pub public: bool,
++    pub inline: Inline,
++    pub c_calling_convention: bool,
++    pub name: Identifier,
++    pub type_parameters: Vec<TypeParameter>,
++    pub arguments: Vec<MethodArgument>,
++    pub return_type: Option<Type>,
++    pub body: Vec<Expression>,
++    pub location: Location,
++    pub method_id: Option<types::MethodId>,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineExternFunction {
+-    pub(crate) documentation: String,
+-    pub(crate) public: bool,
+-    pub(crate) name: Identifier,
+-    pub(crate) arguments: Vec<MethodArgument>,
+-    pub(crate) variadic: bool,
+-    pub(crate) return_type: Option<Type>,
+-    pub(crate) location: Location,
+-    pub(crate) method_id: Option<types::MethodId>,
++pub struct DefineExternFunction {
++    pub documentation: String,
++    pub public: bool,
++    pub name: Identifier,
++    pub arguments: Vec<MethodArgument>,
++    pub variadic: bool,
++    pub return_type: Option<Type>,
++    pub location: Location,
++    pub method_id: Option<types::MethodId>,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineRequiredMethod {
+-    pub(crate) documentation: String,
+-    pub(crate) public: bool,
+-    pub(crate) kind: MethodKind,
+-    pub(crate) name: Identifier,
+-    pub(crate) type_parameters: Vec<TypeParameter>,
+-    pub(crate) arguments: Vec<MethodArgument>,
+-    pub(crate) return_type: Option<Type>,
+-    pub(crate) method_id: Option<types::MethodId>,
+-    pub(crate) location: Location,
++pub struct DefineRequiredMethod {
++    pub documentation: String,
++    pub public: bool,
++    pub kind: MethodKind,
++    pub name: Identifier,
++    pub type_parameters: Vec<TypeParameter>,
++    pub arguments: Vec<MethodArgument>,
++    pub return_type: Option<Type>,
++    pub method_id: Option<types::MethodId>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineStaticMethod {
+-    pub(crate) documentation: String,
+-    pub(crate) public: bool,
+-    pub(crate) inline: Inline,
+-    pub(crate) name: Identifier,
+-    pub(crate) type_parameters: Vec<TypeParameter>,
+-    pub(crate) arguments: Vec<MethodArgument>,
+-    pub(crate) return_type: Option<Type>,
+-    pub(crate) body: Vec<Expression>,
+-    pub(crate) location: Location,
+-    pub(crate) method_id: Option<types::MethodId>,
++pub struct DefineStaticMethod {
++    pub documentation: String,
++    pub public: bool,
++    pub inline: Inline,
++    pub name: Identifier,
++    pub type_parameters: Vec<TypeParameter>,
++    pub arguments: Vec<MethodArgument>,
++    pub return_type: Option<Type>,
++    pub body: Vec<Expression>,
++    pub location: Location,
++    pub method_id: Option<types::MethodId>,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineAsyncMethod {
+-    pub(crate) documentation: String,
+-    pub(crate) mutable: bool,
+-    pub(crate) public: bool,
+-    pub(crate) name: Identifier,
+-    pub(crate) type_parameters: Vec<TypeParameter>,
+-    pub(crate) arguments: Vec<MethodArgument>,
+-    pub(crate) return_type: Option<Type>,
+-    pub(crate) body: Vec<Expression>,
+-    pub(crate) location: Location,
+-    pub(crate) method_id: Option<types::MethodId>,
++pub struct DefineAsyncMethod {
++    pub documentation: String,
++    pub mutable: bool,
++    pub public: bool,
++    pub name: Identifier,
++    pub type_parameters: Vec<TypeParameter>,
++    pub arguments: Vec<MethodArgument>,
++    pub return_type: Option<Type>,
++    pub body: Vec<Expression>,
++    pub location: Location,
++    pub method_id: Option<types::MethodId>,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineField {
+-    pub(crate) documentation: String,
+-    pub(crate) public: bool,
+-    pub(crate) mutable: bool,
+-    pub(crate) field_id: Option<types::FieldId>,
+-    pub(crate) name: Identifier,
+-    pub(crate) value_type: Type,
+-    pub(crate) location: Location,
++pub struct DefineField {
++    pub documentation: String,
++    pub public: bool,
++    pub mutable: bool,
++    pub field_id: Option<types::FieldId>,
++    pub name: Identifier,
++    pub value_type: Type,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum TypeExpression {
++pub enum TypeExpression {
+     InstanceMethod(Box<DefineInstanceMethod>),
+     StaticMethod(Box<DefineStaticMethod>),
+     AsyncMethod(Box<DefineAsyncMethod>),
+@@ -409,7 +409,7 @@ pub(crate) enum TypeExpression {
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum TypeKind {
++pub enum TypeKind {
+     Async,
+     Builtin,
+     Enum,
+@@ -417,7 +417,7 @@ pub(crate) enum TypeKind {
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum TypeSemantics {
++pub enum TypeSemantics {
+     Default,
+     Inline,
+     Copy,
+@@ -425,58 +425,58 @@ pub(crate) enum TypeSemantics {
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineType {
+-    pub(crate) documentation: String,
+-    pub(crate) public: bool,
+-    pub(crate) semantics: TypeSemantics,
+-    pub(crate) type_id: Option<types::TypeId>,
+-    pub(crate) kind: TypeKind,
+-    pub(crate) name: Constant,
+-    pub(crate) type_parameters: Vec<TypeParameter>,
+-    pub(crate) body: Vec<TypeExpression>,
+-    pub(crate) location: Location,
++pub struct DefineType {
++    pub documentation: String,
++    pub public: bool,
++    pub semantics: TypeSemantics,
++    pub type_id: Option<types::TypeId>,
++    pub kind: TypeKind,
++    pub name: Constant,
++    pub type_parameters: Vec<TypeParameter>,
++    pub body: Vec<TypeExpression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineExternType {
+-    pub(crate) documentation: String,
+-    pub(crate) public: bool,
+-    pub(crate) type_id: Option<types::TypeId>,
+-    pub(crate) name: Constant,
+-    pub(crate) fields: Vec<DefineField>,
+-    pub(crate) location: Location,
++pub struct DefineExternType {
++    pub documentation: String,
++    pub public: bool,
++    pub type_id: Option<types::TypeId>,
++    pub name: Constant,
++    pub fields: Vec<DefineField>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineConstructor {
+-    pub(crate) documentation: String,
+-    pub(crate) method_id: Option<types::MethodId>,
+-    pub(crate) constructor_id: Option<types::ConstructorId>,
+-    pub(crate) name: Constant,
+-    pub(crate) members: Vec<Type>,
+-    pub(crate) location: Location,
++pub struct DefineConstructor {
++    pub documentation: String,
++    pub method_id: Option<types::MethodId>,
++    pub constructor_id: Option<types::ConstructorId>,
++    pub name: Constant,
++    pub members: Vec<Type>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum TraitExpression {
++pub enum TraitExpression {
+     InstanceMethod(Box<DefineInstanceMethod>),
+     RequiredMethod(Box<DefineRequiredMethod>),
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineTrait {
+-    pub(crate) documentation: String,
+-    pub(crate) public: bool,
+-    pub(crate) trait_id: Option<types::TraitId>,
+-    pub(crate) name: Constant,
+-    pub(crate) type_parameters: Vec<TypeParameter>,
+-    pub(crate) requirements: Vec<TypeName>,
+-    pub(crate) body: Vec<TraitExpression>,
+-    pub(crate) location: Location,
++pub struct DefineTrait {
++    pub documentation: String,
++    pub public: bool,
++    pub trait_id: Option<types::TraitId>,
++    pub name: Constant,
++    pub type_parameters: Vec<TypeParameter>,
++    pub requirements: Vec<TypeName>,
++    pub body: Vec<TraitExpression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum TopLevelExpression {
++pub enum TopLevelExpression {
+     Type(Box<DefineType>),
+     ExternType(Box<DefineExternType>),
+     Constant(Box<DefineConstant>),
+@@ -490,65 +490,65 @@ pub(crate) enum TopLevelExpression {
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ReopenType {
+-    pub(crate) type_id: Option<types::TypeId>,
+-    pub(crate) type_name: Constant,
+-    pub(crate) body: Vec<ReopenTypeExpression>,
+-    pub(crate) bounds: Vec<TypeBound>,
+-    pub(crate) location: Location,
++pub struct ReopenType {
++    pub type_id: Option<types::TypeId>,
++    pub type_name: Constant,
++    pub body: Vec<ReopenTypeExpression>,
++    pub bounds: Vec<TypeBound>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum ReopenTypeExpression {
++pub enum ReopenTypeExpression {
+     InstanceMethod(Box<DefineInstanceMethod>),
+     StaticMethod(Box<DefineStaticMethod>),
+     AsyncMethod(Box<DefineAsyncMethod>),
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct TypeBound {
+-    pub(crate) name: Constant,
+-    pub(crate) requirements: Vec<TypeName>,
+-    pub(crate) mutable: bool,
+-    pub(crate) copy: bool,
+-    pub(crate) location: Location,
++pub struct TypeBound {
++    pub name: Constant,
++    pub requirements: Vec<TypeName>,
++    pub mutable: bool,
++    pub copy: bool,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ImplementTrait {
+-    pub(crate) trait_name: TypeName,
+-    pub(crate) type_name: Constant,
+-    pub(crate) body: Vec<DefineInstanceMethod>,
+-    pub(crate) location: Location,
+-    pub(crate) bounds: Vec<TypeBound>,
+-    pub(crate) trait_instance: Option<types::TraitInstance>,
+-    pub(crate) type_instance: Option<types::TypeInstance>,
++pub struct ImplementTrait {
++    pub trait_name: TypeName,
++    pub type_name: Constant,
++    pub body: Vec<DefineInstanceMethod>,
++    pub location: Location,
++    pub bounds: Vec<TypeBound>,
++    pub trait_instance: Option<types::TraitInstance>,
++    pub type_instance: Option<types::TypeInstance>,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Scope {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) body: Vec<Expression>,
+-    pub(crate) location: Location,
++pub struct Scope {
++    pub resolved_type: types::TypeRef,
++    pub body: Vec<Expression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Try {
+-    pub(crate) expression: Expression,
+-    pub(crate) location: Location,
+-    pub(crate) kind: types::ThrowKind,
+-    pub(crate) return_type: types::TypeRef,
++pub struct Try {
++    pub expression: Expression,
++    pub location: Location,
++    pub kind: types::ThrowKind,
++    pub return_type: types::TypeRef,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct SizeOf {
+-    pub(crate) argument: Type,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct SizeOf {
++    pub argument: Type,
++    pub resolved_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum Expression {
++pub enum Expression {
+     And(Box<And>),
+     AssignField(Box<AssignField>),
+     ReplaceField(Box<ReplaceField>),
+@@ -588,7 +588,7 @@ pub(crate) enum Expression {
+ }
+ 
+ impl Expression {
+-    pub(crate) fn infer_recover(node: Expression) -> Self {
++    pub fn infer_recover(node: Expression) -> Self {
+         let loc = node.location();
+ 
+         Expression::Recover(Box::new(Recover {
+@@ -685,7 +685,7 @@ impl Expression {
+         }))
+     }
+ 
+-    pub(crate) fn location(&self) -> Location {
++    pub fn location(&self) -> Location {
+         match self {
+             Expression::And(n) => n.location,
+             Expression::AssignField(n) => n.location,
+@@ -726,7 +726,7 @@ impl Expression {
+         }
+     }
+ 
+-    pub(crate) fn returns_value(&self) -> bool {
++    pub fn returns_value(&self) -> bool {
+         !matches!(
+             self,
+             Expression::Return(_)
+@@ -738,15 +738,15 @@ impl Expression {
+         )
+     }
+ 
+-    pub(crate) fn is_self(&self) -> bool {
++    pub fn is_self(&self) -> bool {
+         matches!(self, Expression::SelfObject(_))
+     }
+ 
+-    pub(crate) fn is_recover(&self) -> bool {
++    pub fn is_recover(&self) -> bool {
+         matches!(self, Expression::Recover(_))
+     }
+ 
+-    pub(crate) fn allow_implicit_recover(&self) -> bool {
++    pub fn allow_implicit_recover(&self) -> bool {
+         !matches!(
+             self,
+             Expression::Recover(_)
+@@ -756,7 +756,7 @@ impl Expression {
+         )
+     }
+ 
+-    pub(crate) fn set_usage(&mut self, usage: Usage) {
++    pub fn set_usage(&mut self, usage: Usage) {
+         match self {
+             Expression::Call(c) => c.usage = usage,
+             Expression::IdentifierRef(c) => c.usage = usage,
+@@ -768,7 +768,7 @@ impl Expression {
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum ConstExpression {
++pub enum ConstExpression {
+     Int(Box<IntLiteral>),
+     String(Box<ConstStringLiteral>),
+     Float(Box<FloatLiteral>),
+@@ -780,7 +780,7 @@ pub(crate) enum ConstExpression {
+ }
+ 
+ impl ConstExpression {
+-    pub(crate) fn location(&self) -> Location {
++    pub fn location(&self) -> Location {
+         match self {
+             Self::Int(n) => n.location,
+             Self::String(n) => n.location,
+@@ -795,39 +795,39 @@ impl ConstExpression {
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct TypeParameter {
+-    pub(crate) type_parameter_id: Option<types::TypeParameterId>,
+-    pub(crate) name: Constant,
+-    pub(crate) requirements: Vec<TypeName>,
+-    pub(crate) mutable: bool,
+-    pub(crate) copy: bool,
+-    pub(crate) location: Location,
++pub struct TypeParameter {
++    pub type_parameter_id: Option<types::TypeParameterId>,
++    pub name: Constant,
++    pub requirements: Vec<TypeName>,
++    pub mutable: bool,
++    pub copy: bool,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct MethodArgument {
+-    pub(crate) name: Identifier,
+-    pub(crate) value_type: Type,
+-    pub(crate) location: Location,
++pub struct MethodArgument {
++    pub name: Identifier,
++    pub value_type: Type,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct PositionalArgument {
+-    pub(crate) value: Expression,
+-    pub(crate) expected_type: types::TypeRef,
++pub struct PositionalArgument {
++    pub value: Expression,
++    pub expected_type: types::TypeRef,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct NamedArgument {
+-    pub(crate) index: usize,
+-    pub(crate) name: Identifier,
+-    pub(crate) value: Expression,
+-    pub(crate) expected_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct NamedArgument {
++    pub index: usize,
++    pub name: Identifier,
++    pub value: Expression,
++    pub expected_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum Argument {
++pub enum Argument {
+     Positional(Box<PositionalArgument>),
+     Named(Box<NamedArgument>),
+ }
+@@ -849,45 +849,45 @@ impl Argument {
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct TypeName {
+-    pub(crate) source: Option<Identifier>,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) name: Constant,
+-    pub(crate) arguments: Vec<Type>,
+-    pub(crate) location: Location,
+-    pub(crate) self_type: bool,
++pub struct TypeName {
++    pub source: Option<Identifier>,
++    pub resolved_type: types::TypeRef,
++    pub name: Constant,
++    pub arguments: Vec<Type>,
++    pub location: Location,
++    pub self_type: bool,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ReferenceType {
+-    pub(crate) type_reference: ReferrableType,
+-    pub(crate) location: Location,
++pub struct ReferenceType {
++    pub type_reference: ReferrableType,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum ReferrableType {
++pub enum ReferrableType {
+     Named(Box<TypeName>),
+     Closure(Box<ClosureType>),
+     Tuple(Box<TupleType>),
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ClosureType {
+-    pub(crate) arguments: Vec<Type>,
+-    pub(crate) return_type: Option<Type>,
+-    pub(crate) location: Location,
+-    pub(crate) resolved_type: types::TypeRef,
++pub struct ClosureType {
++    pub arguments: Vec<Type>,
++    pub return_type: Option<Type>,
++    pub location: Location,
++    pub resolved_type: types::TypeRef,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct TupleType {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) values: Vec<Type>,
+-    pub(crate) location: Location,
++pub struct TupleType {
++    pub resolved_type: types::TypeRef,
++    pub values: Vec<Type>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum Type {
++pub enum Type {
+     Named(Box<TypeName>),
+     Ref(Box<ReferenceType>),
+     Mut(Box<ReferenceType>),
+@@ -898,7 +898,7 @@ pub(crate) enum Type {
+ }
+ 
+ impl Type {
+-    pub(crate) fn location(&self) -> Location {
++    pub fn location(&self) -> Location {
+         match self {
+             Type::Named(node) => node.location,
+             Type::Ref(node) => node.location,
+@@ -912,7 +912,7 @@ impl Type {
+ }
+ 
+ #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum Operator {
++pub enum Operator {
+     Add,
+     BitAnd,
+     BitOr,
+@@ -934,7 +934,7 @@ pub(crate) enum Operator {
+ }
+ 
+ impl Operator {
+-    pub(crate) fn from_ast(kind: ast::OperatorKind) -> Operator {
++    pub fn from_ast(kind: ast::OperatorKind) -> Operator {
+         // This isn't ideal, but I also don't want to introduce a standalone
+         // Operator enum in its own module _just_ so we don't need this match.
+         match kind {
+@@ -959,7 +959,7 @@ impl Operator {
+         }
+     }
+ 
+-    pub(crate) fn method_name(self) -> &'static str {
++    pub fn method_name(self) -> &'static str {
+         match self {
+             Operator::Add => "+",
+             Operator::BitAnd => "&",
+@@ -984,222 +984,222 @@ impl Operator {
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ConstBinary {
+-    pub(crate) left: ConstExpression,
+-    pub(crate) right: ConstExpression,
+-    pub(crate) operator: Operator,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct ConstBinary {
++    pub left: ConstExpression,
++    pub right: ConstExpression,
++    pub operator: Operator,
++    pub resolved_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ConstArray {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) values: Vec<ConstExpression>,
+-    pub(crate) location: Location,
++pub struct ConstArray {
++    pub resolved_type: types::TypeRef,
++    pub values: Vec<ConstExpression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Field {
+-    pub(crate) name: String,
+-    pub(crate) location: Location,
++pub struct Field {
++    pub name: String,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct FieldRef {
+-    pub(crate) info: Option<types::FieldInfo>,
+-    pub(crate) name: String,
+-    pub(crate) location: Location,
+-    pub(crate) in_mut: bool,
++pub struct FieldRef {
++    pub info: Option<types::FieldInfo>,
++    pub name: String,
++    pub location: Location,
++    pub in_mut: bool,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct BlockArgument {
+-    pub(crate) variable_id: Option<types::VariableId>,
+-    pub(crate) name: Identifier,
+-    pub(crate) value_type: Option<Type>,
+-    pub(crate) location: Location,
++pub struct BlockArgument {
++    pub variable_id: Option<types::VariableId>,
++    pub name: Identifier,
++    pub value_type: Option<Type>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Closure {
+-    pub(crate) closure_id: Option<types::ClosureId>,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) moving: bool,
+-    pub(crate) arguments: Vec<BlockArgument>,
+-    pub(crate) return_type: Option<Type>,
+-    pub(crate) body: Vec<Expression>,
+-    pub(crate) location: Location,
++pub struct Closure {
++    pub closure_id: Option<types::ClosureId>,
++    pub resolved_type: types::TypeRef,
++    pub moving: bool,
++    pub arguments: Vec<BlockArgument>,
++    pub return_type: Option<Type>,
++    pub body: Vec<Expression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct DefineVariable {
+-    pub(crate) variable_ids: Vec<types::VariableId>,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) pattern: Pattern,
+-    pub(crate) value: Expression,
+-    pub(crate) else_body: Option<Expression>,
+-    pub(crate) location: Location,
++pub struct DefineVariable {
++    pub variable_ids: Vec<types::VariableId>,
++    pub resolved_type: types::TypeRef,
++    pub pattern: Pattern,
++    pub value: Expression,
++    pub else_body: Option<Expression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct SelfObject {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct SelfObject {
++    pub resolved_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct True {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct True {
++    pub resolved_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Nil {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct Nil {
++    pub resolved_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct False {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) location: Location,
++pub struct False {
++    pub resolved_type: types::TypeRef,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Next {
+-    pub(crate) location: Location,
++pub struct Next {
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Break {
+-    pub(crate) location: Location,
++pub struct Break {
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Ref {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) value: Expression,
+-    pub(crate) location: Location,
++pub struct Ref {
++    pub resolved_type: types::TypeRef,
++    pub value: Expression,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Mut {
+-    pub(crate) pointer_to_method: Option<types::MethodId>,
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) value: Expression,
+-    pub(crate) location: Location,
++pub struct Mut {
++    pub pointer_to_method: Option<types::MethodId>,
++    pub resolved_type: types::TypeRef,
++    pub value: Expression,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Recover {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) body: Vec<Expression>,
+-    pub(crate) location: Location,
+-    pub(crate) infer: bool,
++pub struct Recover {
++    pub resolved_type: types::TypeRef,
++    pub body: Vec<Expression>,
++    pub location: Location,
++    pub infer: bool,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct And {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) left: Expression,
+-    pub(crate) right: Expression,
+-    pub(crate) location: Location,
++pub struct And {
++    pub resolved_type: types::TypeRef,
++    pub left: Expression,
++    pub right: Expression,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Or {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) left: Expression,
+-    pub(crate) right: Expression,
+-    pub(crate) location: Location,
++pub struct Or {
++    pub resolved_type: types::TypeRef,
++    pub left: Expression,
++    pub right: Expression,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct TypeCast {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) value: Expression,
+-    pub(crate) cast_to: Type,
+-    pub(crate) location: Location,
++pub struct TypeCast {
++    pub resolved_type: types::TypeRef,
++    pub value: Expression,
++    pub cast_to: Type,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Throw {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) return_type: types::TypeRef,
+-    pub(crate) value: Expression,
+-    pub(crate) location: Location,
++pub struct Throw {
++    pub resolved_type: types::TypeRef,
++    pub return_type: types::TypeRef,
++    pub value: Expression,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Return {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) value: Option<Expression>,
+-    pub(crate) location: Location,
++pub struct Return {
++    pub resolved_type: types::TypeRef,
++    pub value: Option<Expression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct TuplePattern {
+-    pub(crate) field_ids: Vec<types::FieldId>,
+-    pub(crate) values: Vec<Pattern>,
+-    pub(crate) location: Location,
++pub struct TuplePattern {
++    pub field_ids: Vec<types::FieldId>,
++    pub values: Vec<Pattern>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ArrayPattern {
+-    pub(crate) values: Vec<Pattern>,
+-    pub(crate) location: Location,
++pub struct ArrayPattern {
++    pub values: Vec<Pattern>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct FieldPattern {
+-    pub(crate) field_id: Option<types::FieldId>,
+-    pub(crate) field: Field,
+-    pub(crate) pattern: Pattern,
+-    pub(crate) location: Location,
++pub struct FieldPattern {
++    pub field_id: Option<types::FieldId>,
++    pub field: Field,
++    pub pattern: Pattern,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct TypePattern {
+-    pub(crate) type_id: Option<types::TypeId>,
+-    pub(crate) values: Vec<FieldPattern>,
+-    pub(crate) location: Location,
++pub struct TypePattern {
++    pub type_id: Option<types::TypeId>,
++    pub values: Vec<FieldPattern>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ConstructorPattern {
+-    pub(crate) constructor_id: Option<types::ConstructorId>,
+-    pub(crate) name: Constant,
+-    pub(crate) values: Vec<Pattern>,
+-    pub(crate) location: Location,
++pub struct ConstructorPattern {
++    pub constructor_id: Option<types::ConstructorId>,
++    pub name: Constant,
++    pub values: Vec<Pattern>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct WildcardPattern {
+-    pub(crate) location: Location,
++pub struct WildcardPattern {
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct IdentifierPattern {
+-    pub(crate) variable_id: Option<types::VariableId>,
+-    pub(crate) name: Identifier,
+-    pub(crate) mutable: bool,
+-    pub(crate) value_type: Option<Type>,
+-    pub(crate) location: Location,
++pub struct IdentifierPattern {
++    pub variable_id: Option<types::VariableId>,
++    pub name: Identifier,
++    pub mutable: bool,
++    pub value_type: Option<Type>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct ConstantPattern {
+-    pub(crate) kind: types::ConstantPatternKind,
+-    pub(crate) source: Option<Identifier>,
+-    pub(crate) name: String,
+-    pub(crate) location: Location,
++pub struct ConstantPattern {
++    pub kind: types::ConstantPatternKind,
++    pub source: Option<Identifier>,
++    pub name: String,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct OrPattern {
+-    pub(crate) patterns: Vec<Pattern>,
+-    pub(crate) location: Location,
++pub struct OrPattern {
++    pub patterns: Vec<Pattern>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+@@ -1209,7 +1209,7 @@ pub struct StringPattern {
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) enum Pattern {
++pub enum Pattern {
+     Type(Box<TypePattern>),
+     Constant(Box<ConstantPattern>),
+     Identifier(Box<IdentifierPattern>),
+@@ -1225,7 +1225,7 @@ pub(crate) enum Pattern {
+ }
+ 
+ impl Pattern {
+-    pub(crate) fn location(&self) -> Location {
++    pub fn location(&self) -> Location {
+         match self {
+             Pattern::Constant(n) => n.location,
+             Pattern::Constructor(n) => n.location,
+@@ -1244,35 +1244,35 @@ impl Pattern {
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct MatchCase {
+-    pub(crate) variable_ids: Vec<types::VariableId>,
+-    pub(crate) pattern: Pattern,
+-    pub(crate) guard: Option<Expression>,
+-    pub(crate) body: Vec<Expression>,
+-    pub(crate) location: Location,
++pub struct MatchCase {
++    pub variable_ids: Vec<types::VariableId>,
++    pub pattern: Pattern,
++    pub guard: Option<Expression>,
++    pub body: Vec<Expression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Match {
+-    pub(crate) resolved_type: types::TypeRef,
+-    pub(crate) expression: Expression,
+-    pub(crate) cases: Vec<MatchCase>,
+-    pub(crate) location: Location,
+-    pub(crate) write_result: bool,
++pub struct Match {
++    pub resolved_type: types::TypeRef,
++    pub expression: Expression,
++    pub cases: Vec<MatchCase>,
++    pub location: Location,
++    pub write_result: bool,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Loop {
+-    pub(crate) body: Vec<Expression>,
+-    pub(crate) location: Location,
++pub struct Loop {
++    pub body: Vec<Expression>,
++    pub location: Location,
+ }
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+-pub(crate) struct Module {
+-    pub(crate) documentation: String,
+-    pub(crate) module_id: types::ModuleId,
+-    pub(crate) expressions: Vec<TopLevelExpression>,
+-    pub(crate) location: Location,
++pub struct Module {
++    pub documentation: String,
++    pub module_id: types::ModuleId,
++    pub expressions: Vec<TopLevelExpression>,
++    pub location: Location,
+ }
+ 
+ /// A compiler pass for lowering ASTs to HIR modules.
+@@ -1282,7 +1282,7 @@ pub(crate) struct LowerToHir<'a> {
+ }
+ 
+ impl<'a> LowerToHir<'a> {
+-    pub(crate) fn run_all(
++    pub fn run_all(
+         state: &mut State,
+         modules: Vec<ParsedModule>,
+     ) -> Vec<Module> {
+diff --git a/compiler/src/lib.rs b/compiler/src/lib.rs
+index 5280c88..cb2a94c 100644
+--- a/compiler/src/lib.rs
++++ b/compiler/src/lib.rs
+@@ -9,7 +9,7 @@ pub mod docs;
+ mod file_lock;
+ pub mod format;
+ mod graph;
+-mod hir;
++pub mod hir;
+ mod incremental;
+ mod json;
+ mod linker;
