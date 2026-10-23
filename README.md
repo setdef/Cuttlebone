@@ -99,7 +99,7 @@ also fast enough for the latency limits.
 | `tests/highlight.rs` | document highlights over LSP in both encodings: bindings and assignments as writes, fields, same-named symbols, methods, types, closure arguments, `null`, broken code |
 | `tests/signature.rs` | signature help over LSP in both encodings: positional and named arguments (in any order), nested calls, type arguments, unclosed argument lists while typing, `null` outside parentheses, for operators and unresolved methods |
 | `tests/inlay.rs` | inlay hints over LSP in both encodings: every rule for type and parameter hints, and the requested range |
-| `tests/latency.rs` | latency limits for every query, also while a diagnostics check runs, and the cost of a worker process |
+| `tests/latency.rs` | latency limits for every query, alone and while a diagnostics check of the same project runs, and the cost of a worker process |
 | `tests/golden.rs` | `dump-types` output for a few std modules and fixtures, compared with `tests/golden/*.txt`. Run `UPDATE_GOLDEN=1 cargo test` to rewrite them. |
 | `tests/editors.rs` | the Neovim smoke check (below) under `cargo test`, if `nvim` is on `PATH` |
 | `tests/guardrails.rs` | the layering of src/, no editor named in code, nothing named after Inko, no machine-specific paths, and patches/README.md accounting for every patch line |

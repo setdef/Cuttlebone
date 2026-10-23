@@ -26,6 +26,11 @@ const RUNS: usize = 7;
 /// also check its whole project for diagnostics, so those are off.
 /// `queries_stay_fast_while_diagnostics_are_checked` measures queries
 /// with them.
+/// Held by the tests that load the machine on purpose (a diagnostics check
+/// beside every query) or measure small differences (a worker's cost), so
+/// those two never overlap.
+static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 static QUERIES_ONLY: std::sync::LazyLock<serde_json::Value> =
     std::sync::LazyLock::new(|| json!({ "diagnostics": false }));
 
@@ -70,7 +75,10 @@ fn std_sized_project() -> (PathBuf, String) {
         text.push_str(&format!("import {} (self as {})\n", m, m.replace('.', "_")));
     }
 
-    text.push_str("\ntype async Main {\n  fn async main {\n    let value = [1, 2].size\n  }\n}\n");
+    text.push_str(
+        "\ntype async Main {\n  fn async main {\n    let value = [1, 2].size\n    \
+         let doubled = [value].iter.map(fn (x) { x * 2 }).to_array\n  }\n}\n",
+    );
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/main.inko"), &text).unwrap();
     (root.canonicalize().unwrap(), text)
@@ -148,6 +156,7 @@ fn completion_on_a_std_sized_project_is_fast_enough() {
 
 #[test]
 fn a_worker_process_costs_little_more_than_checking_in_the_servers_thread() {
+    let _exclusive = EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner());
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
     let (line, character) = at(&text, "[1, 2].size", 7, false);
@@ -223,6 +232,59 @@ fn request_times(client: &mut Client, method: &str, params: serde_json::Value) -
         .collect()
 }
 
+/// Each new query of milestone 4, with its params, on the std-sized
+/// project: a highlight, a signature in an argument list, and the whole
+/// file's inlay hints.
+fn assists(file: &Path, text: &str) -> Vec<(&'static str, serde_json::Value)> {
+    let (line, character) = at(text, "let value", 4, false);
+    let (call_line, call_character) = at(text, "map(fn (x)", 4, false);
+
+    vec![
+        (
+            "textDocument/documentHighlight",
+            position(file, line, character),
+        ),
+        (
+            "textDocument/signatureHelp",
+            position(file, call_line, call_character),
+        ),
+        (
+            "textDocument/inlayHint",
+            json!({
+                "textDocument": { "uri": common::client::uri(file) },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": text.lines().count(), "character": 0 },
+                },
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn highlights_signatures_and_inlay_hints_on_a_std_sized_project_are_fast_enough() {
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
+
+    for (method, params) in assists(&file, &text) {
+        let times = request_times(&mut client, method, params);
+        let median = median(times.clone());
+
+        eprintln!(
+            "{} on a std-sized project: {:?} (all: {:?})",
+            method, median, times
+        );
+        assert!(
+            median < LIMIT,
+            "{}: median {:?} exceeds {:?}",
+            method,
+            median,
+            LIMIT
+        );
+    }
+}
+
 fn position(file: &Path, line: u32, character: u32) -> serde_json::Value {
     json!({
         "textDocument": { "uri": common::client::uri(file) },
@@ -279,10 +341,11 @@ fn references_across_std_are_fast_enough() {
 /// Queries don't wait for diagnostics, and stay under hover's limit while a
 /// diagnostics check of the same std-sized project runs in another worker.
 /// Each round edits the document, which starts a full check at once
-/// (`diagnosticsDebounceMs: 0`), then hovers. The check must still be
-/// running when the hover's answer arrives, so the two overlapped.
+/// (`diagnosticsDebounceMs: 0`), then sends a query. The check must still
+/// be running when the query's answer arrives, so the two overlapped.
 #[test]
 fn queries_stay_fast_while_diagnostics_are_checked() {
+    let _exclusive = EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner());
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
     let mut client = Client::initialized(
@@ -290,47 +353,64 @@ fn queries_stay_fast_while_diagnostics_are_checked() {
         json!({ "diagnosticsDebounceMs": 0, "statusNotifications": true }),
     );
     let (line, character) = at(&text, "[1, 2].size", 7, false);
+    let mut queries = vec![
+        ("textDocument/hover", position(&file, line, character)),
+        ("textDocument/definition", position(&file, line, character)),
+        (
+            "textDocument/completion",
+            position(&file, line, character + 1),
+        ),
+    ];
 
+    queries.extend(assists(&file, &text));
     client.open(&file, &text);
     // The check that opening the project starts.
     assert_eq!(client.diagnostics_status()["status"], "fresh");
 
-    let mut times = Vec::new();
-    let mut checks = Vec::new();
+    let mut version = 1;
 
-    for round in 0..RUNS {
-        let edit = "\n".repeat(round + 1);
+    for (method, params) in queries {
+        let mut times = Vec::new();
+        let mut checks = Vec::new();
 
-        client.change(
-            &file,
-            round as i32 + 2,
-            json!([{ "text": format!("{}{}", text, edit) }]),
+        for _ in 0..RUNS {
+            // The same text, so the queries' positions stay right: the
+            // check runs all the same.
+            version += 1;
+            client.change(&file, version, json!([{ "text": text }]));
+
+            let start = Instant::now();
+            let response = client.request(method, params.clone());
+
+            times.push(start.elapsed());
+            assert!(!response["result"].is_null(), "{}: {}", method, response);
+            assert!(
+                !client
+                    .notifications
+                    .iter()
+                    .any(|n| n["params"]["method"] == "textDocument/publishDiagnostics"),
+                "{}: the diagnostics check finished before the answer",
+                method
+            );
+
+            let status = client.diagnostics_status();
+
+            assert_eq!(status["status"], "fresh", "{}", status);
+            checks.push(status["elapsedMs"].as_f64().unwrap());
+        }
+
+        let median = median(times.clone());
+
+        eprintln!(
+            "{} during a diagnostics check: {:?} (all: {:?}); the checks took {:?} ms",
+            method, median, times, checks
         );
-
-        let start = Instant::now();
-        let (_, response) = client.hover(&file, line, character);
-
-        times.push(start.elapsed());
-        assert!(response["result"].is_object(), "{}", response);
         assert!(
-            !client
-                .notifications
-                .iter()
-                .any(|n| n["params"]["method"] == "textDocument/publishDiagnostics"),
-            "the diagnostics check finished before the hover's answer"
+            median < LIMIT,
+            "{}: median {:?} exceeds {:?}",
+            method,
+            median,
+            LIMIT
         );
-
-        let status = client.diagnostics_status();
-
-        assert_eq!(status["status"], "fresh", "{}", status);
-        checks.push(status["elapsedMs"].as_f64().unwrap());
     }
-
-    let median = median(times.clone());
-
-    eprintln!(
-        "hover during a diagnostics check: {:?} (all: {:?}); the checks took {:?} ms",
-        median, times, checks
-    );
-    assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
 }
