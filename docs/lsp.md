@@ -31,7 +31,9 @@ All of these are optional.
 | `inko` | string | `inko` on `PATH` | The `inko` executable to check the version of and take the standard library from. |
 | `checkTimeoutMs` | number | 5000 | How long one check may run before it's killed (see [Robustness](#robustness)). |
 | `debounceMs` | number | 50 | How long a document must go without edits before a query on it starts (see [Debouncing and cancellation](#debouncing-and-cancellation)). |
-| `statusNotifications` | boolean | false | Send a [`cuttlebone/status`](#status) notification before each query's response (hover, completion, definition, type definition, references). |
+| `statusNotifications` | boolean | false | Send a [`cuttlebone/status`](#status) notification before each query's response (hover, completion, definition, type definition, references), and after each [diagnostics](#diagnostics) check. |
+| `diagnostics` | boolean | true | Check projects and publish [diagnostics](#diagnostics). |
+| `diagnosticsDebounceMs` | number | 300 | How long a project must go without edits before its diagnostics are checked again. |
 
 ### The Inko version
 
@@ -359,6 +361,116 @@ error that stops type checking anywhere in it (a syntax error, or an error
 in a declaration) makes references unavailable, even if the file itself is
 fine.
 
+## Diagnostics
+
+Cuttlebone publishes the errors and warnings `inko check` reports, with
+`textDocument/publishDiagnostics`, without being asked:
+
+```json
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
+  "uri": "file:///home/me/hello/src/main.inko",
+  "diagnostics": [
+    {"range": {"start": {"line": 10, "character": 16}, "end": {"line": 10, "character": 22}},
+     "severity": 1, "code": "moved", "source": "cuttlebone",
+     "message": "'values' can't be used as it has been moved"},
+    {"range": {"start": {"line": 12, "character": 8}, "end": {"line": 12, "character": 14}},
+     "severity": 2, "code": "unused-symbol", "source": "cuttlebone",
+     "message": "the symbol 'unused' is unused", "tags": [1]}
+  ]
+}}
+```
+
+- **The same as `inko check`.** Each diagnostic is one that
+  `inko check --format json` reports for the project, in the same order, with
+  the same range, severity (`1` for an error, `2` for a warning), `code` (the
+  compiler's ID, e.g. `invalid-symbol`) and `message`. tests/diagnostics.rs
+  checks this against the installed `inko check`. That includes warnings,
+  and the errors only lowering to MIR finds (moves, patterns that don't
+  cover every case, and invalid constant expressions), so diagnostics come
+  from a **full check**, not the queries' type check. The exceptions are
+  under [Where it differs from `inko check`](#where-it-differs-from-inko-check).
+- **`tags`:** `unused-symbol` and `unreachable` warnings are tagged
+  `Unnecessary` (1), which clients usually show by fading the code.
+- **Ranges** are in the negotiated encoding. The compiler counts columns in
+  grapheme clusters (👩‍👩‍👦 is one column), and Cuttlebone converts them as
+  it does for every other range.
+- **Unsaved text.** The check uses the text of every open document, as
+  queries do.
+- **No side effects**, as for queries: no `dep/` sync, no network, no writes.
+
+### What's checked, and where diagnostics are published
+
+Diagnostics are checked per **target**: a project, or a file outside any
+project's `src/` and `test/`.
+
+- A file in a project's `src/` or `test/` (see [Project roots](#project-roots))
+  makes the **whole project** a target, like `inko check` in the project's
+  directory: every module in `src/` and `test/`, not only open ones.
+- Any other file is a target of its own, like `inko check file.inko`.
+- The standard library's files and dependencies' (in a `dep/` directory
+  next to a `src/`) are never checked, even when open: they aren't the
+  user's to fix.
+
+A target is checked:
+
+- when the server starts, for each workspace folder that has a `src/` or
+  `test/` directory, so diagnostics appear before anything is opened
+- the first time a file of it is opened
+- `diagnosticsDebounceMs` after an edit to any of its open documents
+  (`didChange`, a `didSave` with different text, or a `didClose` of a
+  document with unsaved changes, which makes the file on disk count again)
+
+After each check, Cuttlebone publishes the diagnostics of every file that
+has any, open or not, and an empty list for each file it published in last
+time that has none now. So a fixed error goes away. Diagnostics may be in
+files outside the target, such as a module a file outside any project
+imports.
+
+### Scheduling
+
+A full check costs more than a query's: it lowers to MIR, and checks the
+whole project. On an Apple M1 Max, about 0.25 s for a project that imports
+all of std, and 0.5 s for std itself. So diagnostics never hold up queries:
+
+- **A worker of their own.** One diagnostics check runs at a time, in a
+  separate worker process from the queries', with the same `checkTimeoutMs`
+  and the same handling of panics and crashes ([Robustness](#robustness)).
+  A query never waits for a diagnostics check, and a diagnostics check
+  never waits for a query once it's started.
+- **Queries first.** A diagnostics check only *starts* when no query is
+  queued or running, so a burst of hovers doesn't compete with a check
+  starting. A query that arrives while a diagnostics check runs starts at
+  once, in parallel (tests/latency.rs measures a hover on a std-sized
+  project during a check of it: about 190 ms, debounce included).
+- **A longer debounce.** `diagnosticsDebounceMs` (300 by default) is longer
+  than queries' `debounceMs` (50): diagnostics only need to be ready when
+  typing pauses, and each check costs more.
+- **Superseded checks are cancelled.** An edit to a target whose check is
+  running kills that check's worker, and the target is checked again after
+  the debounce. Several edits to a target waiting to be checked leave one
+  check, after the last.
+- **Several targets** wait in one queue, and are checked one at a time,
+  the one waiting longest first.
+
+A check that doesn't finish (it times out, crashes, the project requires a
+newer Inko, or it's superseded) publishes nothing, so the last diagnostics
+published stay. With `statusNotifications`, a [status](#status)
+notification says why.
+
+### Where it differs from `inko check`
+
+- **A compiler panic.** Lowering some code to MIR panics (for example a
+  `break` inside a closure inside a loop; compiler/src/mir/passes.rs:1836).
+  `inko check` then crashes without printing anything. Cuttlebone publishes
+  what the compiler reported before the panic (such as the type checker's
+  warnings), and its status is `unavailable` with reason `compilerPanic`.
+- **The standard library and dependencies** aren't checked as targets of
+  their own (see above). A diagnostic `inko check` reports in one of their
+  files while checking the user's project is still published.
+- **A file in two targets.** If two targets report diagnostics in the same
+  file (two lone files that import the same broken module), the file shows
+  the most recent check's.
+
 ## Status
 
 LSP results have nowhere to say *why* there's no answer, so Cuttlebone sends
@@ -379,6 +491,13 @@ a custom notification if the client opts in with
   definition and references) that gets a result, just before the
   response, with the request's `id`. Requests
   answered with an error (cancelled, superseded, invalid) get none.
+- **For diagnostics:** after each diagnostics check, with
+  `"method": "textDocument/publishDiagnostics"`, no `id`, and the checked
+  target's URI (a project directory, or a file) as `target` instead of
+  `textDocument`. `fresh` means it published; `unavailable` means it
+  didn't (`timeout`, `checkCrashed`, `compilerError`, or `superseded` when an
+  edit cancelled it), except that `compilerPanic` publishes what was found
+  before the panic.
 - **Why opt-in:** clients that don't know the notification would otherwise
   receive one they don't handle. A client that doesn't opt in gets plain LSP
   results.
@@ -409,11 +528,13 @@ there was no check.
 | `timeout` | The check took longer than `checkTimeoutMs`, and was killed. |
 | `checkCrashed` | The worker process died without an answer, for example from an abort or a stack overflow. `message` has its exit status or signal. |
 | `checkFailed` | The worker process couldn't be started. |
+| `superseded` | Diagnostics only: an edit to the target cancelled its check, and a new one follows. |
 | `internal` | A bug in Cuttlebone. |
 
 ## Debouncing and cancellation
 
 Requests are queued and answered one check at a time, in order.
+Diagnostics have their own queue and worker ([Scheduling](#scheduling)).
 
 - **Debouncing.** A query on a document edited less than `debounceMs` ago
   waits until that much time has passed since the edit, so checks don't
@@ -463,7 +584,7 @@ The server's own subprocesses (`inko --version`, `inko print std`) have a
   module takes 30 to 100 ms. References check the whole project instead of
   one file and its imports: about 270 ms for all of std's own `src/` and
   `test/` as the project.
-- **No side effects.** Unlike `inko check`, a query never syncs `dep/`, never
+- **No side effects.** Unlike `inko check`, a query (or a diagnostics check) never syncs `dep/`, never
   touches the network, and never creates or locks anything in Inko's data
   directory. It writes nothing anywhere. It does enforce the Inko version
   that the project's and its dependencies' `inko.pkg` require. Dependencies

@@ -179,6 +179,38 @@ impl Client {
         }
     }
 
+    /// Waits for a notification that `matches`, among those received so
+    /// far or arriving next, and takes it out of `notifications`.
+    pub fn wait_for(&mut self, matches: impl Fn(&Value) -> bool) -> Value {
+        loop {
+            if let Some(i) = self.notifications.iter().position(&matches) {
+                return self.notifications.remove(i);
+            }
+
+            let message = self
+                .messages
+                .recv_timeout(TIMEOUT)
+                .unwrap_or_else(|e| panic!("no matching notification: {}", e));
+
+            assert!(
+                message.get("method").is_some(),
+                "an unexpected response: {}",
+                message
+            );
+            self.notifications.push(message);
+        }
+    }
+
+    /// Waits for the next `cuttlebone/status` notification about a
+    /// diagnostics check, and takes it.
+    pub fn diagnostics_status(&mut self) -> Value {
+        self.wait_for(|n| {
+            n["method"] == "cuttlebone/status"
+                && n["params"]["method"] == "textDocument/publishDiagnostics"
+        })["params"]
+            .clone()
+    }
+
     /// The `cuttlebone/status` notification for request `id`.
     pub fn status(&self, id: i64) -> Option<&Value> {
         self.notifications

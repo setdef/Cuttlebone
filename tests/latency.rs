@@ -21,6 +21,14 @@ const PROCESS_LIMIT: Duration = Duration::from_millis(50);
 
 const RUNS: usize = 7;
 
+/// These tests measure queries on their own, as they would be in an editor
+/// with nothing else going on. They run in parallel, and each server would
+/// also check its whole project for diagnostics, so those are off.
+/// `queries_stay_fast_while_diagnostics_are_checked` measures queries
+/// with them.
+static QUERIES_ONLY: std::sync::LazyLock<serde_json::Value> =
+    std::sync::LazyLock::new(|| json!({ "diagnostics": false }));
+
 fn median(mut times: Vec<Duration>) -> Duration {
     times.sort();
     times[times.len() / 2]
@@ -84,7 +92,7 @@ fn hover_times(client: &mut Client, file: &Path, line: u32, character: u32) -> V
 fn hover_on_a_std_sized_project_is_fast_enough() {
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
-    let mut client = Client::initialized(&root, json!({}));
+    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
     let (line, character) = at(&text, "[1, 2].size", 7, false);
     let times = hover_times(&mut client, &file, line, character);
     let median = median(times.clone());
@@ -102,7 +110,7 @@ fn hover_in_the_largest_std_module_is_fast_enough() {
     let std = upstream_std();
     let file = std.join("std/net/http/server.inko");
     let text = std::fs::read_to_string(&file).unwrap();
-    let mut client = Client::initialized(std.parent().unwrap(), json!({}));
+    let mut client = Client::initialized(std.parent().unwrap(), QUERIES_ONLY.clone());
     let (line, character) = at(&text, "LimitReader.new(file, limit: range.size)", 30, false);
     let times = hover_times(&mut client, &file, line, character);
     let median = median(times.clone());
@@ -118,7 +126,7 @@ fn hover_in_the_largest_std_module_is_fast_enough() {
 fn completion_on_a_std_sized_project_is_fast_enough() {
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
-    let mut client = Client::initialized(&root, json!({}));
+    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
     let (line, character) = at(&text, "[1, 2].size", 7, false);
     let times: Vec<_> = (0..RUNS)
         .map(|_| {
@@ -165,7 +173,7 @@ fn a_worker_process_costs_little_more_than_checking_in_the_servers_thread() {
         .collect();
 
     // Through the server, with a worker per check.
-    let mut client = Client::initialized(&root, json!({}));
+    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
     let lsp = hover_times(&mut client, &file, line, character);
 
     // A worker that does no type checking: what starting a process costs.
@@ -227,7 +235,7 @@ fn position(file: &Path, line: u32, character: u32) -> serde_json::Value {
 fn definition_and_type_definition_on_a_std_sized_project_are_fast_enough() {
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
-    let mut client = Client::initialized(&root, json!({}));
+    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
     let (line, character) = at(&text, "[1, 2].size", 7, false);
 
     for method in ["textDocument/definition", "textDocument/typeDefinition"] {
@@ -255,7 +263,7 @@ fn references_across_std_are_fast_enough() {
     let std = upstream_std();
     let file = std.join("std/net/http/server.inko");
     let text = std::fs::read_to_string(&file).unwrap();
-    let mut client = Client::initialized(std.parent().unwrap(), json!({}));
+    let mut client = Client::initialized(std.parent().unwrap(), QUERIES_ONLY.clone());
     let (line, character) = at(&text, "LimitReader.new(file, limit: range.size)", 0, false);
     let times = request_times(
         &mut client,
@@ -265,5 +273,64 @@ fn references_across_std_are_fast_enough() {
     let median = median(times.clone());
 
     eprintln!("references across std: {:?} (all: {:?})", median, times);
+    assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
+}
+
+/// Queries don't wait for diagnostics, and stay under hover's limit while a
+/// diagnostics check of the same std-sized project runs in another worker.
+/// Each round edits the document, which starts a full check at once
+/// (`diagnosticsDebounceMs: 0`), then hovers. The check must still be
+/// running when the hover's answer arrives, so the two overlapped.
+#[test]
+fn queries_stay_fast_while_diagnostics_are_checked() {
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let mut client = Client::initialized(
+        &root,
+        json!({ "diagnosticsDebounceMs": 0, "statusNotifications": true }),
+    );
+    let (line, character) = at(&text, "[1, 2].size", 7, false);
+
+    client.open(&file, &text);
+    // The check that opening the project starts.
+    assert_eq!(client.diagnostics_status()["status"], "fresh");
+
+    let mut times = Vec::new();
+    let mut checks = Vec::new();
+
+    for round in 0..RUNS {
+        let edit = "\n".repeat(round + 1);
+
+        client.change(
+            &file,
+            round as i32 + 2,
+            json!([{ "text": format!("{}{}", text, edit) }]),
+        );
+
+        let start = Instant::now();
+        let (_, response) = client.hover(&file, line, character);
+
+        times.push(start.elapsed());
+        assert!(response["result"].is_object(), "{}", response);
+        assert!(
+            !client
+                .notifications
+                .iter()
+                .any(|n| n["params"]["method"] == "textDocument/publishDiagnostics"),
+            "the diagnostics check finished before the hover's answer"
+        );
+
+        let status = client.diagnostics_status();
+
+        assert_eq!(status["status"], "fresh", "{}", status);
+        checks.push(status["elapsedMs"].as_f64().unwrap());
+    }
+
+    let median = median(times.clone());
+
+    eprintln!(
+        "hover during a diagnostics check: {:?} (all: {:?}); the checks took {:?} ms",
+        median, times, checks
+    );
     assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
 }

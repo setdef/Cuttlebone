@@ -1,0 +1,14 @@
+# Lowering this to MIR panics (compiler/src/mir/passes.rs:1836): a `break`
+# inside a closure inside a loop. The type checker accepts it, and warns
+# about the borrow first.
+fn redundant(value: ref Int) -> Int {
+  0
+}
+
+type async Main {
+  fn async main {
+    loop {
+      fn { break }
+    }
+  }
+}

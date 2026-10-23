@@ -6,7 +6,9 @@
 //! JSON to its stdin and closes it. The worker writes an `Outcome` as JSON to
 //! stdout and exits. Anything on its stderr (such as a panic's message) is
 //! passed on to the server's stderr.
-use crate::query::{self, Answer, MembersAt, Place, Request, Session, TypeAt, Unavailable};
+use crate::query::{
+    self, Answer, Diagnostics, MembersAt, Place, Request, Session, TypeAt, Unavailable,
+};
 use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -42,6 +44,8 @@ pub enum Query {
     TypeDefinition,
     /// `query::references`.
     References { include_declaration: bool },
+    /// `query::diagnostics`, for the target in the request's `file`.
+    Diagnostics,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,6 +65,7 @@ pub enum Outcome {
     Members(Answer<MembersAt>),
     Place(Answer<Place>),
     Places(Answer<Vec<Place>>),
+    Diagnostics(Answer<Diagnostics>),
     /// The worker didn't produce an answer: it timed out, crashed or
     /// couldn't be started.
     Failed(Unavailable),
@@ -83,6 +88,9 @@ impl Job {
                 &self.request,
                 include_declaration,
             )),
+            Query::Diagnostics => {
+                Outcome::Diagnostics(query::diagnostics(&self.session, &self.request))
+            }
         }
     }
 }

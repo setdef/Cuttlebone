@@ -59,6 +59,9 @@ fn item<'a>(response: &'a Value, label: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no {} in {}", label, response))
 }
 
+// Tests that count worker processes turn diagnostics off, because a
+// diagnostics check runs in a worker of its own (tests/publish.rs tests
+// those).
 fn status_options() -> Value {
     json!({ "statusNotifications": true })
 }
@@ -780,7 +783,7 @@ fn a_hung_check_times_out_is_killed_and_the_server_keeps_going() {
     let mut client = Client::initialized_with(
         launch,
         &root,
-        json!({ "statusNotifications": true, "checkTimeoutMs": 500 }),
+        json!({ "statusNotifications": true, "checkTimeoutMs": 500, "diagnostics": false }),
         json!({}),
     );
     let start = Instant::now();
@@ -821,8 +824,12 @@ fn a_hung_worker_exits_by_itself_if_the_server_dies() {
         )],
         cwd: None,
     };
-    let mut client =
-        Client::initialized_with(launch, &root, json!({ "checkTimeoutMs": 500 }), json!({}));
+    let mut client = Client::initialized_with(
+        launch,
+        &root,
+        json!({ "checkTimeoutMs": 500, "diagnostics": false }),
+        json!({}),
+    );
 
     client.send_at("textDocument/hover", &shapes, 0, 0);
     wait_for_a_worker(&client);
@@ -908,7 +915,8 @@ fn cancelling_a_running_check_kills_it() {
         )],
         cwd: None,
     };
-    let mut client = Client::initialized_with(launch, &root, json!({}), json!({}));
+    let mut client =
+        Client::initialized_with(launch, &root, json!({ "diagnostics": false }), json!({}));
     let id = client.send_at("textDocument/hover", &shapes, 0, 0);
 
     wait_for_a_worker(&client);
@@ -937,8 +945,12 @@ fn cancelling_a_queued_request_answers_it_without_a_check() {
         )],
         cwd: None,
     };
-    let mut client =
-        Client::initialized_with(launch, &root, json!({ "checkTimeoutMs": 2000 }), json!({}));
+    let mut client = Client::initialized_with(
+        launch,
+        &root,
+        json!({ "checkTimeoutMs": 2000, "diagnostics": false }),
+        json!({}),
+    );
     // The first hangs, so the second waits behind it.
     let first = client.send_at("textDocument/hover", &shapes, 0, 0);
     let second = client.send_at("textDocument/hover", &main, 0, 0);
@@ -970,7 +982,8 @@ fn an_edit_cancels_a_running_check_on_that_document() {
         )],
         cwd: None,
     };
-    let mut client = Client::initialized_with(launch, &root, json!({}), json!({}));
+    let mut client =
+        Client::initialized_with(launch, &root, json!({ "diagnostics": false }), json!({}));
 
     client.open(&shapes, &shapes_text);
     client.open(&main, &text);
@@ -996,7 +1009,7 @@ fn an_edit_cancels_a_running_check_on_that_document() {
 #[test]
 fn checks_wait_until_typing_pauses() {
     let (root, file, text) = members();
-    let mut client = Client::initialized(&root, json!({ "debounceMs": 400 }));
+    let mut client = Client::initialized(&root, json!({ "debounceMs": 400, "diagnostics": false }));
     let (line, character) = at(&text, "name.size", 5, false);
 
     client.open(&file, &text);
@@ -1101,6 +1114,15 @@ fn queries_never_sync_dependencies_or_touch_the_data_directory() {
     let (_, response) = client.complete(&root.join("src/main.inko"), line, character);
 
     assert!(response.get("error").is_none());
+
+    // Diagnostics run a full check, including MIR, in the same way.
+    let status = client.diagnostics_status();
+
+    assert_eq!(status["status"], "fresh", "{}", status);
+    assert!(client.notifications.iter().any(|n| {
+        n["method"] == "textDocument/publishDiagnostics"
+            && n["params"]["diagnostics"][0]["code"] == "unused-symbol"
+    }));
     assert!(!root.join("dep").exists());
     assert!(!root.join("build").exists());
 
@@ -1163,7 +1185,8 @@ fn shutdown_kills_a_running_check() {
         )],
         cwd: None,
     };
-    let mut client = Client::initialized_with(launch, &root, json!({}), json!({}));
+    let mut client =
+        Client::initialized_with(launch, &root, json!({ "diagnostics": false }), json!({}));
     let id = client.send_at("textDocument/hover", &shapes, 0, 0);
 
     wait_for_a_worker(&client);

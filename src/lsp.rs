@@ -7,9 +7,16 @@
 //! `$/cancelRequest` cancel queries they make pointless, and a query waits
 //! until its document has been still for a moment (`debounce`) before it
 //! starts.
+//!
+//! Diagnostics have a slot of their own: a full check of a whole project
+//! (`query::diagnostics`) in a second worker, after a longer debounce, so a
+//! query never waits for one. See `Diagnoser`, and docs/lsp.md,
+//! "Diagnostics".
 use crate::check::{VERSION, upstream_version};
 use crate::position::{Encoding, Position};
-use crate::query::{self, Answer, MemberKind, MembersAt, Place, Session, TypeAt, Unavailable};
+use crate::query::{
+    self, Answer, Diagnostics, MemberKind, MembersAt, Place, Session, TypeAt, Unavailable,
+};
 use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query};
 use crossbeam_channel::{Receiver, Sender, select};
 use lsp_server::{
@@ -18,7 +25,7 @@ use lsp_server::{
 };
 use lsp_types as lsp;
 use serde_json::{Value, json};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -43,6 +50,11 @@ pub struct Options {
     pub debounce: Duration,
     /// Whether to send `cuttlebone/status` notifications.
     pub status: bool,
+    /// Whether to publish diagnostics.
+    pub diagnostics: bool,
+    /// How long a project must go without edits before its diagnostics
+    /// are checked.
+    pub diagnostics_debounce: Duration,
 }
 
 impl Options {
@@ -63,6 +75,8 @@ impl Options {
             status: get("statusNotifications")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            diagnostics: get("diagnostics").and_then(Value::as_bool).unwrap_or(true),
+            diagnostics_debounce: millis("diagnosticsDebounceMs", 300),
         }
     }
 }
@@ -140,6 +154,22 @@ struct Pending {
     ready: Instant,
 }
 
+/// Diagnostics, checked and published per target: a project directory, or
+/// a file outside any project's `src/` and `test/`
+/// (`query::diagnostics_target`). One check runs at a time, in a worker of
+/// its own, so queries never wait for it, and it starts only while no query
+/// is queued or running.
+#[derive(Default)]
+struct Diagnoser {
+    /// Targets that need a check, and when each may start.
+    pending: HashMap<PathBuf, Instant>,
+    running: Option<(PathBuf, Check)>,
+    /// Every target scheduled so far.
+    known: HashSet<PathBuf>,
+    /// The files each target last published diagnostics in.
+    published: HashMap<PathBuf, HashSet<Url>>,
+}
+
 struct Server {
     options: Options,
     session: Session,
@@ -148,6 +178,7 @@ struct Server {
     documents: HashMap<Url, Document>,
     queue: VecDeque<Pending>,
     running: Option<(Pending, Check)>,
+    diagnoser: Diagnoser,
     checks: u64,
     finished: (Sender<Finished>, Receiver<Finished>),
     shut_down: bool,
@@ -178,6 +209,7 @@ impl Server {
             documents: HashMap::new(),
             queue: VecDeque::new(),
             running: None,
+            diagnoser: Diagnoser::default(),
             checks: 0,
             finished: crossbeam_channel::unbounded(),
             shut_down: false,
@@ -237,8 +269,17 @@ impl Server {
     fn run(&mut self, connection: &Connection) -> Result<bool, ProtocolError> {
         let finished = self.finished.1.clone();
 
+        // A workspace folder that's a project gets its diagnostics without
+        // any document open.
+        for root in self.session.projects.clone() {
+            if root.join("src").is_dir() || root.join("test").is_dir() {
+                self.schedule(&root, Instant::now(), false);
+            }
+        }
+
         loop {
             self.start_next(connection);
+            self.start_diagnostics(connection);
 
             let deadline = self.deadline();
             let timer = match deadline {
@@ -369,15 +410,23 @@ impl Server {
             "textDocument/didOpen" => {
                 if let Ok(p) = n.extract::<lsp::DidOpenTextDocumentParams>("textDocument/didOpen") {
                     let uri = p.text_document.uri;
+                    let path = uri.to_file_path().ok();
+                    let unsaved = path.as_ref().is_some_and(|path| {
+                        std::fs::read_to_string(path).ok().as_ref() != Some(&p.text_document.text)
+                    });
 
                     self.documents.insert(
                         uri.clone(),
                         Document {
-                            path: uri.to_file_path().ok(),
+                            path: path.clone(),
                             text: p.text_document.text,
                             changed: None,
                         },
                     );
+
+                    if let Some(path) = path {
+                        self.edited(connection, &path, unsaved, false);
+                    }
                 }
             }
             "textDocument/didChange" => {
@@ -395,20 +444,34 @@ impl Server {
                     }
 
                     self.supersede(connection, &uri);
+
+                    if let Ok(path) = uri.to_file_path() {
+                        self.edited(connection, &path, true, true);
+                    }
                 }
             }
             "textDocument/didSave" => {
                 if let Ok(p) = n.extract::<lsp::DidSaveTextDocumentParams>("textDocument/didSave")
                     && let Some(text) = p.text
                     && let Some(doc) = self.documents.get_mut(&p.text_document.uri)
+                    && doc.text != text
                 {
                     doc.text = text;
+
+                    if let Some(path) = doc.path.clone() {
+                        self.edited(connection, &path, true, true);
+                    }
                 }
             }
             "textDocument/didClose" => {
                 if let Ok(p) = n.extract::<lsp::DidCloseTextDocumentParams>("textDocument/didClose")
+                    && let Some(doc) = self.documents.remove(&p.text_document.uri)
+                    && let Some(path) = doc.path
                 {
-                    self.documents.remove(&p.text_document.uri);
+                    // The file's text on disk replaces the document's.
+                    let unsaved = std::fs::read_to_string(&path).ok() != Some(doc.text);
+
+                    self.edited(connection, &path, unsaved, true);
                 }
             }
             "$/cancelRequest" => {
@@ -460,15 +523,248 @@ impl Server {
 
     fn cancel_all(&mut self, connection: &Connection) {
         self.cancel(connection, |_| true, ErrorCode::RequestCanceled);
+
+        if let Some((_, check)) = self.diagnoser.running.take() {
+            check.kill();
+        }
+
+        self.diagnoser.pending.clear();
+    }
+
+    /// Schedules diagnostics for the target of a file that was opened,
+    /// changed, saved or closed. `changed` says whether the text the
+    /// compiler would read changed. If so, the target waits for the
+    /// diagnostics debounce, and a running check of it is superseded:
+    /// it's killed, and checks again later. Otherwise a target is only
+    /// checked the first time one of its files is opened.
+    fn edited(
+        &mut self,
+        connection: &Connection,
+        path: &std::path::Path,
+        changed: bool,
+        debounce: bool,
+    ) {
+        let Some(target) = query::diagnostics_target(&self.session, path) else {
+            return;
+        };
+
+        if !changed && self.diagnoser.known.contains(&target) {
+            return;
+        }
+
+        let ready = if debounce {
+            Instant::now() + self.options.diagnostics_debounce
+        } else {
+            Instant::now()
+        };
+
+        if changed
+            && let Some((target, check)) = self.diagnoser.running.take_if(|(t, _)| *t == target)
+        {
+            check.kill();
+            self.diagnostics_status(
+                connection,
+                &target,
+                Err(Unavailable::new(
+                    "superseded",
+                    "an edit made the check pointless",
+                )),
+                Duration::ZERO,
+            );
+        }
+
+        self.schedule(&target, ready, changed);
+    }
+
+    /// Queues a diagnostics check of `target` to start at `ready`. A target
+    /// already waiting starts at the later of the two times if `later`,
+    /// else at the earlier one.
+    fn schedule(&mut self, target: &std::path::Path, ready: Instant, later: bool) {
+        if !self.options.diagnostics {
+            return;
+        }
+
+        self.diagnoser.known.insert(target.to_path_buf());
+        self.diagnoser
+            .pending
+            .entry(target.to_path_buf())
+            .and_modify(|at| {
+                *at = if later {
+                    ready.max(*at)
+                } else {
+                    ready.min(*at)
+                }
+            })
+            .or_insert(ready);
+    }
+
+    /// Starts the diagnostics check that's been waiting longest, if its
+    /// debounce is over, no diagnostics check is running, and no query is
+    /// queued or running: queries come first.
+    fn start_diagnostics(&mut self, connection: &Connection) {
+        if self.diagnoser.running.is_some() || self.running.is_some() || !self.queue.is_empty() {
+            return;
+        }
+
+        let now = Instant::now();
+        let Some(target) = self
+            .diagnoser
+            .pending
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .min_by_key(|(_, at)| **at)
+            .map(|(t, _)| t.clone())
+        else {
+            return;
+        };
+
+        self.diagnoser.pending.remove(&target);
+        self.checks += 1;
+
+        let job = Job {
+            query: Query::Diagnostics,
+            session: self.session.clone(),
+            request: query::Request {
+                file: target.clone(),
+                position: Position {
+                    line: 0,
+                    character: 0,
+                },
+                encoding: self.encoding,
+                contents: self.contents(),
+            },
+            deadline: Some(self.options.timeout + DEADLINE_MARGIN),
+        };
+
+        match Check::start(self.checks, &job, self.finished.0.clone()) {
+            Ok(check) => self.diagnoser.running = Some((target, check)),
+            Err(reason) => {
+                self.diagnostics_status(connection, &target, Err(reason), Duration::ZERO)
+            }
+        }
+    }
+
+    /// Publishes a target's diagnostics, grouped by file, and clears the
+    /// files it published in last time that have none now. A check that
+    /// didn't finish (it timed out, crashed, or the project can't be
+    /// checked) leaves what was published before.
+    fn publish(&mut self, connection: &Connection, target: PathBuf, answer: Answer<Diagnostics>) {
+        let elapsed = answer.elapsed;
+        let diagnostics = match answer.result {
+            Ok(Some(d)) => d,
+            Ok(None) => Diagnostics {
+                diagnostics: Vec::new(),
+                incomplete: None,
+            },
+            Err(reason) => {
+                return self.diagnostics_status(connection, &target, Err(reason), elapsed);
+            }
+        };
+        let mut files: BTreeMap<PathBuf, Vec<lsp::Diagnostic>> = BTreeMap::new();
+
+        for d in diagnostics.diagnostics {
+            let unnecessary = d.id == "unused-symbol" || d.id == "unreachable";
+
+            files.entry(d.file).or_default().push(lsp::Diagnostic {
+                range: range(d.range),
+                severity: Some(if d.error {
+                    lsp::DiagnosticSeverity::ERROR
+                } else {
+                    lsp::DiagnosticSeverity::WARNING
+                }),
+                code: Some(lsp::NumberOrString::String(d.id)),
+                source: Some("cuttlebone".to_string()),
+                message: d.message,
+                tags: unnecessary.then(|| vec![lsp::DiagnosticTag::UNNECESSARY]),
+                ..Default::default()
+            });
+        }
+
+        let mut published = HashSet::new();
+
+        for (file, list) in files {
+            if let Ok(uri) = Url::from_file_path(&file) {
+                send_diagnostics(connection, &uri, list);
+                published.insert(uri);
+            }
+        }
+
+        let before = self
+            .diagnoser
+            .published
+            .insert(target.clone(), published.clone())
+            .unwrap_or_default();
+
+        for uri in before.difference(&published) {
+            send_diagnostics(connection, uri, Vec::new());
+        }
+
+        let state = match diagnostics.incomplete {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        };
+
+        self.diagnostics_status(connection, &target, state, elapsed);
+    }
+
+    /// The `cuttlebone/status` notification for a diagnostics check.
+    fn diagnostics_status(
+        &self,
+        connection: &Connection,
+        target: &std::path::Path,
+        state: Result<(), Unavailable>,
+        elapsed: Duration,
+    ) {
+        if let Err(reason) = &state {
+            log(&format!(
+                "diagnostics for {}: {}: {}",
+                target.display(),
+                reason.code,
+                reason.message
+            ));
+        }
+
+        if !self.options.status {
+            return;
+        }
+
+        let mut params = json!({
+            "method": "textDocument/publishDiagnostics",
+            "target": Url::from_file_path(target).ok(),
+            "status": if state.is_ok() { "fresh" } else { "unavailable" },
+            "elapsedMs": (elapsed.as_secs_f64() * 10000.0).round() / 10.0,
+        });
+
+        if let Err(reason) = state {
+            params["reason"] = json!({ "code": reason.code, "message": reason.message });
+        }
+
+        let _ = connection
+            .sender
+            .send(Message::Notification(Notification::new(
+                STATUS.to_string(),
+                params,
+            )));
     }
 
     /// The next time something must happen: a running check's timeout, or
     /// the end of a queued query's debounce.
     fn deadline(&self) -> Option<Instant> {
-        match &self.running {
+        let query = match &self.running {
             Some((_, check)) => Some(check.started + self.options.timeout),
             None => self.queue.iter().map(|p| p.ready).min(),
-        }
+        };
+        let diagnostics = match &self.diagnoser.running {
+            Some((_, check)) => Some(check.started + self.options.timeout),
+            // Waiting diagnostics can't start before the queries are done,
+            // which wake the loop up when they are.
+            None if self.running.is_none() && self.queue.is_empty() => {
+                self.diagnoser.pending.values().min().copied()
+            }
+            None => None,
+        };
+
+        query.into_iter().chain(diagnostics).min()
     }
 
     /// Starts the first query that's ready, if nothing is running. One
@@ -505,15 +801,6 @@ impl Server {
                 )
             })?;
 
-        // Every open document that's a file on disk: the compiler only
-        // finds modules that exist on disk, and replaces their text.
-        let contents = self
-            .documents
-            .values()
-            .filter_map(|d| Some((d.path.clone()?, d.text.clone())))
-            .filter(|(path, _)| path.is_file())
-            .collect();
-
         Ok(Job {
             query: pending.query,
             session: self.session.clone(),
@@ -521,13 +808,49 @@ impl Server {
                 file,
                 position: pending.position,
                 encoding: self.encoding,
-                contents,
+                contents: self.contents(),
             },
             deadline: Some(self.options.timeout + DEADLINE_MARGIN),
         })
     }
 
+    /// Every open document that's a file on disk: the compiler only finds
+    /// modules that exist on disk, and replaces their text.
+    fn contents(&self) -> HashMap<PathBuf, String> {
+        self.documents
+            .values()
+            .filter_map(|d| Some((d.path.clone()?, d.text.clone())))
+            .filter(|(path, _)| path.is_file())
+            .collect()
+    }
+
     fn finish(&mut self, connection: &Connection, done: Finished) {
+        if let Some((target, check)) = self.diagnoser.running.take_if(|(_, c)| c.id == done.id) {
+            if !done.stderr.trim().is_empty() {
+                log(&format!(
+                    "diagnostics for {}: {}",
+                    target.display(),
+                    done.stderr.trim_end()
+                ));
+            }
+
+            return match check.finish(&done) {
+                Outcome::Diagnostics(answer) => self.publish(connection, target, answer),
+                Outcome::Failed(reason) => {
+                    self.diagnostics_status(connection, &target, Err(reason), Duration::ZERO)
+                }
+                _ => self.diagnostics_status(
+                    connection,
+                    &target,
+                    Err(Unavailable::new(
+                        "internal",
+                        "the worker answered another query",
+                    )),
+                    Duration::ZERO,
+                ),
+            };
+        }
+
         // A check that was killed isn't running any more.
         let Some((pending, check)) = self.running.take_if(|(_, c)| c.id == done.id) else {
             return;
@@ -547,6 +870,26 @@ impl Server {
     }
 
     fn time_out(&mut self, connection: &Connection) {
+        if let Some((target, check)) = self
+            .diagnoser
+            .running
+            .take_if(|(_, c)| c.started.elapsed() >= self.options.timeout)
+        {
+            check.kill();
+            self.diagnostics_status(
+                connection,
+                &target,
+                Err(Unavailable::new(
+                    "timeout",
+                    format!(
+                        "the check took longer than {} ms, so it was stopped",
+                        self.options.timeout.as_millis()
+                    ),
+                )),
+                Duration::ZERO,
+            );
+        }
+
         let Some((pending, check)) = self
             .running
             .take_if(|(_, c)| c.started.elapsed() >= self.options.timeout)
@@ -603,6 +946,16 @@ impl Server {
                 (result, status)
             }
             Outcome::Failed(reason) => (Value::Null, (Err(reason), Duration::ZERO)),
+            Outcome::Diagnostics(_) => (
+                Value::Null,
+                (
+                    Err(Unavailable::new(
+                        "internal",
+                        "the worker answered another query",
+                    )),
+                    Duration::ZERO,
+                ),
+            ),
         };
 
         if self.options.status {
@@ -881,6 +1234,21 @@ fn inko_output(inko: &str, args: &[&str]) -> Result<String, String> {
     }
 
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn send_diagnostics(connection: &Connection, uri: &Url, diagnostics: Vec<lsp::Diagnostic>) {
+    let params = lsp::PublishDiagnosticsParams {
+        uri: uri.clone(),
+        diagnostics,
+        version: None,
+    };
+
+    let _ = connection
+        .sender
+        .send(Message::Notification(Notification::new(
+            "textDocument/publishDiagnostics".to_string(),
+            params,
+        )));
 }
 
 fn reply(connection: &Connection, id: RequestId, result: Value) {
