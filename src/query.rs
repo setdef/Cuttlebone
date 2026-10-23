@@ -7,8 +7,8 @@
 use crate::check::{Target, diagnose, project_root, run};
 use crate::position::{Encoding, HirPosition, Lines, Position, contains};
 use crate::walker::{
-    ArgumentList, Expr, Reference, SymbolId, Walker, declarations, expressions_pass_ran,
-    type_symbol,
+    ArgumentList, Expr, ListArgument, Reference, SymbolId, Walker, declarations,
+    expressions_pass_ran, type_symbol,
 };
 use compiler::hir;
 use location::Location;
@@ -20,10 +20,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 use std::time::{Duration, Instant};
-use types::format::TypeFormatter;
+use types::format::{TypeFormatter, format_type};
 use types::{
-    Block, Database, MethodId, MethodLookup, MethodSource, ModuleId, Symbol, TypeArguments,
-    TypeEnum, TypeRef,
+    Block, Database, MethodId, MethodKind, MethodLookup, MethodSource, ModuleId, Symbol,
+    TypeArguments, TypeEnum, TypeRef,
 };
 
 /// What a request needs to know about the project.
@@ -770,7 +770,9 @@ fn signature(scope: &Scope) -> Option<Signature> {
     let slot = list
         .arguments
         .iter()
-        .filter(|(l, _)| {
+        .filter(|a| {
+            let l = a.location;
+
             (l.line_end, l.column_end) < at
                 && scope
                     .lines
@@ -780,16 +782,18 @@ fn signature(scope: &Scope) -> Option<Signature> {
         })
         .count();
     let active = match list.arguments.get(slot) {
-        Some((_, Some(name))) => params.iter().position(|p| &p.name == name),
-        Some((_, None)) => Some(slot),
+        Some(ListArgument {
+            name: Some(name), ..
+        }) => params.iter().position(|p| &p.name == name),
+        Some(_) => Some(slot),
         // An argument not written yet: the next positional one, or the
         // first not given by name.
         None => {
-            let positional = list.arguments.iter().filter(|(_, n)| n.is_none()).count();
+            let positional = list.arguments.iter().filter(|a| a.name.is_none()).count();
             let named: Vec<&String> = list
                 .arguments
                 .iter()
-                .filter_map(|(_, n)| n.as_ref())
+                .filter_map(|a| a.name.as_ref())
                 .collect();
 
             (positional..params.len()).find(|i| !named.contains(&&params[*i].name))
@@ -800,6 +804,93 @@ fn signature(scope: &Scope) -> Option<Signature> {
         label,
         parameters,
         active: active.filter(|i| *i < params.len()).map(|i| i as u32),
+    })
+}
+
+/// What an inlay hint shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HintKind {
+    /// A variable's inferred type, after its name: `: Int`.
+    Type,
+    /// A parameter's name, before a positional argument: `times:`.
+    Parameter,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hint {
+    pub position: Position,
+    pub label: String,
+    pub kind: HintKind,
+}
+
+/// Inlay hints between the request's position and `end` (both included),
+/// sorted by position:
+///
+/// - the inferred type after a variable a `let` binds to a name without a
+///   type annotation, and after a closure's argument without one, unless the
+///   code already says it (`Untyped::obvious`), or the type isn't fully
+///   known. (`let _ = ...` binds nothing.)
+/// - the parameter's name before each positional argument of a call
+///   written with parentheses to a method that resolved, unless the
+///   argument is a variable or field with the parameter's name
+pub fn inlay_hints(session: &Session, request: &Request, end: Position) -> Answer<Vec<Hint>> {
+    answer(session, request, false, |scope| {
+        let (db, walker, lines) = (scope.db, scope.walker, scope.lines);
+        let mut hints = Vec::new();
+
+        for u in walker.untyped.iter().filter(|u| !u.obvious) {
+            let l = u.name;
+            let Some(typ) = u.typ.map(|t| format_type(db, t)) else {
+                continue;
+            };
+
+            if typ.contains("<error>") || typ.contains('?') {
+                continue;
+            }
+
+            hints.push(Hint {
+                position: lines.from_hir(l.line_end, l.column_end + 1),
+                label: format!(": {}", typ),
+                kind: HintKind::Type,
+            });
+        }
+
+        for list in &walker.argument_lists {
+            // An enum constructor's (`Option.Some(1)`) parameters have
+            // generated names: `arg0`.
+            let Some((method, _)) = list
+                .method
+                .as_ref()
+                .filter(|(m, _)| m.kind(db) != MethodKind::Constructor)
+            else {
+                continue;
+            };
+            let mut params = method.arguments(db);
+
+            params.sort_by_key(|p| p.index);
+
+            // Positional arguments come before named ones.
+            for (arg, param) in list
+                .arguments
+                .iter()
+                .take_while(|a| a.name.is_none())
+                .zip(&params)
+            {
+                if arg.variable.as_ref() == Some(&param.name) {
+                    continue;
+                }
+
+                hints.push(Hint {
+                    position: lines.from_hir(arg.location.line_start, arg.location.column_start),
+                    label: format!("{}:", param.name),
+                    kind: HintKind::Parameter,
+                });
+            }
+        }
+
+        hints.retain(|h| request.position <= h.position && h.position <= end);
+        hints.sort_by_key(|h| h.position);
+        Ok(Some(hints))
     })
 }
 

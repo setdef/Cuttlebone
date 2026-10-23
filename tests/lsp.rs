@@ -110,6 +110,7 @@ fn initialize_advertises_only_what_works() {
             "documentHighlightProvider",
             "experimental",
             "hoverProvider",
+            "inlayHintProvider",
             "positionEncoding",
             "referencesProvider",
             "signatureHelpProvider",
@@ -122,6 +123,7 @@ fn initialize_advertises_only_what_works() {
     assert_eq!(capabilities["typeDefinitionProvider"], true);
     assert_eq!(capabilities["referencesProvider"], true);
     assert_eq!(capabilities["documentHighlightProvider"], true);
+    assert_eq!(capabilities["inlayHintProvider"], true);
     assert_eq!(
         capabilities["signatureHelpProvider"],
         json!({ "triggerCharacters": ["(", ","] })

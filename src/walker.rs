@@ -77,8 +77,34 @@ pub struct ArgumentList {
     pub types: Option<Location>,
     /// The called method and the call's type arguments, if it resolved.
     pub method: Option<(MethodId, TypeArguments)>,
-    /// Each argument, and the name of a named one.
-    pub arguments: Vec<(Location, Option<String>)>,
+    pub arguments: Vec<ListArgument>,
+}
+
+/// An argument in an `ArgumentList`.
+#[derive(Clone, Debug)]
+pub struct ListArgument {
+    pub location: Location,
+    /// The name of a named argument (`times` in `times: 2`).
+    pub name: Option<String>,
+    /// The name of the variable or field (`@x`) that a positional argument
+    /// is, if it's only that.
+    pub variable: Option<String>,
+}
+
+/// A variable whose type isn't written in the source, for inlay hints: one
+/// a `let` binds to a name without a type annotation, or a closure's
+/// argument without one.
+#[derive(Clone, Debug)]
+pub struct Untyped {
+    /// The variable's name.
+    pub name: Location,
+    /// The variable's type, if the compiler inferred it.
+    pub typ: Option<TypeRef>,
+    /// Whether the code says the type anyway: a `let` whose value is a
+    /// literal, a cast, a type's constructor (`Point(x: 1)`), or a static
+    /// method of a type that returns that type (`Counter.new`,
+    /// `Option.Some(1)`).
+    pub obvious: bool,
 }
 
 /// What a name refers to, as one of the compiler's ids. Two names refer to
@@ -456,6 +482,8 @@ pub struct Walker<'a> {
     pub calls: Vec<CallSite>,
     /// Every call written with parentheses, in the order walked.
     pub argument_lists: Vec<ArgumentList>,
+    /// The variables whose types aren't written, in the order walked.
+    pub untyped: Vec<Untyped>,
     pub checks: Vec<CrossCheck>,
     /// Every name that refers to a symbol, in the order walked. Names that
     /// desugaring introduced aren't included.
@@ -477,6 +505,7 @@ impl<'a> Walker<'a> {
             out: Vec::new(),
             calls: Vec::new(),
             argument_lists: Vec::new(),
+            untyped: Vec::new(),
             checks: Vec::new(),
             references: Vec::new(),
             declarations: Vec::new(),
@@ -989,6 +1018,32 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Whether an expression says its own type: a literal, a cast, a type's
+    /// constructor, or a static method of a type that returns that type.
+    fn obvious(&self, node: &hir::Expression) -> bool {
+        use hir::Expression as E;
+
+        match node {
+            E::Int(_)
+            | E::Float(_)
+            | E::String(_)
+            | E::True(_)
+            | E::False(_)
+            | E::Nil(_)
+            | E::TypeCast(_) => true,
+            E::Call(n) => match &n.kind {
+                CallKind::TypeInstance(_) => true,
+                CallKind::Call(info) => n.receiver.as_ref().is_some_and(|r| {
+                    let receiver = self.static_symbol(r);
+
+                    receiver.is_some() && receiver == type_symbol(self.db, info.returns)
+                }),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
     fn call_kind(&self, kind: &CallKind) -> Option<TypeRef> {
         match kind {
             CallKind::Unknown => None,
@@ -1184,7 +1239,14 @@ impl<'a> Walker<'a> {
 
                 self.stored(n.location, "Call", typ, synthetic);
 
-                if n.parens && !synthetic {
+                // Binary operators (`a + b`) are calls with parentheses too,
+                // but not written with them.
+                let operator = !n
+                    .name
+                    .name
+                    .starts_with(|c: char| c.is_alphabetic() || c == '_');
+
+                if n.parens && !synthetic && !operator {
                     self.argument_lists.push(ArgumentList {
                         location: n.location,
                         name: n.name.location,
@@ -1197,8 +1259,20 @@ impl<'a> Walker<'a> {
                             .arguments
                             .iter()
                             .map(|a| match a {
-                                hir::Argument::Positional(p) => (p.value.location(), None),
-                                hir::Argument::Named(n) => (n.location, Some(n.name.name.clone())),
+                                hir::Argument::Positional(p) => ListArgument {
+                                    location: p.value.location(),
+                                    name: None,
+                                    variable: match &p.value {
+                                        E::IdentifierRef(v) => Some(v.name.clone()),
+                                        E::FieldRef(f) => Some(f.name.clone()),
+                                        _ => None,
+                                    },
+                                },
+                                hir::Argument::Named(n) => ListArgument {
+                                    location: n.location,
+                                    name: Some(n.name.name.clone()),
+                                    variable: None,
+                                },
                             })
                             .collect(),
                     });
@@ -1272,6 +1346,14 @@ impl<'a> Walker<'a> {
 
                     self.stored(arg.name.location, "Binding", typ, false);
 
+                    if arg.value_type.is_none() {
+                        self.untyped.push(Untyped {
+                            name: arg.name.location,
+                            typ,
+                            obvious: false,
+                        });
+                    }
+
                     if let Some(a) = args.iter().find(|a| a.index == i) {
                         self.declare(arg.name.location, SymbolId::Variable(a.variable));
                     }
@@ -1325,6 +1407,18 @@ impl<'a> Walker<'a> {
                     synthetic || generated_var,
                 );
                 self.pattern(&n.pattern, synthetic);
+
+                if let hir::Pattern::Identifier(p) = &n.pattern
+                    && p.value_type.is_none()
+                    && !synthetic
+                    && !generated_var
+                {
+                    self.untyped.push(Untyped {
+                        name: p.name.location,
+                        typ: p.variable_id.map(|id| id.value_type(self.db)),
+                        obvious: self.obvious(&n.value),
+                    });
+                }
 
                 let value = self.out.len();
 

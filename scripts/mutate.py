@@ -121,7 +121,7 @@ M = [
  ("no documentHighlightProvider", "src/lsp.rs", "                document_highlight_provider: Some(lsp::OneOf::Left(true)),\n", "", "--test lsp initialize_advertises"),
  # Signature help.
  ("no closing parenthesis inserted", "src/query.rs", "        copy.insert(offset, ')');", "        let _ = offset;", "--test signature unfinished"),
- ("named arguments taken as positional", "src/query.rs", "        Some((_, Some(name))) => params.iter().position(|p| &p.name == name),", "        Some((_, Some(_))) => Some(slot),", "--test signature named"),
+ ("named arguments taken as positional", "src/query.rs", "            name: Some(name), ..\n        }) => params.iter().position(|p| &p.name == name),", "            name: Some(_), ..\n        }) => Some(slot),", "--test signature named"),
  ("commas not counted", "src/query.rs", "                    .starts_with(',')", "                    .starts_with(';')", "--test signature positional"),
  ("the outermost call wins", "src/query.rs", "        .max_by_key(|l| paren(l))?;", "        .min_by_key(|l| paren(l))?;", "--test signature nested"),
  ("the call's type arguments ignored", "src/query.rs", "    let format = || TypeFormatter::new(db, None, Some(arguments));", "    let format = || { let _ = arguments; TypeFormatter::new(db, None, None) };", "--test signature type_arguments"),
@@ -129,6 +129,24 @@ M = [
  ("after the ) counts as inside", "src/query.rs", "at <= (l.location.line_end, l.location.column_end))", "at <= (l.location.line_end, l.location.column_end + 1))", "--test signature null_outside"),
  ("the ( counts as inside", "src/query.rs", ".filter(|l| paren(l) < at && at", ".filter(|l| paren(l) <= at && at", "--test signature null_outside"),
  ("no signatureHelpProvider", "src/lsp.rs", "trigger_characters: Some(vec![\"(\".to_string(), \",\".to_string()]),", "trigger_characters: None,", "--test lsp initialize_advertises"),
+ # Inlay hints.
+ ("literals aren't obvious", "src/walker.rs", "            E::Int(_)\n            | E::Float(_)", "            E::Float(_)", "--test inlay let_types"),
+ ("casts aren't obvious", "src/walker.rs", "            | E::Nil(_)\n            | E::TypeCast(_) => true,", "            | E::Nil(_) => true,", "--test inlay let_types"),
+ ("constructors aren't obvious", "src/walker.rs", "                CallKind::TypeInstance(_) => true,", "                CallKind::TypeInstance(_) => false,", "--test inlay let_types"),
+ ("every static method is obvious", "src/walker.rs", "receiver.is_some() && receiver == type_symbol(self.db, info.returns)", "receiver.is_some()", "--test inlay a_static_method"),
+ ("no static method is obvious", "src/walker.rs", "receiver.is_some() && receiver == type_symbol(self.db, info.returns)", "receiver.is_none()", "--test inlay the_fixtures"),
+ ("annotated lets get hints", "src/walker.rs", "                if let hir::Pattern::Identifier(p) = &n.pattern\n                    && p.value_type.is_none()\n                    && !synthetic", "                if let hir::Pattern::Identifier(p) = &n.pattern\n                    && !synthetic", "--test inlay let_types"),
+ ("annotated closure arguments get hints", "src/walker.rs", "                    if arg.value_type.is_none() {\n                        self.untyped.push(", "                    if true {\n                        self.untyped.push(", "--test inlay closure_arguments"),
+ ("unknown types get hints", "src/query.rs", "typ.contains(\"<error>\") || typ.contains('?')", "typ.contains('?')", "--test inlay unknown_types"),
+ ("named arguments get hints", "src/query.rs", "                .take_while(|a| a.name.is_none())", "                .take_while(|_| true)", "--test inlay parameter_names"),
+ ("variables named like the parameter get hints", "src/query.rs", "                if arg.variable.as_ref() == Some(&param.name) {\n                    continue;\n                }\n", "", "--test inlay parameter_names"),
+ ("operators are argument lists", "src/walker.rs", "                if n.parens && !synthetic && !operator {", "                if n.parens && !synthetic {", "--test inlay parameter_names"),
+ ("operators get signature help", "src/walker.rs", "                if n.parens && !synthetic && !operator {", "                if n.parens && !synthetic {", "--test signature null_outside"),
+ ("enum constructors' generated names", "src/query.rs", "                .filter(|(m, _)| m.kind(db) != MethodKind::Constructor)", "                .filter(|_| true)", "--test inlay parameter_names"),
+ ("hints past the range", "src/query.rs", "        hints.retain(|h| request.position <= h.position && h.position <= end);", "        hints.retain(|h| request.position <= h.position);", "--test inlay only_the_requested_range"),
+ ("the range's end not read", "src/lsp.rs", "                        line: json_u32(&request.params, \"/range/end/line\"),", "                        line: u32::MAX,", "--test inlay only_the_requested_range"),
+ ("parameter hints without padding", "src/lsp.rs", "                                padding_right: Some(h.kind == HintKind::Parameter),", "                                padding_right: None,", "--test inlay only_the_requested_range"),
+ ("no inlayHintProvider", "src/lsp.rs", "                inlay_hint_provider: Some(lsp::OneOf::Left(true)),\n", "", "--test lsp initialize_advertises"),
 ]
 only = sys.argv[1:]
 results = []

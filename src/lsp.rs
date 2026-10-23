@@ -15,7 +15,8 @@
 use crate::check::{VERSION, upstream_version};
 use crate::position::{Encoding, Position};
 use crate::query::{
-    self, Access, Answer, Diagnostics, MemberKind, MembersAt, Place, Session, TypeAt, Unavailable,
+    self, Access, Answer, Diagnostics, HintKind, MemberKind, MembersAt, Place, Session, TypeAt,
+    Unavailable,
 };
 use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query};
 use crossbeam_channel::{Receiver, Sender, select};
@@ -246,6 +247,7 @@ impl Server {
                 type_definition_provider: Some(lsp::TypeDefinitionProviderCapability::Simple(true)),
                 references_provider: Some(lsp::OneOf::Left(true)),
                 document_highlight_provider: Some(lsp::OneOf::Left(true)),
+                inlay_hint_provider: Some(lsp::OneOf::Left(true)),
                 signature_help_provider: Some(lsp::SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
                     retrigger_characters: None,
@@ -345,6 +347,16 @@ impl Server {
             "textDocument/definition" => ("textDocument/definition", Query::Definition),
             "textDocument/typeDefinition" => ("textDocument/typeDefinition", Query::TypeDefinition),
             "textDocument/signatureHelp" => ("textDocument/signatureHelp", Query::SignatureHelp),
+            "textDocument/inlayHint" => (
+                "textDocument/inlayHint",
+                // The range's end. Its start is the position below.
+                Query::InlayHints {
+                    end: Position {
+                        line: json_u32(&request.params, "/range/end/line"),
+                        character: json_u32(&request.params, "/range/end/character"),
+                    },
+                },
+            ),
             "textDocument/documentHighlight" => {
                 ("textDocument/documentHighlight", Query::Highlight)
             }
@@ -382,18 +394,24 @@ impl Server {
                 );
             }
         };
-        let params: lsp::TextDocumentPositionParams =
-            match serde_json::from_value(request.params.clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    return reply_error(
-                        connection,
-                        request.id,
-                        ErrorCode::InvalidParams,
-                        &e.to_string(),
-                    );
-                }
-            };
+        let mut params = request.params.clone();
+
+        // An inlay hint request has a range instead of a position.
+        if let Some(start) = params.pointer("/range/start").cloned() {
+            params["position"] = start;
+        }
+
+        let params: lsp::TextDocumentPositionParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return reply_error(
+                    connection,
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    &e.to_string(),
+                );
+            }
+        };
         let uri = params.text_document.uri;
         let ready = self
             .documents
@@ -1004,6 +1022,36 @@ impl Server {
 
                 (result, status)
             }
+            Outcome::Hints(answer) => {
+                let status = status_of(&answer);
+                let result = match answer.result {
+                    Ok(Some(hints)) => serde_json::to_value(
+                        hints
+                            .into_iter()
+                            .map(|h| lsp::InlayHint {
+                                position: lsp::Position {
+                                    line: h.position.line,
+                                    character: h.position.character,
+                                },
+                                label: lsp::InlayHintLabel::String(h.label),
+                                kind: Some(match h.kind {
+                                    HintKind::Type => lsp::InlayHintKind::TYPE,
+                                    HintKind::Parameter => lsp::InlayHintKind::PARAMETER,
+                                }),
+                                text_edits: None,
+                                tooltip: None,
+                                padding_left: None,
+                                padding_right: Some(h.kind == HintKind::Parameter),
+                                data: None,
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                    _ => Value::Null,
+                };
+
+                (result, status)
+            }
             Outcome::Failed(reason) => (Value::Null, (Err(reason), Duration::ZERO)),
             Outcome::Diagnostics(_) => (
                 Value::Null,
@@ -1308,6 +1356,12 @@ fn send_diagnostics(connection: &Connection, uri: &Url, diagnostics: Vec<lsp::Di
             "textDocument/publishDiagnostics".to_string(),
             params,
         )));
+}
+
+/// A number in a request's params, or 0 (then the params are invalid
+/// anyway, and parsing them says so).
+fn json_u32(params: &Value, pointer: &str) -> u32 {
+    params.pointer(pointer).and_then(Value::as_u64).unwrap_or(0) as u32
 }
 
 fn reply(connection: &Connection, id: RequestId, result: Value) {

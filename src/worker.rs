@@ -6,9 +6,10 @@
 //! JSON to its stdin and closes it. The worker writes an `Outcome` as JSON to
 //! stdout and exits. Anything on its stderr (such as a panic's message) is
 //! passed on to the server's stderr.
+use crate::position::Position;
 use crate::query::{
-    self, Answer, Diagnostics, Highlight, MembersAt, Place, Request, Session, Signature, TypeAt,
-    Unavailable,
+    self, Answer, Diagnostics, Highlight, Hint, MembersAt, Place, Request, Session, Signature,
+    TypeAt, Unavailable,
 };
 use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,8 @@ pub enum Query {
     Highlight,
     /// `query::signature_help`.
     SignatureHelp,
+    /// `query::inlay_hints`, from the request's position to `end`.
+    InlayHints { end: Position },
     /// `query::diagnostics`, for the target in the request's `file`.
     Diagnostics,
 }
@@ -72,6 +75,7 @@ pub enum Outcome {
     Places(Answer<Vec<Place>>),
     Highlights(Answer<Vec<Highlight>>),
     Signature(Answer<Signature>),
+    Hints(Answer<Vec<Hint>>),
     Diagnostics(Answer<Diagnostics>),
     /// The worker didn't produce an answer: it timed out, crashed or
     /// couldn't be started.
@@ -100,6 +104,9 @@ impl Job {
             }
             Query::SignatureHelp => {
                 Outcome::Signature(query::signature_help(&self.session, &self.request))
+            }
+            Query::InlayHints { end } => {
+                Outcome::Hints(query::inlay_hints(&self.session, &self.request, end))
             }
             Query::Diagnostics => {
                 Outcome::Diagnostics(query::diagnostics(&self.session, &self.request))

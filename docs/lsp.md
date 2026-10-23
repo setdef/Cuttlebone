@@ -97,6 +97,7 @@ Only what works:
     "referencesProvider": true,
     "documentHighlightProvider": true,
     "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
+    "inlayHintProvider": true,
     "experimental": {"cuttlebone": {"inko": "0.21.1", "std": "/path/to/std", "statusNotifications": false, "diagnostics": true}}
   },
   "serverInfo": {"name": "cuttlebone", "version": "0.1.0"}
@@ -445,6 +446,75 @@ The result is `null` when the position isn't in a call's parentheses, or
 the call doesn't resolve to a method (an undefined method, a closure call,
 or a type's constructor such as `Point(x: 1)`), and `null` with a
 [status](#status) reason when there's no answer.
+
+## `textDocument/inlayHint`
+
+Types the code doesn't write, and parameter names at call sites, in the
+requested range:
+
+```json
+→ {"jsonrpc": "2.0", "id": 8, "method": "textDocument/inlayHint", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/main.inko"},
+    "range": {"start": {"line": 35, "character": 0}, "end": {"line": 44, "character": 0}}}}
+← {"jsonrpc": "2.0", "id": 8, "result": [
+    {"position": {"line": 35, "character": 15}, "label": ": Array[Int]", "kind": 1, "paddingRight": false},
+    {"position": {"line": 38, "character": 13}, "label": ": (Int, String)", "kind": 1, "paddingRight": false},
+    {"position": {"line": 43, "character": 16}, "label": "amount:", "kind": 2, "paddingRight": true},
+    {"position": {"line": 43, "character": 23}, "label": "times:", "kind": 2, "paddingRight": true}
+]}
+```
+
+for this code:
+
+```inko
+    let numbers = [1, 2, 3]       # numbers: Array[Int]
+    let tuple = pair              # tuple: (Int, String)
+    counter.add(total, 2)         # counter.add(amount: total, times: 2)
+```
+
+Hints are sorted by position, and those whose position is inside the range
+(its start and end included) are returned. They're plain strings, without
+tooltips, edits or `inlayHint/resolve`.
+
+**Type hints** (`kind` 1) go right after a name, as `: Type`, formatted as
+hover formats types:
+
+- a variable a `let` binds to a name with no type annotation: `let x = ...`
+  and `let mut x = ...`, but not `let x: Int = ...`, and not the variables in
+  a pattern (`let (a, b) = ...`) or in `match` and `for`
+- a closure's argument with no type annotation: `fn (n) { ... }`, but not
+  `fn (n: Int) { ... }`
+
+A type hint is left out when the code already says the type. That is, when
+the `let`'s value is:
+
+- a literal: an integer, float, string, `true`, `false` or `nil` (an array
+  literal isn't: `[1, 2]` gets `: Array[Int]`)
+- a cast: `x as Int`
+- a type's constructor: `Point(x: 1, y: 2)`
+- a static method of a type that returns that type, with any type arguments
+  or ownership: `Counter.new`, `Map.new`, `Option.Some(1)`. A static method
+  returning another type, such as `Int.parse(...)` (an `Option[Int]`), gets
+  a hint.
+
+It's also left out when the compiler couldn't infer the type fully (an
+error, or a type with a `?` placeholder).
+
+**Parameter hints** (`kind` 2) go right before an argument, as `name:`,
+with `paddingRight`:
+
+- only for calls written with parentheses, to a method that resolved
+- only for positional arguments: `counter.add(1, times: 2)` gets `amount:`
+  only
+- not when the argument is a variable or field with the parameter's name:
+  `describe(name, count)` gets nothing for `count` if the parameter is
+  `count`
+- not for operators (`a + b`), closure calls, or enum constructors
+  (`Option.Some(1)`), whose parameters have generated names
+
+The result is `[]` when there are no hints in the range, and `null` with a
+[status](#status) reason when there's no answer, as for the other queries:
+code that doesn't parse, or an error in a declaration, gives no hints.
 
 ## Diagnostics
 

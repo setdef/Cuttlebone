@@ -191,6 +191,9 @@ fn null_outside_parentheses_or_without_a_method() {
         ("counter.add(total, 2)", 21),
         ("counter.reset", 10),
         ("# Highlights", 2),
+        // Operators are calls, but not written with parentheses.
+        ("total = total + 1", 16),
+        ("amount * times", 9),
     ] {
         assert_eq!(
             help(&mut session, needle, offset),
