@@ -18,6 +18,8 @@ Reports, in docs/history/:
 - [MILESTONE-2.md](docs/history/MILESTONE-2.md): the language server.
 - [GUARDRAILS.md](docs/history/GUARDRAILS.md): turning the standing rules
   into checks.
+- [MILESTONE-3.md](docs/history/MILESTONE-3.md): definition, type
+  definition and references.
 
 Setting it up in VS Code and Neovim: [editors/](editors/README.md). The rules
 every change follows, for people and coding agents: [AGENTS.md](AGENTS.md).
