@@ -1,0 +1,419 @@
+src/std/iter.inko:35:5-35:8	SelfObject	Self
+src/std/iter.inko:49:5-49:35	Call	WithIndex[T, Self]
+src/std/iter.inko:49:21-49:24	SelfObject	Self
+src/std/iter.inko:49:34-49:34	Int	Int
+src/std/iter.inko:65:5-65:33	Call	Map[T, Self, R]
+src/std/iter.inko:65:15-65:18	SelfObject	Self
+src/std/iter.inko:65:29-65:32	IdentifierRef	fn (T) -> R
+src/std/iter.inko:83:5-88:5	Loop	Never	derived
+src/std/iter.inko:84:7-87:7	Match	Nil
+src/std/iter.inko:84:13-84:21	Call	Option[T]
+src/std/iter.inko:84:13-84:16	SelfObject	mut Self
+src/std/iter.inko:85:25-85:65	Match	Nil
+src/std/iter.inko:85:25-85:65	Nil	Nil
+src/std/iter.inko:85:28-85:39	Call	Bool
+src/std/iter.inko:85:28-85:31	IdentifierRef	fn (ref T) -> Bool
+src/std/iter.inko:85:38-85:38	IdentifierRef	T
+src/std/iter.inko:85:43-85:63	Return	Option[T]
+src/std/iter.inko:85:50-85:63	Call	Option[T]
+src/std/iter.inko:85:50-85:55	ConstantRef	Option[T]	symbol
+src/std/iter.inko:85:62-85:62	IdentifierRef	T
+src/std/iter.inko:86:19-86:36	Return	Option[T]
+src/std/iter.inko:86:26-86:36	Call	Option[T]
+src/std/iter.inko:86:26-86:31	ConstantRef	Option[T]	symbol
+src/std/iter.inko:107:5-117:5	Loop	Never	derived
+src/std/iter.inko:108:7-116:7	Match	Nil
+src/std/iter.inko:108:13-108:21	Call	Option[T]
+src/std/iter.inko:108:13-108:16	SelfObject	mut Self
+src/std/iter.inko:110:11-113:11	Match	Nil
+src/std/iter.inko:110:17-110:28	Call	Option[R]
+src/std/iter.inko:110:17-110:20	IdentifierRef	fn (T) -> Option[R]
+src/std/iter.inko:110:27-110:27	IdentifierRef	T
+src/std/iter.inko:111:29-111:49	Return	Option[R]
+src/std/iter.inko:111:36-111:49	Call	Option[R]
+src/std/iter.inko:111:36-111:41	ConstantRef	Option[T]	symbol
+src/std/iter.inko:111:48-111:48	IdentifierRef	R
+src/std/iter.inko:115:19-115:36	Return	Option[R]
+src/std/iter.inko:115:26-115:36	Call	Option[R]
+src/std/iter.inko:115:26-115:31	ConstantRef	Option[T]	symbol
+src/std/iter.inko:133:5-138:5	Loop	Never	derived
+src/std/iter.inko:134:7-137:7	Match	Nil
+src/std/iter.inko:134:13-134:21	Call	Option[T]
+src/std/iter.inko:134:13-134:16	SelfObject	mut Self
+src/std/iter.inko:135:25-135:55	Match	Nil
+src/std/iter.inko:135:25-135:55	Nil	Nil
+src/std/iter.inko:135:28-135:39	Call	Bool
+src/std/iter.inko:135:28-135:31	IdentifierRef	fn (T) -> Bool
+src/std/iter.inko:135:38-135:38	IdentifierRef	T
+src/std/iter.inko:135:43-135:53	Return	Bool
+src/std/iter.inko:135:50-135:53	True	Bool
+src/std/iter.inko:136:19-136:30	Return	Bool
+src/std/iter.inko:136:26-136:30	False	Bool
+src/std/iter.inko:155:5-155:34	Call	Select[T, Self]
+src/std/iter.inko:155:18-155:21	SelfObject	Self
+src/std/iter.inko:155:30-155:33	IdentifierRef	fn (ref T) -> Bool
+src/std/iter.inko:175:5-175:39	Call	SelectMap[T, Self, R]
+src/std/iter.inko:175:21-175:24	SelfObject	Self
+src/std/iter.inko:175:35-175:38	IdentifierRef	fn (T) -> Option[R]
+src/std/iter.inko:196:5-196:60	Call	FlatMap[T, V, Self, I: mut]
+src/std/iter.inko:196:19-196:22	SelfObject	Self
+src/std/iter.inko:196:33-196:36	IdentifierRef	fn (T) -> I: mut
+src/std/iter.inko:196:49-196:59	Call	Option[I: mut]
+src/std/iter.inko:196:49-196:54	ConstantRef	Option[T]	symbol
+src/std/iter.inko:217:5-221:6	Call	(Array[T], Array[T])
+src/std/iter.inko:217:12-217:19	Tuple	(Array[T], Array[T])
+src/std/iter.inko:217:13-217:14	Scope	Array[T]
+src/std/iter.inko:217:13-217:14	DefineVariable	Nil
+src/std/iter.inko:217:13-217:14	Call	Array[T]
+src/std/iter.inko:217:13-217:14	ConstantRef	Array[T]	symbol
+src/std/iter.inko:217:13-217:14	Int	Int
+src/std/iter.inko:217:13-217:14	IdentifierRef	Array[T]
+src/std/iter.inko:217:17-217:18	Scope	Array[T]
+src/std/iter.inko:217:17-217:18	DefineVariable	Nil
+src/std/iter.inko:217:17-217:18	Call	Array[T]
+src/std/iter.inko:217:17-217:18	ConstantRef	Array[T]	symbol
+src/std/iter.inko:217:17-217:18	Int	Int
+src/std/iter.inko:217:17-217:18	IdentifierRef	Array[T]
+src/std/iter.inko:217:22-221:5	Closure	fn move ((Array[T], Array[T]), T) -> (Array[T], Array[T])
+src/std/iter.inko:218:7-218:72	Match	Nil
+src/std/iter.inko:218:10-218:27	Call	Bool
+src/std/iter.inko:218:10-218:13	IdentifierRef	fn (ref T) -> Bool
+src/std/iter.inko:218:20-218:26	Ref	ref T
+src/std/iter.inko:218:24-218:26	IdentifierRef	T
+src/std/iter.inko:218:31-218:45	Call	Nil
+src/std/iter.inko:218:31-218:35	Call	mut Array[T]
+src/std/iter.inko:218:31-218:33	IdentifierRef	(Array[T], Array[T])
+src/std/iter.inko:218:42-218:44	IdentifierRef	T
+src/std/iter.inko:218:56-218:70	Call	Nil
+src/std/iter.inko:218:56-218:60	Call	mut Array[T]
+src/std/iter.inko:218:56-218:58	IdentifierRef	(Array[T], Array[T])
+src/std/iter.inko:218:67-218:69	IdentifierRef	T
+src/std/iter.inko:220:7-220:9	IdentifierRef	(Array[T], Array[T])
+src/std/iter.inko:239:5-244:5	Loop	Never	derived
+src/std/iter.inko:240:7-243:7	Match	Nil
+src/std/iter.inko:240:13-240:21	Call	Option[T]
+src/std/iter.inko:240:13-240:16	SelfObject	mut Self
+src/std/iter.inko:241:25-241:57	Match	Nil
+src/std/iter.inko:241:25-241:57	Nil	Nil
+src/std/iter.inko:241:28-241:40	Call	Bool
+src/std/iter.inko:241:28-241:40	False	Bool
+src/std/iter.inko:241:29-241:40	Call	Bool
+src/std/iter.inko:241:29-241:32	IdentifierRef	fn (T) -> Bool
+src/std/iter.inko:241:39-241:39	IdentifierRef	T
+src/std/iter.inko:241:44-241:55	Return	Bool
+src/std/iter.inko:241:51-241:55	False	Bool
+src/std/iter.inko:242:19-242:29	Return	Bool
+src/std/iter.inko:242:26-242:29	True	Bool
+src/std/iter.inko:257:5-257:45	Call	Chain[T, Self, I: mut]
+src/std/iter.inko:257:14-257:17	SelfObject	Self
+src/std/iter.inko:257:23-257:27	IdentifierRef	I: mut
+src/std/iter.inko:257:41-257:44	True	Bool
+src/std/iter.inko:288:5-288:33	Call	Zip[T, U, Self, I: mut]
+src/std/iter.inko:288:15-288:18	SelfObject	Self
+src/std/iter.inko:288:28-288:32	IdentifierRef	I: mut
+src/std/iter.inko:343:5-343:32	DefineVariable	Nil
+src/std/iter.inko:343:22-343:32	IdentifierRef	A
+src/std/iter.inko:345:5-350:5	Loop	Never	derived
+src/std/iter.inko:346:7-349:7	Match	Nil
+src/std/iter.inko:346:13-346:21	Call	Option[T]
+src/std/iter.inko:346:13-346:16	SelfObject	Self
+src/std/iter.inko:347:25-347:53	AssignVariable	Nil
+src/std/iter.inko:347:34-347:53	Call	A
+src/std/iter.inko:347:34-347:37	IdentifierRef	fn (A, T) -> A
+src/std/iter.inko:347:44-347:49	IdentifierRef	A
+src/std/iter.inko:347:52-347:52	IdentifierRef	T
+src/std/iter.inko:348:19-348:31	Return	A
+src/std/iter.inko:348:26-348:31	IdentifierRef	A
+src/std/iter.inko:378:5-378:32	DefineVariable	Nil
+src/std/iter.inko:378:22-378:32	IdentifierRef	A
+src/std/iter.inko:380:5-385:5	Loop	Never	derived
+src/std/iter.inko:381:7-384:7	Match	Nil
+src/std/iter.inko:381:13-381:21	Call	Option[T]
+src/std/iter.inko:381:13-381:16	SelfObject	mut Self
+src/std/iter.inko:382:25-382:57	AssignVariable	Nil
+src/std/iter.inko:382:34-382:57	Try	A	derived
+src/std/iter.inko:382:38-382:57	Call	Result[A, E]
+src/std/iter.inko:382:38-382:41	IdentifierRef	fn (A, T) -> Result[A, E]
+src/std/iter.inko:382:48-382:53	IdentifierRef	A
+src/std/iter.inko:382:56-382:56	IdentifierRef	T
+src/std/iter.inko:383:19-383:42	Return	Result[A, E]
+src/std/iter.inko:383:26-383:42	Call	Result[A, E]
+src/std/iter.inko:383:26-383:31	ConstantRef	Result[T, E]	symbol
+src/std/iter.inko:383:36-383:41	IdentifierRef	A
+src/std/iter.inko:394:5-394:34	Call	Chunks[T, Self]
+src/std/iter.inko:394:18-394:21	SelfObject	Self
+src/std/iter.inko:394:30-394:33	IdentifierRef	Int
+src/std/iter.inko:409:5-412:6	Call	Array[T]
+src/std/iter.inko:409:12-409:13	Scope	Array[T]
+src/std/iter.inko:409:12-409:13	DefineVariable	Nil
+src/std/iter.inko:409:12-409:13	Call	Array[T]
+src/std/iter.inko:409:12-409:13	ConstantRef	Array[T]	symbol
+src/std/iter.inko:409:12-409:13	Int	Int
+src/std/iter.inko:409:12-409:13	IdentifierRef	Array[T]
+src/std/iter.inko:409:16-412:5	Closure	fn (Array[T], T) -> Array[T]
+src/std/iter.inko:410:7-410:24	Call	Nil
+src/std/iter.inko:410:7-410:12	IdentifierRef	Array[T]
+src/std/iter.inko:410:19-410:23	IdentifierRef	T
+src/std/iter.inko:411:7-411:12	IdentifierRef	Array[T]
+src/std/iter.inko:425:5-425:42	Call	Int
+src/std/iter.inko:425:12-425:12	Int	Int
+src/std/iter.inko:425:15-425:41	Closure	fn (Int, T) -> Int
+src/std/iter.inko:425:31-425:39	Call	Int
+src/std/iter.inko:425:31-425:35	IdentifierRef	Int
+src/std/iter.inko:425:39-425:39	Int	Int
+src/std/iter.inko:436:5-436:57	Call	Option[T]
+src/std/iter.inko:436:12-436:22	Call	Option[T]
+src/std/iter.inko:436:12-436:17	ConstantRef	Option[T]	symbol
+src/std/iter.inko:436:25-436:56	Closure	fn (Option[T], T) -> Option[T]
+src/std/iter.inko:436:39-436:54	Call	Option[T]
+src/std/iter.inko:436:39-436:44	ConstantRef	Option[T]	symbol
+src/std/iter.inko:436:51-436:53	IdentifierRef	T
+src/std/iter.inko:454:5-454:45	Call	Peekable[T, Self]
+src/std/iter.inko:454:20-454:23	SelfObject	Self
+src/std/iter.inko:454:34-454:44	Call	Option[Option[T]]
+src/std/iter.inko:454:34-454:39	ConstantRef	Option[T]	symbol
+src/std/iter.inko:471:5-471:37	Call	Skip[T, Self]
+src/std/iter.inko:471:16-471:19	SelfObject	Self
+src/std/iter.inko:471:31-471:36	IdentifierRef	Int
+src/std/iter.inko:484:5-484:37	Call	Take[T, Self]
+src/std/iter.inko:484:16-484:19	SelfObject	Self
+src/std/iter.inko:484:31-484:36	IdentifierRef	Int
+src/std/iter.inko:498:5-498:54	Call	SkipWhile[T, Self]
+src/std/iter.inko:498:21-498:24	SelfObject	Self
+src/std/iter.inko:498:38-498:41	IdentifierRef	fn (ref T) -> Bool
+src/std/iter.inko:498:50-498:53	True	Bool
+src/std/iter.inko:512:5-512:54	Call	TakeWhile[T, Self]
+src/std/iter.inko:512:21-512:24	SelfObject	Self
+src/std/iter.inko:512:38-512:41	IdentifierRef	fn (ref T) -> Bool
+src/std/iter.inko:512:50-512:53	True	Bool
+src/std/iter.inko:527:5-536:5	Match	Option[ref T]
+src/std/iter.inko:527:11-527:17	FieldRef	mut Option[Option[T]]
+src/std/iter.inko:528:25-528:34	Call	Option[ref T]
+src/std/iter.inko:528:25-528:27	IdentifierRef	mut Option[T]
+src/std/iter.inko:530:9-530:28	DefineVariable	Nil
+src/std/iter.inko:530:19-530:28	Call	Option[T]
+src/std/iter.inko:530:19-530:23	FieldRef	mut I: mut
+src/std/iter.inko:531:9-531:28	DefineVariable	Nil
+src/std/iter.inko:531:19-531:28	Call	Option[ref T]
+src/std/iter.inko:531:19-531:21	IdentifierRef	Option[T]
+src/std/iter.inko:533:9-533:34	AssignField	Option[Option[T]]
+src/std/iter.inko:533:19-533:34	Call	Option[Option[T]]
+src/std/iter.inko:533:19-533:24	ConstantRef	Option[T]	symbol
+src/std/iter.inko:533:31-533:33	IdentifierRef	Option[T]
+src/std/iter.inko:534:9-534:11	IdentifierRef	Option[ref T]
+src/std/iter.inko:546:5-555:5	Match	Option[mut T: mut]
+src/std/iter.inko:546:11-546:17	FieldRef	mut Option[Option[T: mut]]
+src/std/iter.inko:547:25-547:34	Call	Option[mut T: mut]
+src/std/iter.inko:547:25-547:27	IdentifierRef	mut Option[T: mut]
+src/std/iter.inko:549:9-549:28	DefineVariable	Nil
+src/std/iter.inko:549:19-549:28	Call	Option[T: mut]
+src/std/iter.inko:549:19-549:23	FieldRef	mut I: mut
+src/std/iter.inko:550:9-550:28	DefineVariable	Nil
+src/std/iter.inko:550:19-550:28	Call	Option[mut T: mut]
+src/std/iter.inko:550:19-550:21	IdentifierRef	Option[T: mut]
+src/std/iter.inko:552:9-552:34	AssignField	Option[Option[T: mut]]
+src/std/iter.inko:552:19-552:34	Call	Option[Option[T: mut]]
+src/std/iter.inko:552:19-552:24	ConstantRef	Option[T]	symbol
+src/std/iter.inko:552:31-552:33	IdentifierRef	Option[T: mut]
+src/std/iter.inko:553:9-553:11	IdentifierRef	Option[mut T: mut]
+src/std/iter.inko:561:5-564:5	Match	Option[T]
+src/std/iter.inko:561:11-561:32	ReplaceField	Option[Option[T]]
+src/std/iter.inko:561:22-561:32	Call	Option[Option[T]]
+src/std/iter.inko:561:22-561:27	ConstantRef	Option[T]	symbol
+src/std/iter.inko:562:25-562:27	IdentifierRef	Option[T]
+src/std/iter.inko:563:17-563:26	Call	Option[T]
+src/std/iter.inko:563:17-563:21	FieldRef	mut I: mut
+src/std/iter.inko:576:5-579:5	Match	Option[(Int, T)]
+src/std/iter.inko:576:11-576:20	Call	Option[T]
+src/std/iter.inko:576:11-576:15	FieldRef	mut I: mut
+src/std/iter.inko:577:23-577:60	Call	Option[(Int, T)]
+src/std/iter.inko:577:23-577:28	ConstantRef	Option[T]	symbol
+src/std/iter.inko:577:35-577:59	Tuple	(Int, T)
+src/std/iter.inko:577:36-577:55	ReplaceField	Int
+src/std/iter.inko:577:46-577:55	Call	Int
+src/std/iter.inko:577:46-577:51	FieldRef	Int
+src/std/iter.inko:577:55-577:55	Int	Int
+src/std/iter.inko:577:58-577:58	IdentifierRef	T
+src/std/iter.inko:578:17-578:27	Call	Option[(Int, T)]
+src/std/iter.inko:578:17-578:22	ConstantRef	Option[T]	symbol
+src/std/iter.inko:591:5-594:5	Match	Option[R]
+src/std/iter.inko:591:11-591:20	Call	Option[T]
+src/std/iter.inko:591:11-591:15	FieldRef	mut I: mut
+src/std/iter.inko:592:23-592:50	Call	Option[R]
+src/std/iter.inko:592:23-592:28	ConstantRef	Option[T]	symbol
+src/std/iter.inko:592:35-592:49	Call	R
+src/std/iter.inko:592:35-592:41	FieldRef	mut fn (T) -> R
+src/std/iter.inko:592:48-592:48	IdentifierRef	T
+src/std/iter.inko:593:17-593:27	Call	Option[R]
+src/std/iter.inko:593:17-593:22	ConstantRef	Option[T]	symbol
+src/std/iter.inko:606:5-611:5	Loop	Never	derived
+src/std/iter.inko:607:7-610:7	Match	Nil
+src/std/iter.inko:607:13-607:22	Call	Option[T]
+src/std/iter.inko:607:13-607:17	FieldRef	mut I: mut
+src/std/iter.inko:608:25-608:66	Match	Nil
+src/std/iter.inko:608:25-608:66	Nil	Nil
+src/std/iter.inko:608:28-608:40	Call	Bool
+src/std/iter.inko:608:28-608:32	FieldRef	mut fn (ref T) -> Bool
+src/std/iter.inko:608:39-608:39	IdentifierRef	T
+src/std/iter.inko:608:44-608:64	Return	Option[T]
+src/std/iter.inko:608:51-608:64	Call	Option[T]
+src/std/iter.inko:608:51-608:56	ConstantRef	Option[T]	symbol
+src/std/iter.inko:608:63-608:63	IdentifierRef	T
+src/std/iter.inko:609:19-609:36	Return	Option[T]
+src/std/iter.inko:609:26-609:36	Call	Option[T]
+src/std/iter.inko:609:26-609:31	ConstantRef	Option[T]	symbol
+src/std/iter.inko:623:5-633:5	Loop	Never	derived
+src/std/iter.inko:624:7-632:7	Match	Never
+src/std/iter.inko:624:13-624:22	Call	Option[T]
+src/std/iter.inko:624:13-624:17	FieldRef	mut I: mut
+src/std/iter.inko:626:11-629:11	Match	Never
+src/std/iter.inko:626:17-626:31	Call	Option[R]
+src/std/iter.inko:626:17-626:23	FieldRef	mut fn (T) -> Option[R]
+src/std/iter.inko:626:30-626:30	IdentifierRef	T
+src/std/iter.inko:627:29-627:49	Return	Option[R]
+src/std/iter.inko:627:36-627:49	Call	Option[R]
+src/std/iter.inko:627:36-627:41	ConstantRef	Option[T]	symbol
+src/std/iter.inko:627:48-627:48	IdentifierRef	R
+src/std/iter.inko:628:23-628:26	Next	Never	derived
+src/std/iter.inko:631:19-631:36	Return	Option[R]
+src/std/iter.inko:631:26-631:36	Call	Option[R]
+src/std/iter.inko:631:26-631:31	ConstantRef	Option[T]	symbol
+src/std/iter.inko:646:5-661:5	Loop	Never	derived
+src/std/iter.inko:647:7-655:7	Match	Nil
+src/std/iter.inko:647:13-647:28	Call	Option[mut M: mut]
+src/std/iter.inko:647:13-647:21	FieldRef	mut Option[M: mut]
+src/std/iter.inko:649:11-652:11	Match	Nil
+src/std/iter.inko:649:17-649:22	Call	Option[R]
+src/std/iter.inko:649:17-649:17	IdentifierRef	mut M: mut
+src/std/iter.inko:650:29-650:49	Return	Option[R]
+src/std/iter.inko:650:36-650:49	Call	Option[R]
+src/std/iter.inko:650:36-650:41	ConstantRef	Option[T]	symbol
+src/std/iter.inko:650:48-650:48	IdentifierRef	R
+src/std/iter.inko:657:7-660:7	Match	Nil
+src/std/iter.inko:657:13-657:22	Call	Option[V]
+src/std/iter.inko:657:13-657:17	FieldRef	mut I: mut
+src/std/iter.inko:658:25-658:64	AssignField	Option[M: mut]
+src/std/iter.inko:658:37-658:64	Call	Option[M: mut]
+src/std/iter.inko:658:37-658:42	ConstantRef	Option[T]	symbol
+src/std/iter.inko:658:49-658:63	Call	M: mut
+src/std/iter.inko:658:49-658:55	FieldRef	mut fn (V) -> M: mut
+src/std/iter.inko:658:62-658:62	IdentifierRef	V
+src/std/iter.inko:659:19-659:36	Return	Option[R]
+src/std/iter.inko:659:26-659:36	Call	Option[R]
+src/std/iter.inko:659:26-659:31	ConstantRef	Option[T]	symbol
+src/std/iter.inko:674:5-678:5	Match	Nil
+src/std/iter.inko:674:5-678:5	Nil	Nil
+src/std/iter.inko:674:8-674:17	FieldRef	Bool
+src/std/iter.inko:675:7-675:24	DefineVariable	Nil
+src/std/iter.inko:675:18-675:24	Call	Option[T]
+src/std/iter.inko:675:18-675:19	FieldRef	mut A: mut
+src/std/iter.inko:677:7-677:63	Match	Nil
+src/std/iter.inko:677:10-677:19	Call	Bool
+src/std/iter.inko:677:10-677:13	IdentifierRef	Option[T]
+src/std/iter.inko:677:23-677:33	Return	Option[T]
+src/std/iter.inko:677:30-677:33	IdentifierRef	Option[T]
+src/std/iter.inko:677:44-677:61	AssignField	Bool
+src/std/iter.inko:677:57-677:61	False	Bool
+src/std/iter.inko:680:5-680:11	Call	Option[T]
+src/std/iter.inko:680:5-680:6	FieldRef	mut B: mut
+src/std/iter.inko:692:5-692:31	Call	Option[(T, U)]
+src/std/iter.inko:692:5-692:14	Call	Option[T]
+src/std/iter.inko:692:5-692:9	FieldRef	mut A: mut
+src/std/iter.inko:692:20-692:30	Call	Option[U]
+src/std/iter.inko:692:20-692:25	FieldRef	mut B: mut
+src/std/iter.inko:704:5-704:18	DefineVariable	Nil
+src/std/iter.inko:704:17-704:18	Scope	Array[T]
+src/std/iter.inko:704:17-704:18	DefineVariable	Nil
+src/std/iter.inko:704:17-704:18	Call	Array[T]
+src/std/iter.inko:704:17-704:18	ConstantRef	Array[T]	symbol
+src/std/iter.inko:704:17-704:18	Int	Int
+src/std/iter.inko:704:17-704:18	IdentifierRef	Array[T]
+src/std/iter.inko:706:5-711:5	Loop	Nil	derived
+src/std/iter.inko:706:5-711:5	Match	Nil
+src/std/iter.inko:706:11-706:28	Call	Bool
+src/std/iter.inko:706:11-706:28	Break	Never	derived
+src/std/iter.inko:706:11-706:20	Call	Int
+src/std/iter.inko:706:11-706:15	IdentifierRef	Array[T]
+src/std/iter.inko:706:24-706:28	FieldRef	Int
+src/std/iter.inko:707:7-710:7	Match	Nil
+src/std/iter.inko:707:13-707:22	Call	Option[T]
+src/std/iter.inko:707:13-707:17	FieldRef	mut I: mut
+src/std/iter.inko:708:27-708:41	Call	Nil
+src/std/iter.inko:708:27-708:31	IdentifierRef	Array[T]
+src/std/iter.inko:708:38-708:40	IdentifierRef	T
+src/std/iter.inko:709:19-709:23	Break	Never	derived
+src/std/iter.inko:713:5-713:63	Match	Option[Array[T]]
+src/std/iter.inko:713:8-713:19	Call	Bool
+src/std/iter.inko:713:8-713:12	IdentifierRef	Array[T]
+src/std/iter.inko:713:23-713:33	Call	Option[Array[T]]
+src/std/iter.inko:713:23-713:28	ConstantRef	Option[T]	symbol
+src/std/iter.inko:713:44-713:61	Call	Option[Array[T]]
+src/std/iter.inko:713:44-713:49	ConstantRef	Option[T]	symbol
+src/std/iter.inko:713:56-713:60	IdentifierRef	Array[T]
+src/std/iter.inko:725:5-730:5	Loop	Nil	derived
+src/std/iter.inko:725:5-730:5	Match	Nil
+src/std/iter.inko:725:11-725:22	Call	Bool
+src/std/iter.inko:725:11-725:22	Break	Never	derived
+src/std/iter.inko:725:11-725:18	FieldRef	Int
+src/std/iter.inko:725:22-725:22	Int	Int
+src/std/iter.inko:726:7-729:7	Match	Nil
+src/std/iter.inko:726:13-726:22	Call	Option[T]
+src/std/iter.inko:726:13-726:17	FieldRef	mut I: mut
+src/std/iter.inko:727:25-727:37	AssignField	Int
+src/std/iter.inko:727:25-727:37	Call	Int
+src/std/iter.inko:727:25-727:32	FieldRef	Int
+src/std/iter.inko:727:37-727:37	Int	Int
+src/std/iter.inko:728:19-728:23	Break	Never	derived
+src/std/iter.inko:732:5-732:14	Call	Option[T]
+src/std/iter.inko:732:5-732:9	FieldRef	mut I: mut
+src/std/iter.inko:744:5-744:73	Match	Option[T]
+src/std/iter.inko:744:8-744:37	Call	Bool
+src/std/iter.inko:744:9-744:32	ReplaceField	Int
+src/std/iter.inko:744:21-744:32	Call	Int
+src/std/iter.inko:744:21-744:28	FieldRef	Int
+src/std/iter.inko:744:32-744:32	Int	Int
+src/std/iter.inko:744:37-744:37	Int	Int
+src/std/iter.inko:744:41-744:50	Call	Option[T]
+src/std/iter.inko:744:41-744:45	FieldRef	mut I: mut
+src/std/iter.inko:744:61-744:71	Call	Option[T]
+src/std/iter.inko:744:61-744:66	ConstantRef	Option[T]	symbol
+src/std/iter.inko:757:5-766:5	Loop	Nil	derived
+src/std/iter.inko:757:5-766:5	Match	Nil
+src/std/iter.inko:757:11-757:15	FieldRef	Bool
+src/std/iter.inko:757:11-757:15	Break	Never	derived
+src/std/iter.inko:758:7-765:7	Match	Nil
+src/std/iter.inko:758:13-758:22	Call	Option[T]
+src/std/iter.inko:758:13-758:17	FieldRef	mut I: mut
+src/std/iter.inko:759:25-759:42	Call	Bool
+src/std/iter.inko:759:25-759:34	FieldRef	mut fn (ref T) -> Bool
+src/std/iter.inko:759:41-759:41	IdentifierRef	T
+src/std/iter.inko:761:11-761:23	AssignField	Bool
+src/std/iter.inko:761:19-761:23	False	Bool
+src/std/iter.inko:762:11-762:31	Return	Option[T]
+src/std/iter.inko:762:18-762:31	Call	Option[T]
+src/std/iter.inko:762:18-762:23	ConstantRef	Option[T]	symbol
+src/std/iter.inko:762:30-762:30	IdentifierRef	T
+src/std/iter.inko:764:19-764:36	Return	Option[T]
+src/std/iter.inko:764:26-764:36	Call	Option[T]
+src/std/iter.inko:764:26-764:31	ConstantRef	Option[T]	symbol
+src/std/iter.inko:768:5-768:14	Call	Option[T]
+src/std/iter.inko:768:5-768:9	FieldRef	mut I: mut
+src/std/iter.inko:781:5-792:5	Match	Option[T]
+src/std/iter.inko:781:8-781:12	FieldRef	Bool
+src/std/iter.inko:782:7-789:7	Match	Option[T]
+src/std/iter.inko:782:13-782:22	Call	Option[T]
+src/std/iter.inko:782:13-782:17	FieldRef	mut I: mut
+src/std/iter.inko:783:25-783:42	Call	Bool
+src/std/iter.inko:783:25-783:34	FieldRef	mut fn (ref T) -> Bool
+src/std/iter.inko:783:41-783:41	IdentifierRef	T
+src/std/iter.inko:783:47-783:60	Call	Option[T]
+src/std/iter.inko:783:47-783:52	ConstantRef	Option[T]	symbol
+src/std/iter.inko:783:59-783:59	IdentifierRef	T
+src/std/iter.inko:785:11-785:23	AssignField	Bool
+src/std/iter.inko:785:19-785:23	False	Bool
+src/std/iter.inko:786:11-786:21	Call	Option[T]
+src/std/iter.inko:786:11-786:16	ConstantRef	Option[T]	symbol
+src/std/iter.inko:788:19-788:29	Call	Option[T]
+src/std/iter.inko:788:19-788:24	ConstantRef	Option[T]	symbol
+src/std/iter.inko:791:7-791:17	Call	Option[T]
+src/std/iter.inko:791:7-791:12	ConstantRef	Option[T]	symbol

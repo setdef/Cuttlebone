@@ -1,0 +1,53 @@
+# Exercises every expression whose type the walker derives or looks up again,
+# rather than reading it from the HIR.
+import std.fmt
+import std.stdio (Stdout)
+
+fn extern callback(value: Int) -> Int {
+  value
+}
+
+fn half(value: Int) -> Result[Int, String] {
+  if value % 2 == 0 { Result.Ok(value / 2) } else { Result.Error('odd') }
+}
+
+fn quarter(value: Int) -> Result[Int, String] {
+  let half = try half(value)
+
+  half(half)
+}
+
+fn first(values: ref Array[Int]) -> Option[Int] {
+  let value = try values.get(0).ok
+
+  Option.Some(value)
+}
+
+fn count_to(limit: Int) -> Int {
+  let mut i = 0
+
+  loop {
+    if i == limit { break }
+
+    i += 1
+
+    if i % 2 == 0 { next }
+  }
+
+  i
+}
+
+fn forever -> Never {
+  loop {}
+}
+
+type async Main {
+  fn async main {
+    let out = Stdout.new
+    let _pointer = mut callback
+
+    out.print(fmt.fmt(count_to(10)))
+    out.print(quarter(8).or(0).to_string)
+    out.print(first([1, 2]).or(0).to_string)
+  }
+}

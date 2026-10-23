@@ -1,0 +1,90 @@
+src/main.inko:7:3-7:7	IdentifierRef	Int
+src/main.inko:11:3-11:73	Match	Result[Int, String]
+src/main.inko:11:6-11:19	Call	Bool
+src/main.inko:11:6-11:14	Call	Int
+src/main.inko:11:6-11:10	IdentifierRef	Int
+src/main.inko:11:14-11:14	Int	Int
+src/main.inko:11:19-11:19	Int	Int
+src/main.inko:11:23-11:42	Call	Result[Int, String]
+src/main.inko:11:23-11:28	ConstantRef	Result[T, E]	symbol
+src/main.inko:11:33-11:41	Call	Int
+src/main.inko:11:33-11:37	IdentifierRef	Int
+src/main.inko:11:41-11:41	Int	Int
+src/main.inko:11:53-11:71	Call	Result[Int, String]
+src/main.inko:11:53-11:58	ConstantRef	Result[T, E]	symbol
+src/main.inko:11:66-11:70	String	String
+src/main.inko:15:3-15:28	DefineVariable	Nil
+src/main.inko:15:14-15:28	Try	Int	derived
+src/main.inko:15:18-15:28	Call	Result[Int, String]
+src/main.inko:15:23-15:27	IdentifierRef	Int
+src/main.inko:17:3-17:12	Call	Result[Int, String]
+src/main.inko:17:8-17:11	IdentifierRef	Int
+src/main.inko:21:3-21:34	DefineVariable	Nil
+src/main.inko:21:15-21:34	Try	Int	derived
+src/main.inko:21:19-21:34	Call	Option[Int]
+src/main.inko:21:19-21:31	Call	Result[Int, OutOfBounds]
+src/main.inko:21:19-21:24	IdentifierRef	ref Array[Int]
+src/main.inko:21:30-21:30	Int	Int
+src/main.inko:23:3-23:20	Call	Option[Int]
+src/main.inko:23:3-23:8	ConstantRef	Option[T]	symbol
+src/main.inko:23:15-23:19	IdentifierRef	Int
+src/main.inko:27:3-27:15	DefineVariable	Nil
+src/main.inko:27:15-27:15	Int	Int
+src/main.inko:29:3-35:3	Loop	Nil	derived
+src/main.inko:30:5-30:27	Match	Nil
+src/main.inko:30:5-30:27	Nil	Nil
+src/main.inko:30:8-30:17	Call	Bool
+src/main.inko:30:8-30:8	IdentifierRef	Int
+src/main.inko:30:13-30:17	IdentifierRef	Int
+src/main.inko:30:21-30:25	Break	Never	derived
+src/main.inko:32:5-32:10	AssignVariable	Nil
+src/main.inko:32:5-32:10	Call	Int
+src/main.inko:32:5-32:5	IdentifierRef	Int
+src/main.inko:32:10-32:10	Int	Int
+src/main.inko:34:5-34:26	Match	Nil
+src/main.inko:34:5-34:26	Nil	Nil
+src/main.inko:34:8-34:17	Call	Bool
+src/main.inko:34:8-34:12	Call	Int
+src/main.inko:34:8-34:8	IdentifierRef	Int
+src/main.inko:34:12-34:12	Int	Int
+src/main.inko:34:17-34:17	Int	Int
+src/main.inko:34:21-34:24	Next	Never	derived
+src/main.inko:37:3-37:3	IdentifierRef	Int
+src/main.inko:41:3-41:9	Loop	Never	derived
+src/main.inko:46:5-46:24	DefineVariable	Nil
+src/main.inko:46:15-46:24	Call	Stdout
+src/main.inko:46:15-46:20	ConstantRef	Stdout	symbol
+src/main.inko:47:5-47:31	DefineVariable	Nil
+src/main.inko:47:20-47:31	Mut	Pointer[Uint8]
+src/main.inko:47:24-47:31	PointerToMethod	<missing>
+src/main.inko:49:5-49:36	Call	Result[Nil, Error]
+src/main.inko:49:5-49:7	IdentifierRef	Stdout
+src/main.inko:49:15-49:35	Call	String
+src/main.inko:49:15-49:17	IdentifierRef	std.fmt	symbol
+src/main.inko:49:23-49:34	Call	Int
+src/main.inko:49:32-49:33	Int	Int
+src/main.inko:50:5-50:41	Call	Result[Nil, Error]
+src/main.inko:50:5-50:7	IdentifierRef	Stdout
+src/main.inko:50:15-50:40	Call	String
+src/main.inko:50:15-50:30	Call	Int
+src/main.inko:50:15-50:24	Call	Result[Int, String]
+src/main.inko:50:23-50:23	Int	Int
+src/main.inko:50:29-50:29	Int	Int
+src/main.inko:51:5-51:44	Call	Result[Nil, Error]
+src/main.inko:51:5-51:7	IdentifierRef	Stdout
+src/main.inko:51:15-51:43	Call	String
+src/main.inko:51:15-51:33	Call	Int
+src/main.inko:51:15-51:27	Call	Option[Int]
+src/main.inko:51:21-51:26	Scope	Array[Int]
+src/main.inko:51:21-51:26	DefineVariable	Nil
+src/main.inko:51:21-51:26	Call	Array[Int]
+src/main.inko:51:21-51:26	ConstantRef	Array[T]	symbol
+src/main.inko:51:21-51:26	Int	Int
+src/main.inko:51:21-51:26	IdentifierRef	Array[Int]
+src/main.inko:51:21-51:26	IdentifierRef	Array[Int]
+src/main.inko:51:21-51:26	IdentifierRef	Array[Int]
+src/main.inko:51:22-51:22	Call	Nil
+src/main.inko:51:22-51:22	Int	Int
+src/main.inko:51:25-51:25	Call	Nil
+src/main.inko:51:25-51:25	Int	Int
+src/main.inko:51:32-51:32	Int	Int

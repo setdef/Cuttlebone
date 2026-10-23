@@ -1,0 +1,118 @@
+src/std/option.inko:34:5-37:5	Match	Option[ref T]
+src/std/option.inko:34:11-34:14	SelfObject	ref Option[T]
+src/std/option.inko:35:23-35:36	Call	Option[ref T]
+src/std/option.inko:35:23-35:28	ConstantRef	Option[T]	symbol
+src/std/option.inko:35:35-35:35	IdentifierRef	ref T
+src/std/option.inko:36:20-36:30	Call	Option[ref T]
+src/std/option.inko:36:20-36:25	ConstantRef	Option[T]	symbol
+src/std/option.inko:48:5-48:70	Call	T
+src/std/option.inko:48:19-48:69	String	String
+src/std/option.inko:60:5-63:5	Match	T
+src/std/option.inko:60:11-60:14	SelfObject	Option[T]
+src/std/option.inko:61:23-61:23	IdentifierRef	T
+src/std/option.inko:62:17-62:30	Call	Never
+src/std/option.inko:62:23-62:29	IdentifierRef	String
+src/std/option.inko:76:5-79:5	Match	T
+src/std/option.inko:76:11-76:14	SelfObject	Option[T]
+src/std/option.inko:77:23-77:23	IdentifierRef	T
+src/std/option.inko:78:20-78:26	IdentifierRef	T
+src/std/option.inko:92:5-95:5	Match	T
+src/std/option.inko:92:11-92:14	SelfObject	Option[T]
+src/std/option.inko:93:23-93:23	IdentifierRef	T
+src/std/option.inko:94:20-94:29	Call	T
+src/std/option.inko:94:20-94:24	IdentifierRef	fn -> T
+src/std/option.inko:118:5-121:5	Match	Option[R]
+src/std/option.inko:118:11-118:14	SelfObject	Option[T]
+src/std/option.inko:119:23-119:48	Call	Option[R]
+src/std/option.inko:119:23-119:28	ConstantRef	Option[T]	symbol
+src/std/option.inko:119:35-119:47	Call	R
+src/std/option.inko:119:35-119:39	IdentifierRef	fn (T) -> R
+src/std/option.inko:119:46-119:46	IdentifierRef	T
+src/std/option.inko:120:20-120:30	Call	Option[R]
+src/std/option.inko:120:20-120:25	ConstantRef	Option[T]	symbol
+src/std/option.inko:134:5-137:5	Match	Option[R]
+src/std/option.inko:134:11-134:14	SelfObject	Option[T]
+src/std/option.inko:135:23-135:35	Call	Option[R]
+src/std/option.inko:135:23-135:27	IdentifierRef	fn (T) -> Option[R]
+src/std/option.inko:135:34-135:34	IdentifierRef	T
+src/std/option.inko:136:20-136:30	Call	Option[R]
+src/std/option.inko:136:20-136:25	ConstantRef	Option[T]	symbol
+src/std/option.inko:145:5-145:41	Match	Option[T]
+src/std/option.inko:145:8-145:12	IdentifierRef	Bool
+src/std/option.inko:145:16-145:19	SelfObject	Option[T]
+src/std/option.inko:145:30-145:39	Call	Option[T]
+src/std/option.inko:145:30-145:34	IdentifierRef	fn -> Option[T]
+src/std/option.inko:154:5-162:5	Match	Option[(T, O)]
+src/std/option.inko:154:11-154:14	SelfObject	Option[T]
+src/std/option.inko:156:9-159:9	Match	Option[(T, O)]
+src/std/option.inko:156:15-156:19	IdentifierRef	Option[O]
+src/std/option.inko:157:32-157:58	Call	Option[(T, O)]
+src/std/option.inko:157:32-157:37	ConstantRef	Option[T]	symbol
+src/std/option.inko:157:44-157:57	Tuple	(T, O)
+src/std/option.inko:157:45-157:48	IdentifierRef	T
+src/std/option.inko:157:51-157:56	IdentifierRef	O
+src/std/option.inko:158:21-158:31	Call	Option[(T, O)]
+src/std/option.inko:158:21-158:26	ConstantRef	Option[T]	symbol
+src/std/option.inko:161:17-161:27	Call	Option[(T, O)]
+src/std/option.inko:161:17-161:22	ConstantRef	Option[T]	symbol
+src/std/option.inko:174:5-177:5	Match	Bool
+src/std/option.inko:174:11-174:14	SelfObject	ref Option[T]
+src/std/option.inko:175:23-175:26	True	Bool
+src/std/option.inko:176:20-176:24	False	Bool
+src/std/option.inko:189:5-192:5	Match	Bool
+src/std/option.inko:189:11-189:14	SelfObject	ref Option[T]
+src/std/option.inko:190:23-190:27	False	Bool
+src/std/option.inko:191:20-191:23	True	Bool
+src/std/option.inko:208:5-211:5	Match	Result[T, E]
+src/std/option.inko:208:11-208:14	SelfObject	Option[T]
+src/std/option.inko:209:23-209:34	Call	Result[T, E]
+src/std/option.inko:209:23-209:28	ConstantRef	Result[T, E]	symbol
+src/std/option.inko:209:33-209:33	IdentifierRef	T
+src/std/option.inko:210:17-210:35	Call	Result[T, E]
+src/std/option.inko:210:17-210:22	ConstantRef	Result[T, E]	symbol
+src/std/option.inko:210:30-210:34	IdentifierRef	E
+src/std/option.inko:225:5-228:5	Match	Result[T, E]
+src/std/option.inko:225:11-225:14	SelfObject	Option[T]
+src/std/option.inko:226:23-226:34	Call	Result[T, E]
+src/std/option.inko:226:23-226:28	ConstantRef	Result[T, E]	symbol
+src/std/option.inko:226:33-226:33	IdentifierRef	T
+src/std/option.inko:227:17-227:40	Call	Result[T, E]
+src/std/option.inko:227:17-227:22	ConstantRef	Result[T, E]	symbol
+src/std/option.inko:227:30-227:39	Call	E
+src/std/option.inko:227:30-227:34	IdentifierRef	fn -> E
+src/std/option.inko:241:5-244:5	Match	Option[mut T: mut]
+src/std/option.inko:241:11-241:14	SelfObject	mut Option[T: mut]
+src/std/option.inko:242:23-242:36	Call	Option[mut T: mut]
+src/std/option.inko:242:23-242:28	ConstantRef	Option[T]	symbol
+src/std/option.inko:242:35-242:35	IdentifierRef	mut T: mut
+src/std/option.inko:243:20-243:30	Call	Option[mut T: mut]
+src/std/option.inko:243:20-243:25	ConstantRef	Option[T]	symbol
+src/std/option.inko:277:5-281:5	Match	Bool
+src/std/option.inko:277:11-277:23	Tuple	(ref Option[T], ref Option[T])
+src/std/option.inko:277:12-277:15	SelfObject	ref Option[T]
+src/std/option.inko:277:18-277:22	IdentifierRef	ref Option[T]
+src/std/option.inko:278:34-278:39	Call	Bool
+src/std/option.inko:278:34-278:34	IdentifierRef	ref T
+src/std/option.inko:278:39-278:39	IdentifierRef	ref T
+src/std/option.inko:279:28-279:31	True	Bool
+src/std/option.inko:280:17-280:21	False	Bool
+src/std/option.inko:287:5-290:5	Match	Option[move T]
+src/std/option.inko:287:11-287:14	SelfObject	ref Option[T]
+src/std/option.inko:288:23-288:42	Call	Option[move T]
+src/std/option.inko:288:23-288:28	ConstantRef	Option[T]	symbol
+src/std/option.inko:288:35-288:41	Call	move T
+src/std/option.inko:288:35-288:35	IdentifierRef	ref T
+src/std/option.inko:289:20-289:30	Call	Option[move T]
+src/std/option.inko:289:20-289:25	ConstantRef	Option[T]	symbol
+src/std/option.inko:296:5-299:5	Match	Nil
+src/std/option.inko:296:11-296:14	SelfObject	ref Option[T]
+src/std/option.inko:297:23-297:61	Call	Nil
+src/std/option.inko:297:23-297:54	Call	mut TupleFormatter
+src/std/option.inko:297:23-297:45	Call	TupleFormatter
+src/std/option.inko:297:23-297:31	IdentifierRef	mut Formatter
+src/std/option.inko:297:39-297:44	String	String
+src/std/option.inko:297:53-297:53	IdentifierRef	ref T
+src/std/option.inko:298:20-298:49	Call	Nil
+src/std/option.inko:298:20-298:42	Call	TupleFormatter
+src/std/option.inko:298:20-298:28	IdentifierRef	mut Formatter
+src/std/option.inko:298:36-298:41	String	String

@@ -1,0 +1,909 @@
+src/std/fs/path.inko:20:16-20:17	ConstInt	Int
+src/std/fs/path.inko:23:21-23:23	ConstString	String
+src/std/fs/path.inko:26:22-26:23	ConstInt	Int
+src/std/fs/path.inko:29:12-29:14	ConstString	String
+src/std/fs/path.inko:33:27-33:42	ConstBinary	String
+src/std/fs/path.inko:33:27-33:30	ConstConstantRef	String
+src/std/fs/path.inko:33:34-33:42	ConstConstantRef	String
+src/std/fs/path.inko:39:3-39:30	Match	Nil
+src/std/fs/path.inko:39:3-39:30	Nil	Nil
+src/std/fs/path.inko:39:6-39:16	Call	Bool
+src/std/fs/path.inko:39:6-39:9	IdentifierRef	String
+src/std/fs/path.inko:39:20-39:28	Return	Int
+src/std/fs/path.inko:39:27-39:28	Int	Int
+src/std/fs/path.inko:41:3-41:31	DefineVariable	Nil
+src/std/fs/path.inko:41:19-41:31	Call	Int
+src/std/fs/path.inko:41:19-41:27	Call	Int
+src/std/fs/path.inko:41:19-41:22	IdentifierRef	String
+src/std/fs/path.inko:41:31-41:31	Int	Int
+src/std/fs/path.inko:45:3-45:79	Loop	Nil	derived
+src/std/fs/path.inko:45:3-45:79	Match	Nil
+src/std/fs/path.inko:45:9-45:64	And	Bool
+src/std/fs/path.inko:45:9-45:64	Break	Never	derived
+src/std/fs/path.inko:45:9-45:17	Call	Bool
+src/std/fs/path.inko:45:9-45:13	IdentifierRef	Int
+src/std/fs/path.inko:45:17-45:17	Int	Int
+src/std/fs/path.inko:45:23-45:64	Call	Bool
+src/std/fs/path.inko:45:23-45:46	Call	Int
+src/std/fs/path.inko:45:23-45:37	Call	Result[Int, OutOfBounds]
+src/std/fs/path.inko:45:23-45:26	IdentifierRef	String
+src/std/fs/path.inko:45:32-45:36	IdentifierRef	Int
+src/std/fs/path.inko:45:51-45:64	ConstantRef	Int
+src/std/fs/path.inko:45:68-45:77	AssignVariable	Nil
+src/std/fs/path.inko:45:68-45:77	Call	Int
+src/std/fs/path.inko:45:68-45:72	IdentifierRef	Int
+src/std/fs/path.inko:45:77-45:77	Int	Int
+src/std/fs/path.inko:47:3-47:30	DefineVariable	Nil
+src/std/fs/path.inko:47:26-47:30	False	Bool
+src/std/fs/path.inko:49:3-59:3	Loop	Nil	derived
+src/std/fs/path.inko:49:3-59:3	Match	Nil
+src/std/fs/path.inko:49:9-49:18	Call	Bool
+src/std/fs/path.inko:49:9-49:18	Break	Never	derived
+src/std/fs/path.inko:49:9-49:13	IdentifierRef	Int
+src/std/fs/path.inko:49:17-49:18	Int	Int
+src/std/fs/path.inko:50:5-50:39	DefineVariable	Nil
+src/std/fs/path.inko:50:16-50:39	Call	Int
+src/std/fs/path.inko:50:16-50:30	Call	Result[Int, OutOfBounds]
+src/std/fs/path.inko:50:16-50:19	IdentifierRef	String
+src/std/fs/path.inko:50:25-50:29	IdentifierRef	Int
+src/std/fs/path.inko:52:5-56:5	Match	Nil
+src/std/fs/path.inko:52:5-56:5	Nil	Nil
+src/std/fs/path.inko:52:8-52:29	Call	Bool
+src/std/fs/path.inko:52:8-52:11	IdentifierRef	Int
+src/std/fs/path.inko:52:16-52:29	ConstantRef	Int
+src/std/fs/path.inko:53:7-53:25	AssignVariable	Nil
+src/std/fs/path.inko:53:22-53:25	True	Bool
+src/std/fs/path.inko:54:15-54:26	IdentifierRef	Bool
+src/std/fs/path.inko:55:7-55:22	Return	Int
+src/std/fs/path.inko:55:14-55:22	Call	Int
+src/std/fs/path.inko:55:14-55:18	IdentifierRef	Int
+src/std/fs/path.inko:55:22-55:22	Int	Int
+src/std/fs/path.inko:58:5-58:14	AssignVariable	Nil
+src/std/fs/path.inko:58:5-58:14	Call	Int
+src/std/fs/path.inko:58:5-58:9	IdentifierRef	Int
+src/std/fs/path.inko:58:14-58:14	Int	Int
+src/std/fs/path.inko:61:3-61:35	Match	Int
+src/std/fs/path.inko:61:6-61:17	IdentifierRef	Bool
+src/std/fs/path.inko:61:21-61:21	Int	Int
+src/std/fs/path.inko:61:32-61:33	Int	Int
+src/std/fs/path.inko:66:3-66:40	Call	Bool
+src/std/fs/path.inko:66:3-66:22	Call	Int
+src/std/fs/path.inko:66:3-66:13	Call	Result[Int, OutOfBounds]
+src/std/fs/path.inko:66:3-66:6	IdentifierRef	String
+src/std/fs/path.inko:66:12-66:12	Int	Int
+src/std/fs/path.inko:66:27-66:40	ConstantRef	Int
+src/std/fs/path.inko:70:3-70:38	Match	Nil
+src/std/fs/path.inko:70:3-70:38	Nil	Nil
+src/std/fs/path.inko:70:6-70:16	Call	Bool
+src/std/fs/path.inko:70:6-70:9	IdentifierRef	String
+src/std/fs/path.inko:70:20-70:36	Return	String
+src/std/fs/path.inko:70:27-70:36	Call	String
+src/std/fs/path.inko:70:27-70:30	IdentifierRef	String
+src/std/fs/path.inko:72:3-72:38	Match	Nil
+src/std/fs/path.inko:72:3-72:38	Nil	Nil
+src/std/fs/path.inko:72:6-72:16	Call	Bool
+src/std/fs/path.inko:72:6-72:9	IdentifierRef	String
+src/std/fs/path.inko:72:20-72:36	Return	String
+src/std/fs/path.inko:72:27-72:36	Call	String
+src/std/fs/path.inko:72:27-72:30	IdentifierRef	String
+src/std/fs/path.inko:74:3-80:3	Match	String
+src/std/fs/path.inko:74:6-74:25	Call	Bool
+src/std/fs/path.inko:74:21-74:24	IdentifierRef	String
+src/std/fs/path.inko:75:5-75:8	IdentifierRef	String
+src/std/fs/path.inko:76:13-76:62	Call	Bool
+src/std/fs/path.inko:76:13-76:44	Call	Int
+src/std/fs/path.inko:76:13-76:35	Call	Result[Int, OutOfBounds]
+src/std/fs/path.inko:76:13-76:16	IdentifierRef	String
+src/std/fs/path.inko:76:22-76:34	Call	Int
+src/std/fs/path.inko:76:22-76:30	Call	Int
+src/std/fs/path.inko:76:22-76:25	IdentifierRef	String
+src/std/fs/path.inko:76:34-76:34	Int	Int
+src/std/fs/path.inko:76:49-76:62	ConstantRef	Int
+src/std/fs/path.inko:77:5-77:20	Scope	String
+src/std/fs/path.inko:77:5-77:20	DefineVariable	Nil
+src/std/fs/path.inko:77:5-77:20	Call	StringBuffer
+src/std/fs/path.inko:77:5-77:20	ConstantRef	StringBuffer	symbol
+src/std/fs/path.inko:77:5-77:20	IdentifierRef	StringBuffer
+src/std/fs/path.inko:77:5-77:20	IdentifierRef	StringBuffer
+src/std/fs/path.inko:77:5-77:20	Call	String
+src/std/fs/path.inko:77:5-77:20	IdentifierRef	StringBuffer
+src/std/fs/path.inko:77:8-77:11	Call	Nil
+src/std/fs/path.inko:77:8-77:11	Call	String
+src/std/fs/path.inko:77:8-77:11	IdentifierRef	String
+src/std/fs/path.inko:77:15-77:18	Call	Nil
+src/std/fs/path.inko:77:15-77:18	Call	String
+src/std/fs/path.inko:77:15-77:18	IdentifierRef	String
+src/std/fs/path.inko:79:5-79:32	Scope	String
+src/std/fs/path.inko:79:5-79:32	DefineVariable	Nil
+src/std/fs/path.inko:79:5-79:32	Call	StringBuffer
+src/std/fs/path.inko:79:5-79:32	ConstantRef	StringBuffer	symbol
+src/std/fs/path.inko:79:5-79:32	IdentifierRef	StringBuffer
+src/std/fs/path.inko:79:5-79:32	IdentifierRef	StringBuffer
+src/std/fs/path.inko:79:5-79:32	IdentifierRef	StringBuffer
+src/std/fs/path.inko:79:5-79:32	Call	String
+src/std/fs/path.inko:79:5-79:32	IdentifierRef	StringBuffer
+src/std/fs/path.inko:79:8-79:11	Call	Nil
+src/std/fs/path.inko:79:8-79:11	Call	String
+src/std/fs/path.inko:79:8-79:11	IdentifierRef	String
+src/std/fs/path.inko:79:15-79:23	Call	Nil
+src/std/fs/path.inko:79:15-79:23	Call	String
+src/std/fs/path.inko:79:15-79:23	ConstantRef	String
+src/std/fs/path.inko:79:27-79:30	Call	Nil
+src/std/fs/path.inko:79:27-79:30	Call	String
+src/std/fs/path.inko:79:27-79:30	IdentifierRef	String
+src/std/fs/path.inko:93:5-103:5	DefineVariable	Nil
+src/std/fs/path.inko:93:15-103:5	Match	Result[DirectoryEntry, Error]
+src/std/fs/path.inko:93:21-93:35	Try	Result[(String, FileType), Error]	derived
+src/std/fs/path.inko:93:25-93:35	Call	Option[Result[(String, FileType), Error]]
+src/std/fs/path.inko:93:25-93:30	FieldRef	mut ReadDirectory
+src/std/fs/path.inko:95:9-100:9	Call	Result[DirectoryEntry, Error]
+src/std/fs/path.inko:95:9-95:14	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:96:11-99:11	Call	DirectoryEntry
+src/std/fs/path.inko:97:19-97:59	Call	Path
+src/std/fs/path.inko:97:19-97:22	ConstantRef	Path	symbol
+src/std/fs/path.inko:97:28-97:58	Call	String
+src/std/fs/path.inko:97:41-97:45	FieldRef	String
+src/std/fs/path.inko:97:54-97:57	IdentifierRef	String
+src/std/fs/path.inko:98:19-98:21	IdentifierRef	FileType
+src/std/fs/path.inko:102:24-102:38	Call	Result[DirectoryEntry, Error]
+src/std/fs/path.inko:102:24-102:29	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:102:37-102:37	IdentifierRef	Error
+src/std/fs/path.inko:105:5-105:20	Call	Option[Result[DirectoryEntry, Error]]
+src/std/fs/path.inko:105:5-105:10	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:105:17-105:19	IdentifierRef	Result[DirectoryEntry, Error]
+src/std/fs/path.inko:117:5-117:29	DefineVariable	Nil
+src/std/fs/path.inko:117:16-117:29	Call	Int
+src/std/fs/path.inko:117:16-117:24	Call	String
+src/std/fs/path.inko:117:16-117:19	IdentifierRef	ref Path
+src/std/fs/path.inko:118:5-118:71	DefineVariable	Nil
+src/std/fs/path.inko:118:16-118:71	And	Bool
+src/std/fs/path.inko:118:16-118:23	Call	Bool
+src/std/fs/path.inko:118:16-118:19	IdentifierRef	Int
+src/std/fs/path.inko:118:23-118:23	Int	Int
+src/std/fs/path.inko:118:29-118:71	Call	Bool
+src/std/fs/path.inko:118:29-118:53	Call	Int
+src/std/fs/path.inko:118:29-118:44	Call	Result[Int, OutOfBounds]
+src/std/fs/path.inko:118:29-118:37	Call	String
+src/std/fs/path.inko:118:29-118:32	IdentifierRef	ref Path
+src/std/fs/path.inko:118:43-118:43	Int	Int
+src/std/fs/path.inko:118:58-118:71	ConstantRef	Int
+src/std/fs/path.inko:119:5-119:71	DefineVariable	Nil
+src/std/fs/path.inko:119:16-119:71	Call	Components
+src/std/fs/path.inko:119:33-119:36	IdentifierRef	ref Path
+src/std/fs/path.inko:119:46-119:46	Int	Int
+src/std/fs/path.inko:119:55-119:58	IdentifierRef	Int
+src/std/fs/path.inko:119:67-119:70	IdentifierRef	Bool
+src/std/fs/path.inko:124:5-124:28	Call	Nil
+src/std/fs/path.inko:124:5-124:8	IdentifierRef	Components
+src/std/fs/path.inko:125:5-125:8	IdentifierRef	Components
+src/std/fs/path.inko:129:5-129:34	Call	Int
+src/std/fs/path.inko:129:5-129:25	Call	Result[Int, OutOfBounds]
+src/std/fs/path.inko:129:5-129:14	Call	String
+src/std/fs/path.inko:129:5-129:9	FieldRef	ref Path
+src/std/fs/path.inko:129:20-129:24	IdentifierRef	Int
+src/std/fs/path.inko:133:5-133:33	Call	Bool
+src/std/fs/path.inko:133:5-133:15	Call	Int
+src/std/fs/path.inko:133:10-133:14	IdentifierRef	Int
+src/std/fs/path.inko:133:20-133:33	ConstantRef	Int
+src/std/fs/path.inko:137:5-145:5	Match	Nil
+src/std/fs/path.inko:137:5-145:5	Nil	Nil
+src/std/fs/path.inko:138:7-141:34	And	Bool
+src/std/fs/path.inko:138:7-140:30	And	Bool
+src/std/fs/path.inko:138:7-139:36	And	Bool
+src/std/fs/path.inko:138:7-138:15	Call	Bool
+src/std/fs/path.inko:138:7-138:11	FieldRef	Int
+src/std/fs/path.inko:138:15-138:15	Int	Int
+src/std/fs/path.inko:139:13-139:36	Call	Bool
+src/std/fs/path.inko:139:13-139:24	Call	Int
+src/std/fs/path.inko:139:18-139:23	FieldRef	Int
+src/std/fs/path.inko:139:29-139:36	ConstantRef	Int
+src/std/fs/path.inko:140:13-140:30	Call	Bool
+src/std/fs/path.inko:140:13-140:22	Call	Int
+src/std/fs/path.inko:140:13-140:18	FieldRef	Int
+src/std/fs/path.inko:140:22-140:22	Int	Int
+src/std/fs/path.inko:140:26-140:30	FieldRef	Int
+src/std/fs/path.inko:141:13-141:34	Call	Bool
+src/std/fs/path.inko:141:24-141:33	Call	Int
+src/std/fs/path.inko:141:24-141:29	FieldRef	Int
+src/std/fs/path.inko:141:33-141:33	Int	Int
+src/std/fs/path.inko:143:7-143:17	AssignField	Int
+src/std/fs/path.inko:143:7-143:17	Call	Int
+src/std/fs/path.inko:143:7-143:12	FieldRef	Int
+src/std/fs/path.inko:143:17-143:17	Int	Int
+src/std/fs/path.inko:144:7-144:23	IdentifierRef	Nil
+src/std/fs/path.inko:149:5-163:5	Loop	Nil	derived
+src/std/fs/path.inko:149:5-163:5	Match	Nil
+src/std/fs/path.inko:149:11-149:47	And	Bool
+src/std/fs/path.inko:149:11-149:47	Break	Never	derived
+src/std/fs/path.inko:149:11-149:24	Call	Bool
+src/std/fs/path.inko:149:11-149:16	FieldRef	Int
+src/std/fs/path.inko:149:20-149:24	FieldRef	Int
+src/std/fs/path.inko:149:30-149:47	Call	Bool
+src/std/fs/path.inko:149:41-149:46	FieldRef	Int
+src/std/fs/path.inko:150:7-150:17	AssignField	Int
+src/std/fs/path.inko:150:7-150:17	Call	Int
+src/std/fs/path.inko:150:7-150:12	FieldRef	Int
+src/std/fs/path.inko:150:17-150:17	Int	Int
+src/std/fs/path.inko:154:7-162:7	Loop	Nil	derived
+src/std/fs/path.inko:154:7-162:7	Match	Nil
+src/std/fs/path.inko:155:9-159:11	And	Bool
+src/std/fs/path.inko:155:9-159:11	Break	Never	derived
+src/std/fs/path.inko:155:9-156:38	And	Bool
+src/std/fs/path.inko:155:9-155:22	Call	Bool
+src/std/fs/path.inko:155:9-155:14	FieldRef	Int
+src/std/fs/path.inko:155:18-155:22	FieldRef	Int
+src/std/fs/path.inko:156:15-156:38	Call	Bool
+src/std/fs/path.inko:156:15-156:26	Call	Int
+src/std/fs/path.inko:156:20-156:25	FieldRef	Int
+src/std/fs/path.inko:156:31-156:38	ConstantRef	Int
+src/std/fs/path.inko:158:13-158:80	Or	Bool
+src/std/fs/path.inko:158:13-158:57	And	Bool
+src/std/fs/path.inko:158:13-158:30	Call	Bool
+src/std/fs/path.inko:158:13-158:22	Call	Int
+src/std/fs/path.inko:158:13-158:18	FieldRef	Int
+src/std/fs/path.inko:158:22-158:22	Int	Int
+src/std/fs/path.inko:158:26-158:30	FieldRef	Int
+src/std/fs/path.inko:158:36-158:57	Call	Bool
+src/std/fs/path.inko:158:47-158:56	Call	Int
+src/std/fs/path.inko:158:47-158:52	FieldRef	Int
+src/std/fs/path.inko:158:56-158:56	Int	Int
+src/std/fs/path.inko:158:62-158:80	Call	Bool
+src/std/fs/path.inko:158:62-158:71	Call	Int
+src/std/fs/path.inko:158:62-158:67	FieldRef	Int
+src/std/fs/path.inko:158:71-158:71	Int	Int
+src/std/fs/path.inko:158:76-158:80	FieldRef	Int
+src/std/fs/path.inko:161:9-161:19	AssignField	Int
+src/std/fs/path.inko:161:9-161:19	Call	Int
+src/std/fs/path.inko:161:9-161:14	FieldRef	Int
+src/std/fs/path.inko:161:19-161:19	Int	Int
+src/std/fs/path.inko:169:5-169:45	Match	Nil
+src/std/fs/path.inko:169:5-169:45	Nil	Nil
+src/std/fs/path.inko:169:8-169:22	Call	Bool
+src/std/fs/path.inko:169:8-169:13	FieldRef	Int
+src/std/fs/path.inko:169:18-169:22	FieldRef	Int
+src/std/fs/path.inko:169:26-169:43	Return	Option[Slice[String]]
+src/std/fs/path.inko:169:33-169:43	Call	Option[Slice[String]]
+src/std/fs/path.inko:169:33-169:38	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:171:5-174:5	Match	Nil
+src/std/fs/path.inko:171:5-174:5	Nil	Nil
+src/std/fs/path.inko:171:8-171:28	And	Bool
+src/std/fs/path.inko:171:8-171:18	Call	Bool
+src/std/fs/path.inko:171:8-171:13	FieldRef	Int
+src/std/fs/path.inko:171:18-171:18	Int	Int
+src/std/fs/path.inko:171:24-171:28	FieldRef	Bool
+src/std/fs/path.inko:172:7-172:23	IdentifierRef	Nil
+src/std/fs/path.inko:173:7-173:48	Return	Option[Slice[String]]
+src/std/fs/path.inko:173:14-173:48	Call	Option[Slice[String]]
+src/std/fs/path.inko:173:14-173:19	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:173:26-173:47	Call	Slice[String]
+src/std/fs/path.inko:173:26-173:35	Call	String
+src/std/fs/path.inko:173:26-173:30	FieldRef	ref Path
+src/std/fs/path.inko:173:43-173:43	Int	Int
+src/std/fs/path.inko:173:46-173:46	Int	Int
+src/std/fs/path.inko:176:5-176:22	DefineVariable	Nil
+src/std/fs/path.inko:176:17-176:22	FieldRef	Int
+src/std/fs/path.inko:178:5-178:64	Loop	Nil	derived
+src/std/fs/path.inko:178:5-178:64	Match	Nil
+src/std/fs/path.inko:178:11-178:48	And	Bool
+src/std/fs/path.inko:178:11-178:48	Break	Never	derived
+src/std/fs/path.inko:178:11-178:24	Call	Bool
+src/std/fs/path.inko:178:11-178:16	FieldRef	Int
+src/std/fs/path.inko:178:20-178:24	FieldRef	Int
+src/std/fs/path.inko:178:30-178:48	Call	Bool
+src/std/fs/path.inko:178:30-178:48	False	Bool
+src/std/fs/path.inko:178:31-178:48	Call	Bool
+src/std/fs/path.inko:178:42-178:47	FieldRef	Int
+src/std/fs/path.inko:178:52-178:62	AssignField	Int
+src/std/fs/path.inko:178:52-178:62	Call	Int
+src/std/fs/path.inko:178:52-178:57	FieldRef	Int
+src/std/fs/path.inko:178:62-178:62	Int	Int
+src/std/fs/path.inko:180:5-180:20	DefineVariable	Nil
+src/std/fs/path.inko:180:15-180:20	FieldRef	Int
+src/std/fs/path.inko:182:5-187:5	Match	Option[Slice[String]]
+src/std/fs/path.inko:182:8-182:18	Call	Bool
+src/std/fs/path.inko:182:8-182:10	IdentifierRef	Int
+src/std/fs/path.inko:182:14-182:18	IdentifierRef	Int
+src/std/fs/path.inko:183:7-183:23	IdentifierRef	Nil
+src/std/fs/path.inko:184:7-184:47	Call	Option[Slice[String]]
+src/std/fs/path.inko:184:7-184:12	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:184:19-184:46	Call	Slice[String]
+src/std/fs/path.inko:184:19-184:28	Call	String
+src/std/fs/path.inko:184:19-184:23	FieldRef	ref Path
+src/std/fs/path.inko:184:36-184:40	IdentifierRef	Int
+src/std/fs/path.inko:184:43-184:45	IdentifierRef	Int
+src/std/fs/path.inko:186:7-186:17	Call	Option[Slice[String]]
+src/std/fs/path.inko:186:7-186:12	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:219:5-219:14	Call	Path
+src/std/fs/path.inko:219:10-219:13	IdentifierRef	String
+src/std/fs/path.inko:224:5-224:51	Call	Bool
+src/std/fs/path.inko:224:5-224:41	Call	Result[Bool, Error]
+src/std/fs/path.inko:224:5-224:12	IdentifierRef	Result[Metadata, Error]
+src/std/fs/path.inko:224:18-224:40	Closure	fn (Metadata) -> Bool
+src/std/fs/path.inko:224:27-224:38	Call	Bool
+src/std/fs/path.inko:224:27-224:32	Call	FileType
+src/std/fs/path.inko:224:27-224:27	IdentifierRef	Metadata
+src/std/fs/path.inko:224:46-224:50	False	Bool
+src/std/fs/path.inko:229:5-229:56	Call	Bool
+src/std/fs/path.inko:229:5-229:46	Call	Result[Bool, Error]
+src/std/fs/path.inko:229:5-229:12	IdentifierRef	Result[Metadata, Error]
+src/std/fs/path.inko:229:18-229:45	Closure	fn (Metadata) -> Bool
+src/std/fs/path.inko:229:27-229:43	Call	Bool
+src/std/fs/path.inko:229:27-229:32	Call	FileType
+src/std/fs/path.inko:229:27-229:27	IdentifierRef	Metadata
+src/std/fs/path.inko:229:51-229:55	False	Bool
+src/std/fs/path.inko:234:5-234:16	Call	Bool
+src/std/fs/path.inko:234:5-234:12	IdentifierRef	Result[Metadata, Error]
+src/std/fs/path.inko:250:5-250:25	Call	Bool
+src/std/fs/path.inko:250:20-250:24	FieldRef	String
+src/std/fs/path.inko:267:5-267:14	Call	Bool
+src/std/fs/path.inko:267:5-267:14	False	Bool
+src/std/fs/path.inko:267:6-267:14	IdentifierRef	Bool
+src/std/fs/path.inko:290:5-290:55	Call	Path
+src/std/fs/path.inko:290:5-290:8	ConstantRef	Path	symbol
+src/std/fs/path.inko:290:14-290:54	Call	String
+src/std/fs/path.inko:290:27-290:31	FieldRef	String
+src/std/fs/path.inko:290:40-290:53	Call	String
+src/std/fs/path.inko:290:40-290:43	IdentifierRef	ref T
+src/std/fs/path.inko:312:5-312:49	DefineVariable	Nil
+src/std/fs/path.inko:312:20-312:25	IdentifierRef	Result[Path, Error]
+src/std/fs/path.inko:312:32-312:49	Return	Option[Path]
+src/std/fs/path.inko:312:39-312:49	Call	Option[Path]
+src/std/fs/path.inko:312:39-312:44	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:313:5-313:67	DefineVariable	Nil
+src/std/fs/path.inko:313:22-313:43	Call	Result[Path, Error]
+src/std/fs/path.inko:313:22-313:36	Call	Path
+src/std/fs/path.inko:313:22-313:25	IdentifierRef	Path
+src/std/fs/path.inko:313:32-313:35	IdentifierRef	ref T
+src/std/fs/path.inko:313:50-313:67	Return	Option[Path]
+src/std/fs/path.inko:313:57-313:67	Call	Option[Path]
+src/std/fs/path.inko:313:57-313:62	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:315:5-315:77	Match	Option[Path]
+src/std/fs/path.inko:315:8-315:32	Call	Bool
+src/std/fs/path.inko:315:8-315:13	IdentifierRef	Path
+src/std/fs/path.inko:315:28-315:31	IdentifierRef	Path
+src/std/fs/path.inko:315:36-315:54	Call	Option[Path]
+src/std/fs/path.inko:315:36-315:41	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:315:48-315:53	IdentifierRef	Path
+src/std/fs/path.inko:315:65-315:75	Call	Option[Path]
+src/std/fs/path.inko:315:65-315:70	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:344:5-344:27	DefineVariable	Nil
+src/std/fs/path.inko:344:15-344:27	Call	ByteArray
+src/std/fs/path.inko:344:15-344:23	ConstantRef	ByteArray	symbol
+src/std/fs/path.inko:345:5-345:44	DefineVariable	Nil
+src/std/fs/path.inko:345:16-345:44	Call	Peekable[Slice[String], Components]
+src/std/fs/path.inko:345:16-345:35	Call	Components
+src/std/fs/path.inko:345:16-345:25	ConstantRef	Components	symbol
+src/std/fs/path.inko:345:31-345:34	SelfObject	ref Path
+src/std/fs/path.inko:346:5-346:24	DefineVariable	Nil
+src/std/fs/path.inko:346:20-346:24	False	Bool
+src/std/fs/path.inko:348:5-363:5	Loop	Nil	derived
+src/std/fs/path.inko:349:7-362:7	Match	Nil
+src/std/fs/path.inko:349:13-349:21	Call	Option[Slice[String]]
+src/std/fs/path.inko:349:13-349:16	IdentifierRef	Peekable[Slice[String], Components]
+src/std/fs/path.inko:351:11-351:21	AssignVariable	Nil
+src/std/fs/path.inko:351:18-351:21	True	Bool
+src/std/fs/path.inko:352:11-352:31	Call	Nil
+src/std/fs/path.inko:352:11-352:13	IdentifierRef	ByteArray
+src/std/fs/path.inko:352:22-352:30	ConstantRef	String
+src/std/fs/path.inko:354:25-354:39	Call	Bool
+src/std/fs/path.inko:354:25-354:33	Call	Option[ref Slice[String]]
+src/std/fs/path.inko:354:25-354:28	IdentifierRef	Peekable[Slice[String], Components]
+src/std/fs/path.inko:355:11-355:31	DefineVariable	Nil
+src/std/fs/path.inko:355:21-355:31	Call	Bool
+src/std/fs/path.inko:355:21-355:31	False	Bool
+src/std/fs/path.inko:355:22-355:31	Call	Bool
+src/std/fs/path.inko:355:22-355:24	IdentifierRef	ByteArray
+src/std/fs/path.inko:357:11-357:80	Match	Nil
+src/std/fs/path.inko:357:11-357:80	Nil	Nil
+src/std/fs/path.inko:357:14-357:25	And	Bool
+src/std/fs/path.inko:357:14-357:16	IdentifierRef	Bool
+src/std/fs/path.inko:357:22-357:25	IdentifierRef	Bool
+src/std/fs/path.inko:357:29-357:40	AssignVariable	Nil
+src/std/fs/path.inko:357:36-357:40	False	Bool
+src/std/fs/path.inko:357:52-357:54	IdentifierRef	Bool
+src/std/fs/path.inko:357:58-357:78	Call	Nil
+src/std/fs/path.inko:357:58-357:60	IdentifierRef	ByteArray
+src/std/fs/path.inko:357:69-357:77	ConstantRef	String
+src/std/fs/path.inko:359:11-359:23	Call	Nil
+src/std/fs/path.inko:359:11-359:13	IdentifierRef	ByteArray
+src/std/fs/path.inko:359:22-359:22	IdentifierRef	Slice[String]
+src/std/fs/path.inko:361:19-361:23	Break	Never	derived
+src/std/fs/path.inko:365:5-365:70	Match	Path
+src/std/fs/path.inko:365:8-365:17	Call	Bool
+src/std/fs/path.inko:365:8-365:10	IdentifierRef	ByteArray
+src/std/fs/path.inko:365:21-365:33	Call	Path
+src/std/fs/path.inko:365:21-365:24	ConstantRef	Path	symbol
+src/std/fs/path.inko:365:30-365:32	String	String
+src/std/fs/path.inko:365:44-365:68	Call	Path
+src/std/fs/path.inko:365:44-365:47	ConstantRef	Path	symbol
+src/std/fs/path.inko:365:53-365:67	Call	String
+src/std/fs/path.inko:365:53-365:55	IdentifierRef	ByteArray
+src/std/fs/path.inko:381:5-381:35	DefineVariable	Nil
+src/std/fs/path.inko:381:16-381:35	Call	Components
+src/std/fs/path.inko:381:16-381:25	ConstantRef	Components	symbol
+src/std/fs/path.inko:381:31-381:34	SelfObject	ref Path
+src/std/fs/path.inko:382:5-382:22	DefineVariable	Nil
+src/std/fs/path.inko:382:21-382:22	Int	Int
+src/std/fs/path.inko:383:5-383:20	DefineVariable	Nil
+src/std/fs/path.inko:383:19-383:20	Int	Int
+src/std/fs/path.inko:387:5-399:5	Loop	Nil	derived
+src/std/fs/path.inko:387:5-399:5	Match	Nil
+src/std/fs/path.inko:387:11-387:32	Call	Bool
+src/std/fs/path.inko:387:11-387:32	Break	Never	derived
+src/std/fs/path.inko:387:11-387:20	Call	Int
+src/std/fs/path.inko:387:11-387:14	IdentifierRef	Components
+src/std/fs/path.inko:387:24-387:32	Call	Int
+src/std/fs/path.inko:387:24-387:27	IdentifierRef	Components
+src/std/fs/path.inko:388:7-388:28	Call	Nil
+src/std/fs/path.inko:388:7-388:10	IdentifierRef	Components
+src/std/fs/path.inko:390:7-393:7	Match	Nil
+src/std/fs/path.inko:390:7-393:7	Nil	Nil
+src/std/fs/path.inko:390:10-390:31	Call	Bool
+src/std/fs/path.inko:390:10-390:19	Call	Int
+src/std/fs/path.inko:390:10-390:13	IdentifierRef	Components
+src/std/fs/path.inko:390:23-390:31	Call	Int
+src/std/fs/path.inko:390:23-390:26	IdentifierRef	Components
+src/std/fs/path.inko:391:9-391:26	AssignVariable	Nil
+src/std/fs/path.inko:391:17-391:26	Call	Int
+src/std/fs/path.inko:391:17-391:20	IdentifierRef	Components
+src/std/fs/path.inko:392:9-392:19	AssignVariable	Nil
+src/std/fs/path.inko:392:15-392:19	IdentifierRef	Int
+src/std/fs/path.inko:395:7-398:7	Loop	Nil	derived
+src/std/fs/path.inko:395:7-398:7	Match	Nil
+src/std/fs/path.inko:395:13-395:67	And	Bool
+src/std/fs/path.inko:395:13-395:67	Break	Never	derived
+src/std/fs/path.inko:395:13-395:34	Call	Bool
+src/std/fs/path.inko:395:13-395:22	Call	Int
+src/std/fs/path.inko:395:13-395:16	IdentifierRef	Components
+src/std/fs/path.inko:395:26-395:34	Call	Int
+src/std/fs/path.inko:395:26-395:29	IdentifierRef	Components
+src/std/fs/path.inko:395:40-395:67	Call	Bool
+src/std/fs/path.inko:395:40-395:67	False	Bool
+src/std/fs/path.inko:395:41-395:67	Call	Bool
+src/std/fs/path.inko:395:41-395:44	IdentifierRef	Components
+src/std/fs/path.inko:395:57-395:66	Call	Int
+src/std/fs/path.inko:395:57-395:60	IdentifierRef	Components
+src/std/fs/path.inko:396:9-396:23	AssignSetter	Nil
+src/std/fs/path.inko:396:9-396:23	Call	Int
+src/std/fs/path.inko:396:9-396:18	Call	Int
+src/std/fs/path.inko:396:9-396:12	IdentifierRef	Components
+src/std/fs/path.inko:396:9-396:12	IdentifierRef	Components
+src/std/fs/path.inko:396:23-396:23	Int	Int
+src/std/fs/path.inko:397:9-397:16	AssignVariable	Nil
+src/std/fs/path.inko:397:9-397:16	Call	Int
+src/std/fs/path.inko:397:9-397:11	IdentifierRef	Int
+src/std/fs/path.inko:397:16-397:16	Int	Int
+src/std/fs/path.inko:401:5-401:78	Match	Slice[String]
+src/std/fs/path.inko:401:8-401:18	Call	Bool
+src/std/fs/path.inko:401:8-401:12	IdentifierRef	Int
+src/std/fs/path.inko:401:17-401:18	Int	Int
+src/std/fs/path.inko:401:22-401:38	Call	Slice[String]
+src/std/fs/path.inko:401:22-401:26	FieldRef	String
+src/std/fs/path.inko:401:34-401:34	Int	Int
+src/std/fs/path.inko:401:37-401:37	Int	Int
+src/std/fs/path.inko:401:49-401:76	Call	Slice[String]
+src/std/fs/path.inko:401:49-401:53	FieldRef	String
+src/std/fs/path.inko:401:61-401:65	IdentifierRef	Int
+src/std/fs/path.inko:401:73-401:75	IdentifierRef	Int
+src/std/fs/path.inko:416:5-416:25	DefineVariable	Nil
+src/std/fs/path.inko:416:16-416:25	Call	Int
+src/std/fs/path.inko:416:16-416:20	FieldRef	String
+src/std/fs/path.inko:417:5-420:5	DefineVariable	Nil
+src/std/fs/path.inko:417:19-420:5	Match	Int
+src/std/fs/path.inko:417:25-417:58	Call	Int
+src/std/fs/path.inko:417:53-417:57	FieldRef	String
+src/std/fs/path.inko:418:18-418:18	Int	Int
+src/std/fs/path.inko:419:17-419:21	Call	Int
+src/std/fs/path.inko:419:17-419:17	IdentifierRef	Int
+src/std/fs/path.inko:419:21-419:21	Int	Int
+src/std/fs/path.inko:422:5-422:41	Match	Nil
+src/std/fs/path.inko:422:5-422:41	Nil	Nil
+src/std/fs/path.inko:422:8-422:18	Call	Bool
+src/std/fs/path.inko:422:8-422:10	IdentifierRef	Int
+src/std/fs/path.inko:422:15-422:18	IdentifierRef	Int
+src/std/fs/path.inko:422:22-422:39	Return	Option[Slice[String]]
+src/std/fs/path.inko:422:29-422:39	Call	Option[Slice[String]]
+src/std/fs/path.inko:422:29-422:34	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:426:5-426:55	Match	Nil
+src/std/fs/path.inko:426:5-426:55	Nil	Nil
+src/std/fs/path.inko:426:8-426:42	Call	Bool
+src/std/fs/path.inko:426:8-426:30	Call	Int
+src/std/fs/path.inko:426:8-426:21	Call	Result[Int, OutOfBounds]
+src/std/fs/path.inko:426:8-426:12	FieldRef	String
+src/std/fs/path.inko:426:18-426:20	IdentifierRef	Int
+src/std/fs/path.inko:426:35-426:42	ConstantRef	Int
+src/std/fs/path.inko:426:46-426:53	AssignVariable	Nil
+src/std/fs/path.inko:426:46-426:53	Call	Int
+src/std/fs/path.inko:426:46-426:48	IdentifierRef	Int
+src/std/fs/path.inko:426:53-426:53	Int	Int
+src/std/fs/path.inko:428:5-428:22	DefineVariable	Nil
+src/std/fs/path.inko:428:15-428:22	Call	Int
+src/std/fs/path.inko:428:15-428:18	IdentifierRef	Int
+src/std/fs/path.inko:428:22-428:22	Int	Int
+src/std/fs/path.inko:429:5-429:21	DefineVariable	Nil
+src/std/fs/path.inko:429:19-429:21	IdentifierRef	Int
+src/std/fs/path.inko:448:5-450:5	Loop	Nil	derived
+src/std/fs/path.inko:448:5-450:5	Match	Nil
+src/std/fs/path.inko:448:11-448:19	Call	Bool
+src/std/fs/path.inko:448:11-448:19	Break	Never	derived
+src/std/fs/path.inko:448:11-448:13	IdentifierRef	Int
+src/std/fs/path.inko:448:17-448:19	IdentifierRef	Int
+src/std/fs/path.inko:449:7-449:72	Match	Nil
+src/std/fs/path.inko:449:10-449:44	Call	Bool
+src/std/fs/path.inko:449:10-449:32	Call	Int
+src/std/fs/path.inko:449:10-449:23	Call	Result[Int, OutOfBounds]
+src/std/fs/path.inko:449:10-449:14	FieldRef	String
+src/std/fs/path.inko:449:20-449:22	IdentifierRef	Int
+src/std/fs/path.inko:449:37-449:44	ConstantRef	Int
+src/std/fs/path.inko:449:48-449:52	Break	Never	derived
+src/std/fs/path.inko:449:63-449:70	AssignVariable	Nil
+src/std/fs/path.inko:449:63-449:70	Call	Int
+src/std/fs/path.inko:449:63-449:65	IdentifierRef	Int
+src/std/fs/path.inko:449:70-449:70	Int	Int
+src/std/fs/path.inko:452:5-456:5	Match	Option[Slice[String]]
+src/std/fs/path.inko:452:8-452:30	And	Bool
+src/std/fs/path.inko:452:8-452:16	Call	Bool
+src/std/fs/path.inko:452:8-452:10	IdentifierRef	Int
+src/std/fs/path.inko:452:14-452:16	IdentifierRef	Int
+src/std/fs/path.inko:452:22-452:30	Call	Bool
+src/std/fs/path.inko:452:22-452:24	IdentifierRef	Int
+src/std/fs/path.inko:452:28-452:30	IdentifierRef	Int
+src/std/fs/path.inko:453:7-453:57	Call	Option[Slice[String]]
+src/std/fs/path.inko:453:7-453:12	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:453:19-453:56	Call	Slice[String]
+src/std/fs/path.inko:453:19-453:23	FieldRef	String
+src/std/fs/path.inko:453:38-453:44	Call	Int
+src/std/fs/path.inko:453:38-453:40	IdentifierRef	Int
+src/std/fs/path.inko:453:44-453:44	Int	Int
+src/std/fs/path.inko:453:52-453:55	IdentifierRef	Int
+src/std/fs/path.inko:455:7-455:17	Call	Option[Slice[String]]
+src/std/fs/path.inko:455:7-455:12	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:478:5-480:5	Match	Nil
+src/std/fs/path.inko:478:5-480:5	Nil	Nil
+src/std/fs/path.inko:478:8-478:32	Call	Bool
+src/std/fs/path.inko:478:8-478:11	IdentifierRef	String
+src/std/fs/path.inko:478:23-478:31	ConstantRef	String
+src/std/fs/path.inko:479:7-479:60	Call	Never
+src/std/fs/path.inko:479:13-479:59	String	String
+src/std/fs/path.inko:482:5-482:36	Match	Nil
+src/std/fs/path.inko:482:5-482:36	Nil	Nil
+src/std/fs/path.inko:482:8-482:19	Call	Bool
+src/std/fs/path.inko:482:8-482:12	FieldRef	String
+src/std/fs/path.inko:482:23-482:34	Return	Path
+src/std/fs/path.inko:482:30-482:34	IdentifierRef	Path
+src/std/fs/path.inko:484:5-493:5	DefineVariable	Nil
+src/std/fs/path.inko:484:15-493:5	Match	String
+src/std/fs/path.inko:484:21-484:29	IdentifierRef	Option[Slice[String]]
+src/std/fs/path.inko:485:23-485:33	Call	Bool
+src/std/fs/path.inko:485:23-485:26	IdentifierRef	String
+src/std/fs/path.inko:486:9-486:69	Call	String
+src/std/fs/path.inko:486:9-486:59	Call	Slice[String]
+src/std/fs/path.inko:486:9-486:13	FieldRef	String
+src/std/fs/path.inko:486:28-486:28	Int	Int
+src/std/fs/path.inko:486:36-486:58	Call	Int
+src/std/fs/path.inko:486:36-486:54	Call	Int
+src/std/fs/path.inko:486:36-486:45	Call	Int
+src/std/fs/path.inko:486:36-486:40	FieldRef	String
+src/std/fs/path.inko:486:49-486:54	Call	Int
+src/std/fs/path.inko:486:49-486:49	IdentifierRef	Slice[String]
+src/std/fs/path.inko:486:58-486:58	Int	Int
+src/std/fs/path.inko:489:9-489:72	Scope	String
+src/std/fs/path.inko:489:9-489:72	DefineVariable	Nil
+src/std/fs/path.inko:489:9-489:72	Call	StringBuffer
+src/std/fs/path.inko:489:9-489:72	ConstantRef	StringBuffer	symbol
+src/std/fs/path.inko:489:9-489:72	IdentifierRef	StringBuffer
+src/std/fs/path.inko:489:9-489:72	IdentifierRef	StringBuffer
+src/std/fs/path.inko:489:9-489:72	IdentifierRef	StringBuffer
+src/std/fs/path.inko:489:9-489:72	Call	String
+src/std/fs/path.inko:489:9-489:72	IdentifierRef	StringBuffer
+src/std/fs/path.inko:489:12-489:62	Call	Nil
+src/std/fs/path.inko:489:12-489:62	Call	String
+src/std/fs/path.inko:489:12-489:62	Call	Slice[String]
+src/std/fs/path.inko:489:12-489:16	FieldRef	String
+src/std/fs/path.inko:489:31-489:31	Int	Int
+src/std/fs/path.inko:489:39-489:61	Call	Int
+src/std/fs/path.inko:489:39-489:57	Call	Int
+src/std/fs/path.inko:489:39-489:48	Call	Int
+src/std/fs/path.inko:489:39-489:43	FieldRef	String
+src/std/fs/path.inko:489:52-489:57	Call	Int
+src/std/fs/path.inko:489:52-489:52	IdentifierRef	Slice[String]
+src/std/fs/path.inko:489:61-489:61	Int	Int
+src/std/fs/path.inko:489:64-489:64	Call	Nil
+src/std/fs/path.inko:489:64-489:64	String	String
+src/std/fs/path.inko:489:67-489:70	Call	Nil
+src/std/fs/path.inko:489:67-489:70	Call	String
+src/std/fs/path.inko:489:67-489:70	IdentifierRef	String
+src/std/fs/path.inko:491:17-491:58	Or	Bool
+src/std/fs/path.inko:491:17-491:27	Call	Bool
+src/std/fs/path.inko:491:17-491:20	IdentifierRef	String
+src/std/fs/path.inko:491:32-491:58	Call	Bool
+src/std/fs/path.inko:491:32-491:36	FieldRef	String
+src/std/fs/path.inko:491:49-491:57	ConstantRef	String
+src/std/fs/path.inko:491:63-491:67	FieldRef	String
+src/std/fs/path.inko:492:17-492:34	Scope	String
+src/std/fs/path.inko:492:17-492:34	DefineVariable	Nil
+src/std/fs/path.inko:492:17-492:34	Call	StringBuffer
+src/std/fs/path.inko:492:17-492:34	ConstantRef	StringBuffer	symbol
+src/std/fs/path.inko:492:17-492:34	IdentifierRef	StringBuffer
+src/std/fs/path.inko:492:17-492:34	IdentifierRef	StringBuffer
+src/std/fs/path.inko:492:17-492:34	IdentifierRef	StringBuffer
+src/std/fs/path.inko:492:17-492:34	Call	String
+src/std/fs/path.inko:492:17-492:34	IdentifierRef	StringBuffer
+src/std/fs/path.inko:492:20-492:24	Call	Nil
+src/std/fs/path.inko:492:20-492:24	Call	String
+src/std/fs/path.inko:492:20-492:24	FieldRef	String
+src/std/fs/path.inko:492:26-492:26	Call	Nil
+src/std/fs/path.inko:492:26-492:26	String	String
+src/std/fs/path.inko:492:29-492:32	Call	Nil
+src/std/fs/path.inko:492:29-492:32	Call	String
+src/std/fs/path.inko:492:29-492:32	IdentifierRef	String
+src/std/fs/path.inko:495:5-495:17	Call	Path
+src/std/fs/path.inko:495:5-495:8	ConstantRef	Path	symbol
+src/std/fs/path.inko:495:14-495:16	IdentifierRef	String
+src/std/fs/path.inko:525:5-530:5	Match	Nil
+src/std/fs/path.inko:525:5-530:5	Nil	Nil
+src/std/fs/path.inko:525:8-525:20	Call	Bool
+src/std/fs/path.inko:525:8-525:12	FieldRef	String
+src/std/fs/path.inko:525:17-525:20	ConstantRef	String
+src/std/fs/path.inko:526:7-529:7	Return	Result[Path, Error]
+src/std/fs/path.inko:526:14-529:7	Match	Result[Path, Error]
+src/std/fs/path.inko:526:20-526:33	IdentifierRef	Option[Path]
+src/std/fs/path.inko:527:25-527:36	Call	Result[Path, Error]
+src/std/fs/path.inko:527:25-527:30	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:527:35-527:35	IdentifierRef	Path
+src/std/fs/path.inko:528:19-528:46	Call	Result[Path, Error]
+src/std/fs/path.inko:528:19-528:24	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:528:32-528:45	Call	Error
+src/std/fs/path.inko:528:32-528:36	ConstantRef	Error	symbol
+src/std/fs/path.inko:532:5-532:26	DefineVariable	Nil
+src/std/fs/path.inko:532:22-532:26	FieldRef	String
+src/std/fs/path.inko:534:5-542:5	Match	Nil
+src/std/fs/path.inko:534:11-534:49	Call	Option[String]
+src/std/fs/path.inko:534:11-534:15	FieldRef	String
+src/std/fs/path.inko:534:30-534:48	ConstantRef	String
+src/std/fs/path.inko:536:9-539:9	AssignVariable	Nil
+src/std/fs/path.inko:536:18-539:9	Match	String
+src/std/fs/path.inko:536:24-536:37	IdentifierRef	Option[Path]
+src/std/fs/path.inko:537:27-537:52	Call	String
+src/std/fs/path.inko:537:40-537:45	Call	String
+src/std/fs/path.inko:537:40-537:40	IdentifierRef	Path
+src/std/fs/path.inko:537:48-537:51	IdentifierRef	String
+src/std/fs/path.inko:538:21-538:40	Throw	Error
+src/std/fs/path.inko:538:27-538:40	Call	Error
+src/std/fs/path.inko:538:27-538:31	ConstantRef	Error	symbol
+src/std/fs/path.inko:544:5-544:55	Call	Result[Path, Error]
+src/std/fs/path.inko:544:5-544:27	Call	Result[String, Error]
+src/std/fs/path.inko:544:5-544:7	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:544:21-544:26	IdentifierRef	String
+src/std/fs/path.inko:544:33-544:54	Closure	fn (String) -> Path
+src/std/fs/path.inko:544:42-544:52	Call	Path
+src/std/fs/path.inko:544:42-544:45	ConstantRef	Path	symbol
+src/std/fs/path.inko:544:51-544:51	IdentifierRef	String
+src/std/fs/path.inko:586:5-588:6	Call	Result[ReadDirectory, Error]
+src/std/fs/path.inko:586:5-586:32	Call	Result[ReadDirectory, Error]
+src/std/fs/path.inko:586:5-586:21	Call	ReadDirectory	symbol
+src/std/fs/path.inko:586:5-586:7	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:586:27-586:31	FieldRef	String
+src/std/fs/path.inko:586:38-588:5	Closure	fn (ReadDirectory) -> ReadDirectory
+src/std/fs/path.inko:587:7-587:46	Call	ReadDirectory
+src/std/fs/path.inko:587:27-587:31	FieldRef	String
+src/std/fs/path.inko:587:41-587:45	IdentifierRef	ReadDirectory
+src/std/fs/path.inko:611:5-611:60	Call	Result[ListAll, Error]
+src/std/fs/path.inko:611:5-611:8	IdentifierRef	Result[ReadDirectory, Error]
+src/std/fs/path.inko:611:14-611:59	Closure	fn (ReadDirectory) -> ListAll
+src/std/fs/path.inko:611:26-611:57	Call	ListAll
+src/std/fs/path.inko:611:43-611:46	IdentifierRef	ReadDirectory
+src/std/fs/path.inko:611:55-611:56	Scope	Array[Path]
+src/std/fs/path.inko:611:55-611:56	DefineVariable	Nil
+src/std/fs/path.inko:611:55-611:56	Call	Array[Path]
+src/std/fs/path.inko:611:55-611:56	ConstantRef	Array[T]	symbol
+src/std/fs/path.inko:611:55-611:56	Int	Int
+src/std/fs/path.inko:611:55-611:56	IdentifierRef	Array[Path]
+src/std/fs/path.inko:634:5-634:26	Call	Result[Nil, Error]
+src/std/fs/path.inko:634:5-634:7	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:634:21-634:25	FieldRef	String
+src/std/fs/path.inko:655:5-655:31	Call	Result[Nil, Error]
+src/std/fs/path.inko:655:5-655:7	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:655:26-655:30	FieldRef	String
+src/std/fs/path.inko:680:5-680:23	DefineVariable	Nil
+src/std/fs/path.inko:680:17-680:23	Scope	Array[String]
+src/std/fs/path.inko:680:17-680:23	DefineVariable	Nil
+src/std/fs/path.inko:680:17-680:23	Call	Array[String]
+src/std/fs/path.inko:680:17-680:23	ConstantRef	Array[T]	symbol
+src/std/fs/path.inko:680:17-680:23	Int	Int
+src/std/fs/path.inko:680:17-680:23	IdentifierRef	Array[String]
+src/std/fs/path.inko:680:17-680:23	IdentifierRef	Array[String]
+src/std/fs/path.inko:680:18-680:22	Call	Nil
+src/std/fs/path.inko:680:18-680:22	FieldRef	String
+src/std/fs/path.inko:681:5-681:22	DefineVariable	Nil
+src/std/fs/path.inko:681:16-681:22	Scope	Array[String]
+src/std/fs/path.inko:681:16-681:22	DefineVariable	Nil
+src/std/fs/path.inko:681:16-681:22	Call	Array[String]
+src/std/fs/path.inko:681:16-681:22	ConstantRef	Array[T]	symbol
+src/std/fs/path.inko:681:16-681:22	Int	Int
+src/std/fs/path.inko:681:16-681:22	IdentifierRef	Array[String]
+src/std/fs/path.inko:681:16-681:22	IdentifierRef	Array[String]
+src/std/fs/path.inko:681:17-681:21	Call	Nil
+src/std/fs/path.inko:681:17-681:21	FieldRef	String
+src/std/fs/path.inko:685:5-703:5	Loop	Nil	derived
+src/std/fs/path.inko:686:7-689:7	DefineVariable	Nil
+src/std/fs/path.inko:686:17-689:7	Match	String
+src/std/fs/path.inko:686:23-686:31	Call	Option[String]
+src/std/fs/path.inko:686:23-686:27	IdentifierRef	Array[String]
+src/std/fs/path.inko:687:25-687:25	IdentifierRef	String
+src/std/fs/path.inko:688:19-688:23	Break	Never	derived
+src/std/fs/path.inko:691:7-702:7	Scope	Nil
+src/std/fs/path.inko:691:7-702:7	Loop	Nil	derived
+src/std/fs/path.inko:691:7-702:7	Match	Nil
+src/std/fs/path.inko:691:7-702:7	Break	Never	derived
+src/std/fs/path.inko:691:20-691:49	DefineVariable	Nil
+src/std/fs/path.inko:691:20-691:49	Call	ReadDirectory
+src/std/fs/path.inko:691:20-691:49	Try	ReadDirectory	derived
+src/std/fs/path.inko:691:20-691:49	Call	Option[Result[(String, FileType), Error]]
+src/std/fs/path.inko:691:20-691:49	IdentifierRef	ReadDirectory
+src/std/fs/path.inko:691:24-691:49	Call	Result[ReadDirectory, Error]
+src/std/fs/path.inko:691:24-691:40	Call	ReadDirectory	symbol
+src/std/fs/path.inko:691:24-691:26	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:691:46-691:48	IdentifierRef	String
+src/std/fs/path.inko:692:9-701:9	Match	Nil
+src/std/fs/path.inko:692:15-692:19	IdentifierRef	Result[(String, FileType), Error]
+src/std/fs/path.inko:694:13-694:46	DefineVariable	Nil
+src/std/fs/path.inko:694:24-694:46	Call	String
+src/std/fs/path.inko:694:37-694:39	IdentifierRef	String
+src/std/fs/path.inko:694:42-694:45	IdentifierRef	String
+src/std/fs/path.inko:696:13-696:28	Call	Nil
+src/std/fs/path.inko:696:13-696:17	IdentifierRef	Array[String]
+src/std/fs/path.inko:696:24-696:27	IdentifierRef	String
+src/std/fs/path.inko:697:13-697:27	Call	Nil
+src/std/fs/path.inko:697:13-697:16	IdentifierRef	Array[String]
+src/std/fs/path.inko:697:23-697:26	IdentifierRef	String
+src/std/fs/path.inko:699:33-699:76	Try	Nil	derived
+src/std/fs/path.inko:699:37-699:76	Call	Result[Nil, Error]
+src/std/fs/path.inko:699:37-699:39	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:699:53-699:75	Call	String
+src/std/fs/path.inko:699:66-699:68	IdentifierRef	String
+src/std/fs/path.inko:699:71-699:74	IdentifierRef	String
+src/std/fs/path.inko:700:28-700:34	Throw	Error
+src/std/fs/path.inko:700:34-700:34	IdentifierRef	Error
+src/std/fs/path.inko:706:5-711:5	Loop	Nil	derived
+src/std/fs/path.inko:707:7-710:7	Match	Nil
+src/std/fs/path.inko:707:13-707:20	Call	Option[String]
+src/std/fs/path.inko:707:13-707:16	IdentifierRef	Array[String]
+src/std/fs/path.inko:708:25-708:51	Try	Nil	derived
+src/std/fs/path.inko:708:29-708:51	Call	Result[Nil, Error]
+src/std/fs/path.inko:708:29-708:31	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:708:50-708:50	IdentifierRef	String
+src/std/fs/path.inko:709:19-709:23	Break	Never	derived
+src/std/fs/path.inko:713:5-713:18	Call	Result[Nil, Error]
+src/std/fs/path.inko:713:5-713:10	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:713:15-713:17	Nil	Nil
+src/std/fs/path.inko:733:5-733:31	Call	Result[Nil, Error]
+src/std/fs/path.inko:733:5-733:7	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:733:26-733:30	FieldRef	String
+src/std/fs/path.inko:758:5-762:5	Match	Nil
+src/std/fs/path.inko:758:11-758:26	IdentifierRef	Result[Nil, Error]
+src/std/fs/path.inko:759:45-759:65	Return	Result[Nil, Error]
+src/std/fs/path.inko:759:52-759:65	Call	Result[Nil, Error]
+src/std/fs/path.inko:759:52-759:57	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:759:62-759:64	Nil	Nil
+src/std/fs/path.inko:761:24-761:30	Throw	Error
+src/std/fs/path.inko:761:30-761:30	IdentifierRef	Error
+src/std/fs/path.inko:764:5-771:6	Try	String	derived
+src/std/fs/path.inko:764:9-771:6	Call	Result[String, Error]
+src/std/fs/path.inko:764:9-764:18	IdentifierRef	Components
+src/std/fs/path.inko:764:31-764:32	String	String
+src/std/fs/path.inko:764:35-771:5	Closure	fn (String, Slice[String]) -> Result[String, Error]
+src/std/fs/path.inko:765:7-765:53	DefineVariable	Nil
+src/std/fs/path.inko:765:18-765:53	Call	String
+src/std/fs/path.inko:765:31-765:37	IdentifierRef	String
+src/std/fs/path.inko:765:40-765:52	Call	String
+src/std/fs/path.inko:765:40-765:42	IdentifierRef	Slice[String]
+src/std/fs/path.inko:767:7-770:7	Match	Result[String, Error]
+src/std/fs/path.inko:767:13-767:38	Call	Result[Nil, Error]
+src/std/fs/path.inko:767:13-767:15	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:767:34-767:37	IdentifierRef	String
+src/std/fs/path.inko:768:47-768:61	Call	Result[String, Error]
+src/std/fs/path.inko:768:47-768:52	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:768:57-768:60	IdentifierRef	String
+src/std/fs/path.inko:769:26-769:40	Call	Result[String, Error]
+src/std/fs/path.inko:769:26-769:31	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:769:39-769:39	IdentifierRef	Error
+src/std/fs/path.inko:773:5-773:18	Call	Result[Nil, Error]
+src/std/fs/path.inko:773:5-773:10	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:773:15-773:17	Nil	Nil
+src/std/fs/path.inko:799:5-799:38	Call	Result[Int, Error]
+src/std/fs/path.inko:799:5-799:7	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:799:19-799:23	FieldRef	String
+src/std/fs/path.inko:799:26-799:37	Call	String
+src/std/fs/path.inko:799:26-799:27	IdentifierRef	ref T
+src/std/fs/path.inko:826:5-826:24	Call	Components
+src/std/fs/path.inko:826:5-826:14	ConstantRef	Components	symbol
+src/std/fs/path.inko:826:20-826:23	SelfObject	ref Path
+src/std/fs/path.inko:845:5-845:25	DefineVariable	Nil
+src/std/fs/path.inko:845:16-845:25	IdentifierRef	Components
+src/std/fs/path.inko:846:5-851:6	DefineVariable	Nil
+src/std/fs/path.inko:846:17-851:6	Call	Bool
+src/std/fs/path.inko:846:17-846:33	Call	Components
+src/std/fs/path.inko:846:17-846:22	IdentifierRef	ref Path
+src/std/fs/path.inko:846:40-851:5	Closure	fn (Slice[String]) -> Bool
+src/std/fs/path.inko:847:7-850:7	Match	Bool
+src/std/fs/path.inko:847:13-847:21	Call	Option[Slice[String]]
+src/std/fs/path.inko:847:13-847:16	IdentifierRef	Components
+src/std/fs/path.inko:848:28-848:41	Call	Bool
+src/std/fs/path.inko:848:28-848:31	IdentifierRef	Slice[String]
+src/std/fs/path.inko:848:36-848:41	IdentifierRef	Slice[String]
+src/std/fs/path.inko:849:19-849:23	False	Bool
+src/std/fs/path.inko:853:5-857:5	Match	Option[Path]
+src/std/fs/path.inko:853:8-853:12	IdentifierRef	Bool
+src/std/fs/path.inko:854:7-854:57	Call	Option[Path]
+src/std/fs/path.inko:854:7-854:12	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:854:19-854:56	Call	Path
+src/std/fs/path.inko:854:19-854:22	ConstantRef	Path	symbol
+src/std/fs/path.inko:854:28-854:55	Call	String
+src/std/fs/path.inko:854:28-854:33	ConstantRef	String	symbol
+src/std/fs/path.inko:854:40-854:43	IdentifierRef	Components
+src/std/fs/path.inko:854:46-854:54	ConstantRef	String
+src/std/fs/path.inko:856:7-856:17	Call	Option[Path]
+src/std/fs/path.inko:856:7-856:12	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:880:5-880:28	Call	Result[Metadata, Error]
+src/std/fs/path.inko:880:5-880:7	IdentifierRef	std.sys.unix.fs	symbol
+src/std/fs/path.inko:880:23-880:27	FieldRef	String
+src/std/fs/path.inko:897:5-897:38	Call	Bool
+src/std/fs/path.inko:897:5-897:9	FieldRef	String
+src/std/fs/path.inko:897:24-897:37	Call	String
+src/std/fs/path.inko:897:24-897:27	IdentifierRef	ref T
+src/std/fs/path.inko:914:5-914:36	Call	Bool
+src/std/fs/path.inko:914:5-914:9	FieldRef	String
+src/std/fs/path.inko:914:22-914:35	Call	String
+src/std/fs/path.inko:914:22-914:25	IdentifierRef	ref T
+src/std/fs/path.inko:934:5-934:28	Call	Bool
+src/std/fs/path.inko:934:5-934:9	FieldRef	String
+src/std/fs/path.inko:934:14-934:28	Call	String
+src/std/fs/path.inko:934:14-934:18	IdentifierRef	ref Path
+src/std/fs/path.inko:953:5-953:9	FieldRef	String
+src/std/fs/path.inko:959:5-959:9	FieldRef	String
+src/std/fs/path.inko:965:5-965:19	Call	Path
+src/std/fs/path.inko:965:5-965:8	ConstantRef	Path	symbol
+src/std/fs/path.inko:965:14-965:18	FieldRef	String
+src/std/fs/path.inko:971:5-971:24	Call	Nil
+src/std/fs/path.inko:971:5-971:9	FieldRef	String
+src/std/fs/path.inko:971:15-971:23	IdentifierRef	mut Formatter
+src/std/fs/path.inko:977:5-977:22	Call	Nil
+src/std/fs/path.inko:977:5-977:9	FieldRef	String
+src/std/fs/path.inko:977:16-977:21	IdentifierRef	mut H: mut
+src/std/fs/path.inko:990:5-1007:5	Loop	Never	derived
+src/std/fs/path.inko:991:7-1006:7	Match	Nil
+src/std/fs/path.inko:991:13-991:25	Call	Option[Result[DirectoryEntry, Error]]
+src/std/fs/path.inko:991:13-991:20	FieldRef	mut ReadDirectory
+src/std/fs/path.inko:992:60-992:72	Call	Nil
+src/std/fs/path.inko:992:60-992:64	FieldRef	mut Array[Path]
+src/std/fs/path.inko:992:71-992:71	IdentifierRef	Path
+src/std/fs/path.inko:993:33-993:68	Return	Option[Result[DirectoryEntry, Error]]
+src/std/fs/path.inko:993:40-993:68	Call	Option[Result[DirectoryEntry, Error]]
+src/std/fs/path.inko:993:40-993:45	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:993:52-993:67	Call	Result[DirectoryEntry, Error]
+src/std/fs/path.inko:993:52-993:57	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:993:62-993:66	IdentifierRef	DirectoryEntry
+src/std/fs/path.inko:994:32-994:66	Return	Option[Result[DirectoryEntry, Error]]
+src/std/fs/path.inko:994:39-994:66	Call	Option[Result[DirectoryEntry, Error]]
+src/std/fs/path.inko:994:39-994:44	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:994:51-994:65	Call	Result[DirectoryEntry, Error]
+src/std/fs/path.inko:994:51-994:56	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:994:64-994:64	IdentifierRef	Error
+src/std/fs/path.inko:996:11-1004:11	Match	Nil
+src/std/fs/path.inko:996:17-996:25	Call	Option[Path]
+src/std/fs/path.inko:996:17-996:21	FieldRef	mut Array[Path]
+src/std/fs/path.inko:998:15-1001:15	Match	Nil
+src/std/fs/path.inko:998:21-998:28	Call	Result[ReadDirectory, Error]
+src/std/fs/path.inko:998:21-998:23	IdentifierRef	Path
+src/std/fs/path.inko:999:34-999:48	AssignField	ReadDirectory
+src/std/fs/path.inko:999:45-999:48	IdentifierRef	ReadDirectory
+src/std/fs/path.inko:1000:34-1000:68	Return	Option[Result[DirectoryEntry, Error]]
+src/std/fs/path.inko:1000:41-1000:68	Call	Option[Result[DirectoryEntry, Error]]
+src/std/fs/path.inko:1000:41-1000:46	ConstantRef	Option[T]	symbol
+src/std/fs/path.inko:1000:53-1000:67	Call	Result[DirectoryEntry, Error]
+src/std/fs/path.inko:1000:53-1000:58	ConstantRef	Result[T, E]	symbol
+src/std/fs/path.inko:1000:66-1000:66	IdentifierRef	Error
+src/std/fs/path.inko:1003:23-1003:40	Return	Option[Result[DirectoryEntry, Error]]
+src/std/fs/path.inko:1003:30-1003:40	Call	Option[Result[DirectoryEntry, Error]]
+src/std/fs/path.inko:1003:30-1003:35	ConstantRef	Option[T]	symbol
