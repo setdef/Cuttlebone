@@ -6,23 +6,45 @@
 //! and ast/src/lexer.rs:1150 for string text), using the same
 //! `unicode-segmentation` crate as this module. An end column is inclusive.
 //!
-//! The protocol's lines and columns start at 0, a column counts UTF-16 code
-//! units (as in LSP and IntelliJ), and an end is exclusive.
+//! A `Position`'s lines and columns start at 0, a column counts code units of
+//! an `Encoding` (UTF-16 or UTF-8, as LSP negotiates), and an end is
+//! exclusive.
 //!
 //! The lexer segments each token on its own, and this module segments whole
 //! lines. They only disagree when a grapheme cluster would span two tokens,
 //! which needs a combining character or joiner right after a token boundary,
 //! such as a string that starts with U+0301.
 use location::Location;
+use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
-/// A protocol position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// A position in a file, as an editor gives it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Position {
     /// 0-based.
     pub line: u32,
-    /// 0-based, in UTF-16 code units.
+    /// 0-based, in code units of the position's encoding.
     pub character: u32,
+}
+
+/// What a `Position`'s `character` counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Encoding {
+    /// UTF-16 code units, as in LSP's default, VS Code and IntelliJ.
+    #[default]
+    Utf16,
+    /// Bytes, as in Neovim.
+    Utf8,
+}
+
+impl Encoding {
+    /// The number of code units in `text`.
+    pub fn len(self, text: &str) -> u32 {
+        match self {
+            Encoding::Utf16 => text.encode_utf16().count() as u32,
+            Encoding::Utf8 => text.len() as u32,
+        }
+    }
 }
 
 /// The compiler's position of one grapheme cluster.
@@ -37,13 +59,20 @@ pub struct HirPosition {
 /// The lines of a source file, for converting positions.
 pub struct Lines<'a> {
     lines: Vec<&'a str>,
+    encoding: Encoding,
 }
 
 impl<'a> Lines<'a> {
+    /// The lines of `text`, for positions in UTF-16.
     pub fn new(text: &'a str) -> Self {
+        Lines::with_encoding(text, Encoding::Utf16)
+    }
+
+    pub fn with_encoding(text: &'a str, encoding: Encoding) -> Self {
         // The lexer starts a new line after each \n (ast/src/lexer.rs:512-516).
         Lines {
             lines: text.split('\n').collect(),
+            encoding,
         }
     }
 
@@ -56,7 +85,7 @@ impl<'a> Lines<'a> {
         let mut column = 1;
 
         for cluster in line.graphemes(true) {
-            let width = utf16_len(cluster);
+            let width = self.encoding.len(cluster);
 
             if position.character < units + width {
                 break;
@@ -72,7 +101,7 @@ impl<'a> Lines<'a> {
         })
     }
 
-    /// The UTF-16 offset where the cluster at a compiler column starts. A
+    /// The offset where the cluster at a compiler column starts. A
     /// column past the end of the line is clamped to the end.
     pub fn from_hir(&self, line: u32, column: u32) -> Position {
         let index = line.saturating_sub(1);
@@ -80,7 +109,7 @@ impl<'a> Lines<'a> {
         let character = text
             .graphemes(true)
             .take(column.saturating_sub(1) as usize)
-            .map(utf16_len)
+            .map(|c| self.encoding.len(c))
             .sum();
 
         Position {
@@ -89,17 +118,13 @@ impl<'a> Lines<'a> {
         }
     }
 
-    /// A compiler location as a protocol range, with an exclusive end.
+    /// A compiler location as a range of positions, with an exclusive end.
     pub fn range(&self, location: &Location) -> (Position, Position) {
         (
             self.from_hir(location.line_start, location.column_start),
             self.from_hir(location.line_end, location.column_end + 1),
         )
     }
-}
-
-fn utf16_len(text: &str) -> u32 {
-    text.encode_utf16().count() as u32
 }
 
 /// Whether a location contains a position.
@@ -162,6 +187,22 @@ mod tests {
         assert_eq!(lines.to_hir(pos(0, 99)), Some(hir(1, 3)));
         assert_eq!(lines.from_hir(1, 99), pos(0, 2));
         assert_eq!(lines.to_hir(pos(2, 0)), None);
+    }
+
+    #[test]
+    fn utf8_positions_count_bytes() {
+        // é is 2 bytes, 😀 is 4, e + U+0301 is 3, the family is 18.
+        let text = "'é' '😀' 'e\u{301}' '👩\u{200d}👩\u{200d}👦' x";
+        let lines = Lines::with_encoding(text, Encoding::Utf8);
+        let x = text.len() as u32 - 1;
+
+        assert_eq!(lines.to_hir(pos(0, x)), Some(hir(1, 17)));
+        assert_eq!(lines.from_hir(1, 17), pos(0, x));
+        // Inside the 4 bytes of 😀 is the 😀.
+        assert_eq!(lines.to_hir(pos(0, 6)), Some(hir(1, 6)));
+        assert_eq!(lines.to_hir(pos(0, 9)), Some(hir(1, 6)));
+        assert_eq!(lines.to_hir(pos(0, 10)), Some(hir(1, 7)));
+        assert_eq!(lines.from_hir(1, 7), pos(0, 10));
     }
 
     #[test]

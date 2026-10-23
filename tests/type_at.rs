@@ -15,7 +15,7 @@ fn desugar() -> Project {
 fn kind_and_type(p: &Project, needle: &str, offset: u32) -> (&'static str, String) {
     let t = p.type_at(MAIN, None, needle, offset).unwrap().unwrap();
 
-    (t.kind, t.typ)
+    (t.kind.leak(), t.typ)
 }
 
 #[test]

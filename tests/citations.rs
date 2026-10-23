@@ -22,11 +22,20 @@ const CITATIONS: &[(&str, &str)] = &[
         "const ARRAY_LIT_VAR: &str = \"$array\";",
     ),
     ("compiler/src/mir/passes.rs:1836", ".unwrap()"),
+    ("compiler/src/compiler.rs:795-810", "fn prepare(&mut self)"),
     (
-        "compiler/src/pkg/manifest.rs:12",
-        "PathBuf::from(MANIFEST_FILE)",
+        "compiler/src/compiler.rs:812",
+        "sync_if_needed(&self.state.config.dependencies)?;",
     ),
-    ("compiler/src/pkg/sync.rs:201-211", "read(MANIFEST_FILE)"),
+    (
+        "compiler/src/pkg/manifest.rs:11-34",
+        "let mut paths = vec![PathBuf::from(MANIFEST_FILE)];",
+    ),
+    (
+        "compiler/src/pkg/sync.rs:22-31",
+        "let (data, _data_lock) = data_dir()?;",
+    ),
+    ("compiler/src/pkg/util.rs:11-23", "create_dir_all(&path)"),
     (
         "compiler/src/type_check/expressions.rs:1335-1342",
         "hir::Expression::infer_recover(old)",

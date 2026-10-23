@@ -3,19 +3,25 @@
 //! It type checks a project with the upstream compiler (patched to expose
 //! the typed HIR; see patches/README.md), walks the typed HIR, and answers
 //! questions about the types of expressions.
+//!
+//! The core (this module, `query`, `walker` and `position`) knows nothing
+//! about editors or LSP. `worker` runs one query in a child process, and
+//! `lsp` is the language server front end.
 use compiler::compiler::{CompileError, Compiler};
 use compiler::config::Config;
 use compiler::hir;
+use compiler::pkg::manifest::{MANIFEST_FILE, Manifest};
+use compiler::pkg::version::Version;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use types::Database;
 
+pub mod lsp;
 pub mod position;
 pub mod query;
-pub mod server;
 pub mod walker;
+pub mod worker;
 
 pub use walker::{Expr, Origin};
 
@@ -147,44 +153,78 @@ pub struct Run<R> {
     pub total: Duration,
 }
 
-/// Serializes checks, because each one changes the working directory.
-static CHECKING: Mutex<()> = Mutex::new(());
+/// Refuses a project that requires a newer Inko than the one linked, as
+/// `Compiler::prepare` does (compiler/src/compiler.rs:795-810) for `inko
+/// check`. `prepare` reads the manifests relative to the working directory
+/// (compiler/src/pkg/manifest.rs:11-34), and then syncs `dep/` if `inko.pkg`
+/// changed (compiler/src/compiler.rs:812), which can download packages, and
+/// which first creates and locks the packages directory under the user's
+/// data directory even when nothing changed (compiler/src/pkg/sync.rs:22-31,
+/// compiler/src/pkg/util.rs:11-23). Queries mustn't have side effects, so
+/// `check_with` doesn't call `prepare` (see patches/README.md), and this
+/// repeats only its version check, with absolute paths.
+pub fn check_required_version(target: &Target) -> Result<(), String> {
+    let current = Version::parse(upstream_version()).unwrap();
+    let mut paths = vec![target.root.join(MANIFEST_FILE)];
+    let deps = target.root.join("dep");
 
-/// Restores the working directory when dropped, including on a panic.
-struct WorkingDirectory(PathBuf);
-
-impl WorkingDirectory {
-    fn enter(dir: &Path) -> Result<WorkingDirectory, String> {
-        let old = std::env::current_dir().map_err(|e| e.to_string())?;
-
-        std::env::set_current_dir(dir).map_err(|e| format!("{}: {}", dir.display(), e))?;
-        Ok(WorkingDirectory(old))
+    if deps.is_dir() {
+        for dep in read_dir_sorted(&deps)? {
+            if dep.is_dir() {
+                for version in read_dir_sorted(&dep)? {
+                    if version.is_dir() {
+                        paths.push(version.join(MANIFEST_FILE));
+                    }
+                }
+            }
+        }
     }
+
+    for path in paths.into_iter().filter(|p| p.is_file()) {
+        let manifest = Manifest::load(&path)
+            .map_err(|e| format!("failed to load the manifest '{}': {}", path.display(), e))?;
+
+        if let Some(required) = manifest.minimum_inko_version()
+            && required > current
+        {
+            return Err(format!(
+                "this project requires Inko {} or newer, but the current version is {}",
+                required, current
+            ));
+        }
+    }
+
+    Ok(())
 }
 
-impl Drop for WorkingDirectory {
-    fn drop(&mut self) {
-        let _ = std::env::set_current_dir(&self.0);
-    }
+fn read_dir_sorted(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths = std::fs::read_dir(dir)
+        .and_then(|entries| {
+            entries
+                .map(|e| e.map(|e| e.path()))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|e| format!("failed to read the dependency manifests: {}", e))?;
+
+    paths.sort();
+    Ok(paths)
 }
 
 /// Type checks a target and passes the typed HIR to `inspect`. With `mir`
 /// set it also lowers to MIR, where some errors (e.g. moves) are found, but
 /// types never depend on that.
 ///
-/// The check runs with the target's root as the working directory, because
-/// the compiler reads `inko.pkg` from there (compiler/src/pkg/manifest.rs:12
-/// and compiler/src/pkg/sync.rs:201-211): for the Inko version the project
-/// requires, and to sync `dep/` if the manifest changed since the last sync,
-/// as `inko check` does.
+/// It has no side effects: unlike `inko check`, it never syncs `dep/` (see
+/// `check_required_version`), and it doesn't depend on the working
+/// directory.
 pub fn run<R>(
     target: &Target,
     mir: bool,
     print_diagnostics: bool,
     inspect: impl FnOnce(&Database, &[hir::Module]) -> R,
 ) -> Result<Run<R>, String> {
-    let _lock = CHECKING.lock().unwrap_or_else(|e| e.into_inner());
-    let _cwd = WorkingDirectory::enter(&target.root)?;
+    check_required_version(target)?;
+
     let mut compiler = Compiler::new(target.config()?);
     let start = Instant::now();
     let mut type_check = Duration::ZERO;

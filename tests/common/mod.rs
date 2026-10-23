@@ -1,12 +1,13 @@
 //! Helpers shared by the integration tests.
 #![allow(dead_code)]
-use cuttlebone::position::Position;
+use cuttlebone::position::{Encoding, Position};
 use cuttlebone::query::{self, MembersAt, Request, Session, TypeAt, Unavailable};
 use cuttlebone::upstream_std;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The completion placeholder IntelliJ inserts at the caret.
+/// A completion placeholder, as IntelliJ inserts at the caret. `members_at`
+/// works with any name; `query::complete` inserts its own.
 pub const PLACEHOLDER: &str = "IntellijIdeaRulezzz";
 
 pub fn fixture(name: &str) -> PathBuf {
@@ -30,7 +31,7 @@ impl Project {
         Project {
             session: Session {
                 std: upstream_std(),
-                project: Some(root.clone()),
+                projects: vec![root.clone()],
             },
             root,
         }
@@ -58,6 +59,7 @@ impl Project {
         Request {
             file: path,
             position: position_of(&source, needle, offset),
+            encoding: Encoding::Utf16,
             contents,
         }
     }
@@ -81,7 +83,7 @@ impl Project {
     }
 
     /// Replaces `member` in `receiver.member` (the first occurrence of
-    /// `before`) with the placeholder, as Parakeet does, and asks for the
+    /// `before`) with a placeholder, as IntelliJ does, and asks for the
     /// members at the placeholder.
     pub fn members_at(
         &self,

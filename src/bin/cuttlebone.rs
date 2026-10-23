@@ -1,34 +1,47 @@
-//! Cuttlebone's type service: reads JSON requests from stdin and writes
-//! replies to stdout, one per line (docs/protocol.md).
+//! Cuttlebone, a language server: speaks LSP on stdin and stdout
+//! (docs/lsp.md).
 //!
-//! Usage: cuttlebone [--version]
-use cuttlebone::server::{PROTOCOL, Server};
-use cuttlebone::{VERSION, upstream_version};
+//! Usage: cuttlebone [--stdio | --version]
+use cuttlebone::worker::{self, WORKER_FLAG};
+use cuttlebone::{VERSION, lsp, upstream_version};
+use lsp_server::Connection;
 use std::process::ExitCode;
 
+#[allow(clippy::print_stdout, clippy::print_stderr)]
 fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
-        None => {}
+        // Clients such as VS Code's pass --stdio; it's the only transport.
+        None | Some("--stdio") => {}
         Some("--version") => {
-            println!(
-                "cuttlebone {} (Inko {}, protocol {})",
-                VERSION,
-                upstream_version(),
-                PROTOCOL
-            );
+            println!("cuttlebone {} (Inko {})", VERSION, upstream_version());
             return ExitCode::SUCCESS;
         }
+        Some(WORKER_FLAG) => {
+            return match worker::serve() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("cuttlebone worker: {}", e);
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Some(_) => {
-            eprintln!("usage: cuttlebone [--version]");
+            eprintln!("usage: cuttlebone [--stdio | --version]");
             return ExitCode::from(2);
         }
     }
 
-    let stdin = std::io::stdin().lock();
-    let stdout = std::io::stdout().lock();
+    let (connection, threads) = Connection::stdio();
+    let result = lsp::serve(connection);
 
-    match Server::new().serve(stdin, stdout) {
-        Ok(()) => ExitCode::SUCCESS,
+    // The reader thread ends after `exit`, or when stdin closes; the writer
+    // thread ends once everything queued is written.
+    let _ = threads.join();
+
+    match result {
+        Ok(true) => ExitCode::SUCCESS,
+        // `exit` without `shutdown` first, as LSP specifies.
+        Ok(false) => ExitCode::FAILURE,
         Err(e) => {
             eprintln!("cuttlebone: {}", e);
             ExitCode::FAILURE

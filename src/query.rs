@@ -3,11 +3,12 @@
 //!
 //! Every answer is computed from a fresh type check of the file and what it
 //! imports. Nothing is kept between requests.
-use crate::position::{HirPosition, Lines, Position, contains};
+use crate::position::{Encoding, HirPosition, Lines, Position, contains};
 use crate::walker::{Expr, Walker, expressions_pass_ran};
 use crate::{Target, project_root, run};
 use compiler::hir;
 use location::Location;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -21,57 +22,62 @@ use types::{
 };
 
 /// What a request needs to know about the project.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Session {
     /// The standard library's source directory.
     pub std: PathBuf,
-    /// The project root given in the handshake. Files under it are checked
-    /// as part of it; other files (e.g. the standard library's) are checked
-    /// as part of the nearest project containing them.
-    pub project: Option<PathBuf>,
+    /// The project roots the editor has open. A file under one's `src/` or
+    /// `test/` is checked as part of it; other files (e.g. the standard
+    /// library's) are checked as part of the nearest project containing
+    /// them.
+    pub projects: Vec<PathBuf>,
 }
 
 /// A question about a position in a file.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Request {
     pub file: PathBuf,
     pub position: Position,
+    /// What `position` and the answer's ranges count.
+    pub encoding: Encoding,
     /// Text to use instead of files' contents on disk, e.g. unsaved buffers.
     pub contents: HashMap<PathBuf, String>,
 }
 
 /// Why there's no answer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Unavailable {
-    /// A stable identifier, documented in docs/protocol.md.
-    pub code: &'static str,
+    /// A stable identifier, documented in docs/lsp.md.
+    pub code: String,
     /// A description for people.
     pub message: String,
 }
 
 impl Unavailable {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(code: &str, message: impl Into<String>) -> Self {
         Unavailable {
-            code,
+            code: code.to_string(),
             message: message.into(),
         }
     }
 }
 
-/// A protocol range: 0-based, UTF-16 columns, exclusive end.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A range of positions, with an exclusive end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeAt {
     pub typ: String,
     pub range: Range,
     /// The HIR node's kind, e.g. `Call`. For debugging, not for logic.
-    pub kind: &'static str,
+    pub kind: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MembersAt {
     /// The receiver's type.
     pub receiver: String,
@@ -79,7 +85,7 @@ pub struct MembersAt {
     pub members: Vec<Member>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub name: String,
     pub kind: MemberKind,
@@ -93,7 +99,7 @@ pub struct Member {
     pub module: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemberKind {
     Method,
     Field,
@@ -113,6 +119,7 @@ impl MemberKind {
 }
 
 /// An answer, and how long it took.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Answer<T> {
     /// `Ok(None)` means the check worked but there's nothing at the position.
     pub result: Result<Option<T>, Unavailable>,
@@ -129,7 +136,7 @@ pub fn type_at(session: &Session, request: &Request) -> Answer<TypeAt> {
         Ok(Some(TypeAt {
             typ: typed(expr)?.to_string(),
             range: range(lines, &expr.location),
-            kind: expr.kind,
+            kind: expr.kind.to_string(),
         }))
     })
 }
@@ -167,6 +174,105 @@ pub fn members_at(session: &Session, request: &Request) -> Answer<MembersAt> {
             members,
         }))
     })
+}
+
+/// The identifier `complete` inserts at the cursor. Any identifier that
+/// can name a method works; this one is unlikely to be a real one.
+pub const PLACEHOLDER: &str = "cuttlebone_completion_placeholder";
+
+/// The members available after a `.` at the cursor, e.g. at `|` in
+/// `value.|` or `value.si|`.
+///
+/// A buffer with a `.` and nothing after it doesn't parse, so this inserts
+/// `PLACEHOLDER` at the cursor in a copy of the file's text (from the
+/// request's contents, or from disk), and asks `members_at` about it. That
+/// gives `value.PLACEHOLDER` or `value.siPLACEHOLDER`, which parse as a call
+/// whose receiver keeps its type.
+pub fn complete(session: &Session, request: &Request) -> Answer<MembersAt> {
+    let start = Instant::now();
+    let prepared = canonical(&request.file).and_then(|file| {
+        let text = match request
+            .contents
+            .iter()
+            .find(|(p, _)| canonical(p).ok() == Some(file.clone()))
+        {
+            Some((_, text)) => text.clone(),
+            None => read(&file)?,
+        };
+        let offset = byte_offset(&text, request.position, request.encoding)
+            .ok_or_else(|| invalid_position(request.position))?;
+        let mut copy = text;
+
+        copy.insert_str(offset, PLACEHOLDER);
+
+        let mut contents: HashMap<PathBuf, String> = request
+            .contents
+            .iter()
+            .filter(|(p, _)| canonical(p).ok() != Some(file.clone()))
+            .map(|(p, t)| (p.clone(), t.clone()))
+            .collect();
+
+        contents.insert(file.clone(), copy);
+        Ok(Request {
+            file,
+            position: request.position,
+            encoding: request.encoding,
+            contents,
+        })
+    });
+
+    match prepared {
+        Ok(copy) => {
+            let mut answer = members_at(session, &copy);
+
+            answer.elapsed = start.elapsed();
+            answer
+        }
+        Err(e) => Answer {
+            result: Err(e),
+            elapsed: start.elapsed(),
+        },
+    }
+}
+
+/// The byte offset of a position, or `None` if its line is past the end of
+/// the text. A character past the end of its line is the end of the line,
+/// and one inside a character is the start of that character.
+pub fn byte_offset(text: &str, position: Position, encoding: Encoding) -> Option<usize> {
+    let mut start = 0;
+
+    for _ in 0..position.line {
+        start += text[start..].find('\n')? + 1;
+    }
+
+    let line = &text[start..];
+    let line = &line[..line.find('\n').unwrap_or(line.len())];
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let mut units = 0;
+
+    for (i, c) in line.char_indices() {
+        let width = encoding.len(c.encode_utf8(&mut [0; 4]));
+
+        if position.character < units + width {
+            return Some(start + i);
+        }
+
+        units += width;
+    }
+
+    Some(start + line.len())
+}
+
+fn invalid_position(position: Position) -> Unavailable {
+    Unavailable::new(
+        "invalidPosition",
+        format!("line {} is past the end of the file", position.line),
+    )
+}
+
+fn read(file: &Path) -> Result<String, Unavailable> {
+    std::fs::read_to_string(file)
+        .map_err(|e| Unavailable::new("fileNotFound", format!("{}: {}", file.display(), e)))
 }
 
 /// Which expression a position means: the innermost expression containing
@@ -229,7 +335,7 @@ fn answer<T: Send>(
     let start = Instant::now();
     let inspect: Box<Inspect<T>> = Box::new(inspect);
     let result = prepare(session, request).and_then(|(target, text)| {
-        guarded(move || analyze(&target, &text, request.position, inspect))
+        guarded(move || analyze(&target, &text, request.position, request.encoding, inspect))
             .unwrap_or_else(|message| Err(Unavailable::new("compilerPanic", message)))
     });
 
@@ -250,14 +356,18 @@ fn prepare(session: &Session, request: &Request) -> Result<(Target, String), Una
 
     let text = match overlay.get(&file) {
         Some(text) => text.clone(),
-        None => std::fs::read_to_string(&file)
-            .map_err(|e| Unavailable::new("fileNotFound", format!("{}: {}", file.display(), e)))?,
+        None => read(&file)?,
     };
 
-    let root = match &session.project {
-        Some(p) if file.starts_with(p.join("src")) || file.starts_with(p.join("test")) => p.clone(),
-        _ => project_root(&file),
-    };
+    // The innermost project wins, e.g. a dependency checked out inside
+    // another project.
+    let root = session
+        .projects
+        .iter()
+        .filter(|p| file.starts_with(p.join("src")) || file.starts_with(p.join("test")))
+        .max_by_key(|p| p.components().count())
+        .cloned()
+        .unwrap_or_else(|| project_root(&file));
 
     let target = Target {
         root,
@@ -279,15 +389,13 @@ fn analyze<T>(
     target: &Target,
     text: &str,
     position: Position,
+    encoding: Encoding,
     inspect: Box<Inspect<T>>,
 ) -> Result<Option<T>, Unavailable> {
-    let lines = Lines::new(text);
-    let at = lines.to_hir(position).ok_or_else(|| {
-        Unavailable::new(
-            "invalidPosition",
-            format!("line {} is past the end of the file", position.line),
-        )
-    })?;
+    let lines = Lines::with_encoding(text, encoding);
+    let at = lines
+        .to_hir(position)
+        .ok_or_else(|| invalid_position(position))?;
     let file = target.file.clone().unwrap();
 
     let run = run(target, false, false, |db, modules: &[hir::Module]| {

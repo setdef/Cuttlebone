@@ -1,14 +1,14 @@
 diff --git a/compiler/src/compiler.rs b/compiler/src/compiler.rs
-index 42fad9f..9c739f9 100644
+index 42fad9f..f9789f2 100644
 --- a/compiler/src/compiler.rs
 +++ b/compiler/src/compiler.rs
-@@ -256,6 +256,17 @@ impl Compiler {
-     /// Unlike a regular build we _do_ allow concurrent checks as `inko check`
+@@ -257,7 +257,17 @@ impl Compiler {
      /// doesn't modify anything on disk.
      pub fn check(&mut self, file: Option<PathBuf>) -> Result<(), CompileError> {
+         self.prepare()?;
 +        self.check_with(file, |_, _| true)
 +    }
-+
+ 
 +    /// Type checks like `check`, passing the typed HIR to `inspect` before
 +    /// it's lowered to MIR. `inspect` also runs if type checking fails, and
 +    /// returning `false` from it skips lowering to MIR.
@@ -17,10 +17,10 @@ index 42fad9f..9c739f9 100644
 +        file: Option<PathBuf>,
 +        inspect: F,
 +    ) -> Result<(), CompileError> {
-         self.prepare()?;
- 
          let start = Instant::now();
-@@ -276,8 +287,13 @@ impl Compiler {
+ 
+         // When checking a project we want to fall back to checking _all_ files
+@@ -276,8 +286,13 @@ impl Compiler {
  
          let ast = self.parse(input);
          let mut hir = self.compile_hir(ast)?;
