@@ -37,6 +37,18 @@ const CITATIONS: &[(&str, &str)] = &[
     ),
     ("compiler/src/pkg/util.rs:11-23", "create_dir_all(&path)"),
     (
+        "compiler/src/type_check/methods.rs:1030-1094",
+        "node.constructor_id = Some(constructor);",
+    ),
+    (
+        "compiler/src/type_check/methods.rs:1283-1291",
+        "let source = MethodSource::Inherited(trait_ins, method);",
+    ),
+    (
+        "compiler/src/type_check/methods.rs:198-204",
+        "method.new_argument(",
+    ),
+    (
         "compiler/src/type_check/expressions.rs:1335-1342",
         "hir::Expression::infer_recover(old)",
     ),

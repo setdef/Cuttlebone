@@ -1,0 +1,12 @@
+# The other module that defines a type named Error.
+type pub Error {
+  let pub @code: Int
+
+  fn pub static new(code: Int) -> Error {
+    Error(code: code)
+  }
+
+  fn pub message -> String {
+    @code.to_string
+  }
+}

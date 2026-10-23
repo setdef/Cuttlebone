@@ -1,0 +1,57 @@
+# Names for go to definition, type definition and references.
+import alpha (Error)
+import beta
+import geometry.shapes (Area, Circle, ORIGIN)
+import std.stdio (Stdout)
+
+type pub Point {
+  let pub @x: Int
+  let @label: String
+
+  fn static new(x: Int, label: String) -> Point {
+    Point(x: x, label: label)
+  }
+
+  fn pub moved(by: Int) -> Point {
+    Point(x: @x + by, label: @label)
+  }
+}
+
+type enum Shape {
+  case Square(Int)
+  case Dot
+}
+
+fn total[T: Area](shapes: ref Array[T]) -> Float {
+  let mut sum = 0.0
+
+  for shape in shapes.iter {
+    sum += shape.area
+  }
+
+  sum
+}
+
+fn describe(shape: ref Shape) -> Int {
+  match shape {
+    case Square(side) -> side
+    case Dot -> 0
+  }
+}
+
+type async Main {
+  fn async main {
+    let point = Point.new(x: 1, label: 'héllo')
+    let maybe = Option.Some(point.moved(2))
+    let error = Error.new('a')
+    let other = beta.Error.new(1)
+    let circles = [Circle.new(2.0)]
+    let areas = circles.iter.map(fn (c) { c.area * 2.0 }).to_array
+    let pair = (1, 'two')
+    let n = '中文😀'.size + point.moved(3).x
+
+    Stdout.new.print(error.message + other.message + ORIGIN.to_string)
+    Stdout.new.print(describe(Shape.Square(3)).to_string + total(circles).to_string)
+    Stdout.new.print(maybe.get.x.to_string + areas.size.to_string + pair.0.to_string + n.to_string)
+  }
+}

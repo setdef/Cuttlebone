@@ -9,12 +9,15 @@
 use compiler::hir;
 use location::Location;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use types::format::format_type;
 use types::{
-    CallKind, ConstantKind, Database, IdentifierKind, ModuleId, Receiver, Symbol, ThrowKind,
-    TypeEnum, TypeRef,
+    CallKind, ConstantId, ConstantKind, ConstantPatternKind, ConstructorId, Database, FieldId,
+    IdentifierKind, MethodId, MethodKind, MethodSource, ModuleId, Receiver, Symbol, ThrowKind,
+    TraitId, TypeEnum, TypeId, TypeParameterId, TypeRef, VariableId,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 /// One expression (or variable binding) in the typed HIR.
 #[derive(Clone, Debug)]
@@ -63,6 +66,351 @@ pub struct CallSite {
     pub receiver_is_self: bool,
 }
 
+/// What a name refers to, as one of the compiler's ids. Two names refer to
+/// the same symbol only if their ids are equal, so same-named symbols in
+/// different modules stay apart.
+#[derive(Clone, Copy, Debug)]
+pub enum SymbolId {
+    Module(ModuleId),
+    Type(TypeId),
+    Trait(TraitId),
+    TypeParameter(TypeParameterId),
+    Constant(ConstantId),
+    Method(MethodId),
+    Field(FieldId),
+    Constructor(ConstructorId),
+    Variable(VariableId),
+}
+
+impl SymbolId {
+    // `ConstructorId` isn't `Hash`, so symbols compare by kind and number.
+    fn key(self) -> (u8, usize) {
+        match self {
+            SymbolId::Module(id) => (0, id.0 as usize),
+            SymbolId::Type(id) => (1, id.0 as usize),
+            SymbolId::Trait(id) => (2, id.0 as usize),
+            SymbolId::TypeParameter(id) => (3, id.0),
+            SymbolId::Constant(id) => (4, id.0),
+            SymbolId::Method(id) => (5, id.0 as usize),
+            SymbolId::Field(id) => (6, id.0),
+            SymbolId::Constructor(id) => (7, id.0),
+            SymbolId::Variable(id) => (8, id.0),
+        }
+    }
+
+    /// The symbol a name means when several ids stand for one declaration:
+    ///
+    /// - An enum constructor's static method (`Option.Some(42)`) is the
+    ///   constructor (`define_constructor_method`,
+    ///   compiler/src/type_check/methods.rs:1030-1094), which patterns refer
+    ///   to directly.
+    /// - A default method a type inherits from a trait without redefining
+    ///   it is a copy of the trait's method (compiler/src/type_check/methods.rs:1283-1291).
+    /// - A type parameter with an `impl ... if T: Trait` bound is a copy of
+    ///   the original (`TypeParameterId::original`).
+    pub fn canonical(self, db: &Database) -> SymbolId {
+        match self {
+            SymbolId::Method(id) => {
+                if id.kind(db) == MethodKind::Constructor
+                    && let TypeEnum::Type(typ) = id.receiver_id(db)
+                    && let Some(c) = typ.constructor(db, id.name(db))
+                {
+                    return SymbolId::Constructor(c);
+                }
+
+                match id.source(db) {
+                    MethodSource::Inherited(_, original) => {
+                        SymbolId::Method(original).canonical(db)
+                    }
+                    _ => self,
+                }
+            }
+            SymbolId::TypeParameter(id) => match id.original(db) {
+                Some(original) if original != id => SymbolId::TypeParameter(original).canonical(db),
+                _ => self,
+            },
+            _ => self,
+        }
+    }
+
+    /// The symbol's name as declared.
+    pub fn name(self, db: &Database) -> String {
+        match self {
+            SymbolId::Module(id) => id.name(db).to_string(),
+            SymbolId::Type(id) => id.name(db).clone(),
+            SymbolId::Trait(id) => id.name(db).clone(),
+            SymbolId::TypeParameter(id) => id.name(db).clone(),
+            SymbolId::Constant(id) => id.name(db).clone(),
+            SymbolId::Method(id) => id.name(db).clone(),
+            SymbolId::Field(id) => id.name(db).clone(),
+            SymbolId::Constructor(id) => id.name(db).clone(),
+            SymbolId::Variable(id) => id.name(db).clone(),
+        }
+    }
+
+    /// The kind's name, e.g. `method`. For messages and tests.
+    pub fn kind(self) -> &'static str {
+        match self {
+            SymbolId::Module(_) => "module",
+            SymbolId::Type(_) => "type",
+            SymbolId::Trait(_) => "trait",
+            SymbolId::TypeParameter(_) => "type parameter",
+            SymbolId::Constant(_) => "constant",
+            SymbolId::Method(_) => "method",
+            SymbolId::Field(_) => "field",
+            SymbolId::Constructor(_) => "constructor",
+            SymbolId::Variable(_) => "variable",
+        }
+    }
+}
+
+impl PartialEq for SymbolId {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for SymbolId {}
+
+impl Hash for SymbolId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
+}
+
+/// A name in the source, and the symbol it refers to or declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reference {
+    /// Where the name is.
+    pub location: Location,
+    /// Already canonical (`SymbolId::canonical`).
+    pub symbol: SymbolId,
+}
+
+/// The type, trait or type parameter a type is declared by, without its
+/// ownership or type arguments: `ref Option[String]` is `Option`. A module
+/// used as a value is the module. Closures, C types and `Never` have no
+/// declaration.
+pub fn type_symbol(db: &Database, typ: TypeRef) -> Option<SymbolId> {
+    let symbol = match typ.as_type_enum(db).ok()? {
+        TypeEnum::Type(id) => SymbolId::Type(id),
+        TypeEnum::TypeInstance(ins) => SymbolId::Type(ins.instance_of()),
+        TypeEnum::Trait(id) => SymbolId::Trait(id),
+        TypeEnum::TraitInstance(ins) => SymbolId::Trait(ins.instance_of()),
+        TypeEnum::TypeParameter(id)
+        | TypeEnum::RigidTypeParameter(id)
+        | TypeEnum::AtomicTypeParameter(id) => SymbolId::TypeParameter(id),
+        TypeEnum::Module(id) => SymbolId::Module(id),
+        TypeEnum::Closure(_) | TypeEnum::Foreign(_) => return None,
+    };
+
+    Some(symbol.canonical(db))
+}
+
+/// The symbols a module declares, at their names: types, traits, their
+/// type parameters, constructors and fields, constants, methods and their
+/// arguments. Method bodies aren't visited, so this is cheap enough to run
+/// on every module of a check.
+pub fn declarations(db: &Database, module: &hir::Module) -> Vec<Reference> {
+    let mut out = Vec::new();
+    let mut add = |location: Location, symbol: Option<SymbolId>| {
+        if let Some(symbol) = symbol {
+            out.push(Reference {
+                location,
+                symbol: symbol.canonical(db),
+            });
+        }
+    };
+
+    for expr in &module.expressions {
+        match expr {
+            hir::TopLevelExpression::Type(n) => {
+                add(n.name.location, n.type_id.map(SymbolId::Type));
+                type_parameters(&n.type_parameters, &mut add);
+
+                for e in &n.body {
+                    match e {
+                        hir::TypeExpression::InstanceMethod(m) => method(
+                            db,
+                            m.method_id,
+                            &m.name,
+                            &m.type_parameters,
+                            &m.arguments,
+                            &mut add,
+                        ),
+                        hir::TypeExpression::StaticMethod(m) => method(
+                            db,
+                            m.method_id,
+                            &m.name,
+                            &m.type_parameters,
+                            &m.arguments,
+                            &mut add,
+                        ),
+                        hir::TypeExpression::AsyncMethod(m) => method(
+                            db,
+                            m.method_id,
+                            &m.name,
+                            &m.type_parameters,
+                            &m.arguments,
+                            &mut add,
+                        ),
+                        hir::TypeExpression::Field(f) => {
+                            add(f.name.location, f.field_id.map(SymbolId::Field))
+                        }
+                        hir::TypeExpression::Constructor(c) => {
+                            add(c.name.location, c.constructor_id.map(SymbolId::Constructor))
+                        }
+                    }
+                }
+            }
+            hir::TopLevelExpression::ExternType(n) => {
+                add(n.name.location, n.type_id.map(SymbolId::Type));
+
+                for f in &n.fields {
+                    add(f.name.location, f.field_id.map(SymbolId::Field));
+                }
+            }
+            hir::TopLevelExpression::Constant(n) => {
+                add(n.name.location, n.constant_id.map(SymbolId::Constant))
+            }
+            hir::TopLevelExpression::ModuleMethod(m) => method(
+                db,
+                m.method_id,
+                &m.name,
+                &m.type_parameters,
+                &m.arguments,
+                &mut add,
+            ),
+            hir::TopLevelExpression::ExternFunction(m) => {
+                method(db, m.method_id, &m.name, &[], &m.arguments, &mut add)
+            }
+            hir::TopLevelExpression::Trait(n) => {
+                add(n.name.location, n.trait_id.map(SymbolId::Trait));
+                type_parameters(&n.type_parameters, &mut add);
+
+                for e in &n.body {
+                    match e {
+                        hir::TraitExpression::InstanceMethod(m) => method(
+                            db,
+                            m.method_id,
+                            &m.name,
+                            &m.type_parameters,
+                            &m.arguments,
+                            &mut add,
+                        ),
+                        hir::TraitExpression::RequiredMethod(m) => method(
+                            db,
+                            m.method_id,
+                            &m.name,
+                            &m.type_parameters,
+                            &m.arguments,
+                            &mut add,
+                        ),
+                    }
+                }
+            }
+            hir::TopLevelExpression::Implement(n) => {
+                for m in &n.body {
+                    method(
+                        db,
+                        m.method_id,
+                        &m.name,
+                        &m.type_parameters,
+                        &m.arguments,
+                        &mut add,
+                    );
+                }
+            }
+            hir::TopLevelExpression::Reopen(n) => {
+                for e in &n.body {
+                    match e {
+                        hir::ReopenTypeExpression::InstanceMethod(m) => method(
+                            db,
+                            m.method_id,
+                            &m.name,
+                            &m.type_parameters,
+                            &m.arguments,
+                            &mut add,
+                        ),
+                        hir::ReopenTypeExpression::StaticMethod(m) => method(
+                            db,
+                            m.method_id,
+                            &m.name,
+                            &m.type_parameters,
+                            &m.arguments,
+                            &mut add,
+                        ),
+                        hir::ReopenTypeExpression::AsyncMethod(m) => method(
+                            db,
+                            m.method_id,
+                            &m.name,
+                            &m.type_parameters,
+                            &m.arguments,
+                            &mut add,
+                        ),
+                    }
+                }
+            }
+            hir::TopLevelExpression::Import(_) | hir::TopLevelExpression::ExternImport(_) => {}
+        }
+    }
+
+    out
+}
+
+fn type_parameters(
+    params: &[hir::TypeParameter],
+    add: &mut impl FnMut(Location, Option<SymbolId>),
+) {
+    for p in params {
+        add(
+            p.name.location,
+            p.type_parameter_id.map(SymbolId::TypeParameter),
+        );
+    }
+}
+
+/// A method, its type parameters, and its arguments, which the type checker
+/// defines as variables in the same order as the HIR lists them
+/// (compiler/src/type_check/methods.rs:198-204, `Arguments::new_argument`).
+fn method(
+    db: &Database,
+    id: Option<MethodId>,
+    name: &hir::Identifier,
+    params: &[hir::TypeParameter],
+    arguments: &[hir::MethodArgument],
+    add: &mut impl FnMut(Location, Option<SymbolId>),
+) {
+    add(name.location, id.map(SymbolId::Method));
+    type_parameters(params, add);
+
+    let Some(id) = id else {
+        return;
+    };
+    let variables = id.arguments(db);
+
+    for (arg, var) in arguments.iter().zip(&variables) {
+        if arg.name.name == var.name {
+            add(arg.name.location, Some(SymbolId::Variable(var.variable)));
+        }
+    }
+}
+
+/// The part of a one-line location that's the trailing `name`, e.g. `Foo`
+/// in `mod.Foo`.
+fn tail(location: Location, name: &str) -> Location {
+    let width = name.graphemes(true).count() as u32;
+
+    if location.line_start != location.line_end || width == 0 || width > location.column_end {
+        return location;
+    }
+
+    Location::new(
+        &(location.line_end..=location.line_end),
+        &((location.column_end + 1 - width).max(location.column_start)..=location.column_end),
+    )
+}
+
 /// A reconstructed type compared with something the compiler did store.
 #[derive(Clone, Debug)]
 pub struct CrossCheck {
@@ -87,6 +435,12 @@ pub struct Walker<'a> {
     pub out: Vec<Expr>,
     pub calls: Vec<CallSite>,
     pub checks: Vec<CrossCheck>,
+    /// Every name that refers to a symbol, in the order walked. Names that
+    /// desugaring introduced aren't included.
+    pub references: Vec<Reference>,
+    /// The module's `declarations`, then the variables its patterns and
+    /// closures define.
+    pub declarations: Vec<Reference>,
 }
 
 impl<'a> Walker<'a> {
@@ -98,55 +452,266 @@ impl<'a> Walker<'a> {
             out: Vec::new(),
             calls: Vec::new(),
             checks: Vec::new(),
+            references: Vec::new(),
+            declarations: Vec::new(),
         }
     }
 
     pub fn module(&mut self, module: &hir::Module) {
+        self.declarations = declarations(self.db, module);
+
         for expr in &module.expressions {
             self.top_level(expr);
+        }
+    }
+
+    fn refer(&mut self, location: Location, symbol: Option<SymbolId>) {
+        if let Some(symbol) = symbol {
+            self.references.push(Reference {
+                location,
+                symbol: symbol.canonical(self.db),
+            });
+        }
+    }
+
+    fn declare(&mut self, location: Location, symbol: SymbolId) {
+        self.declarations.push(Reference {
+            location,
+            symbol: symbol.canonical(self.db),
+        });
+    }
+
+    /// The symbol a type name refers to, and the module it's qualified
+    /// with, if any.
+    fn type_name(&mut self, node: &hir::TypeName) {
+        if let Some(src) = &node.source {
+            let module = self.module_named(&src.name);
+
+            self.refer(src.location, module);
+        }
+
+        let symbol = type_symbol(self.db, node.resolved_type);
+
+        self.refer(node.name.location, symbol);
+
+        for t in &node.arguments {
+            self.type_node(t);
+        }
+    }
+
+    fn type_node(&mut self, node: &hir::Type) {
+        match node {
+            hir::Type::Named(n) => self.type_name(n),
+            hir::Type::Ref(n) | hir::Type::Mut(n) | hir::Type::Uni(n) | hir::Type::Owned(n) => {
+                match &n.type_reference {
+                    hir::ReferrableType::Named(t) => self.type_name(t),
+                    hir::ReferrableType::Closure(t) => self.closure_type(t),
+                    hir::ReferrableType::Tuple(t) => {
+                        t.values.iter().for_each(|v| self.type_node(v))
+                    }
+                }
+            }
+            hir::Type::Closure(n) => self.closure_type(n),
+            hir::Type::Tuple(n) => n.values.iter().for_each(|v| self.type_node(v)),
+        }
+    }
+
+    fn closure_type(&mut self, node: &hir::ClosureType) {
+        node.arguments.iter().for_each(|t| self.type_node(t));
+
+        if let Some(t) = &node.return_type {
+            self.type_node(t);
+        }
+    }
+
+    /// What `name:` in a call refers to: the field it sets when creating an
+    /// instance, or the method's argument.
+    fn named_argument(&self, kind: &CallKind, name: &str) -> Option<SymbolId> {
+        match kind {
+            CallKind::TypeInstance(info) => info
+                .fields
+                .iter()
+                .find(|(id, _)| id.name(self.db) == name)
+                .map(|(id, _)| SymbolId::Field(*id)),
+            CallKind::Call(info) => info
+                .id
+                .arguments(self.db)
+                .into_iter()
+                .find(|a| a.name == name)
+                .map(|a| SymbolId::Variable(a.variable)),
+            _ => None,
+        }
+    }
+
+    fn module_named(&self, name: &str) -> Option<SymbolId> {
+        match self.symbols.get(name) {
+            Some(Symbol::Module(id)) => Some(SymbolId::Module(*id)),
+            _ => None,
+        }
+    }
+
+    /// The type names in a method's signature.
+    fn signature(
+        &mut self,
+        params: &[hir::TypeParameter],
+        arguments: &[hir::MethodArgument],
+        returns: &Option<hir::Type>,
+    ) {
+        self.type_parameter_requirements(params);
+
+        for arg in arguments {
+            self.type_node(&arg.value_type);
+        }
+
+        if let Some(t) = returns {
+            self.type_node(t);
+        }
+    }
+
+    fn type_parameter_requirements(&mut self, params: &[hir::TypeParameter]) {
+        for p in params {
+            p.requirements.iter().for_each(|r| self.type_name(r));
+        }
+    }
+
+    /// `if T: Trait` bounds on an `impl` or reopened type: `T` is one of the
+    /// type's parameters.
+    fn bounds(&mut self, typ: Option<TypeId>, bounds: &[hir::TypeBound]) {
+        for b in bounds {
+            let param = typ.and_then(|t| {
+                t.type_parameters(self.db)
+                    .into_iter()
+                    .find(|p| p.name(self.db) == &b.name.name)
+            });
+
+            self.refer(b.name.location, param.map(SymbolId::TypeParameter));
+            b.requirements.iter().for_each(|r| self.type_name(r));
+        }
+    }
+
+    /// Imports: each segment of the module path that names a module, and
+    /// each imported symbol (`self` is the module).
+    fn import(&mut self, node: &hir::Import) {
+        let mut path = Vec::new();
+        let mut module = None;
+
+        for segment in &node.source {
+            path.push(segment.name.as_str());
+            module = self.db.optional_module(&path.join("."));
+            self.refer(segment.location, module.map(SymbolId::Module));
+        }
+
+        let Some(module) = module else {
+            return;
+        };
+
+        for symbol in &node.symbols {
+            let target = if symbol.name.name == "self" {
+                Some(SymbolId::Module(module))
+            } else {
+                module
+                    .symbols(self.db)
+                    .into_iter()
+                    .find(|(n, _)| n == &symbol.name.name)
+                    .and_then(|(_, s)| symbol_id(s))
+            };
+
+            self.refer(symbol.name.location, target);
+
+            if symbol.import_as.location != symbol.name.location {
+                self.refer(symbol.import_as.location, target);
+            }
         }
     }
 
     fn top_level(&mut self, node: &hir::TopLevelExpression) {
         match node {
             hir::TopLevelExpression::Type(n) => {
+                self.type_parameter_requirements(&n.type_parameters);
+
                 for expr in &n.body {
                     match expr {
-                        hir::TypeExpression::InstanceMethod(m) => self.body(&m.body),
-                        hir::TypeExpression::StaticMethod(m) => self.body(&m.body),
-                        hir::TypeExpression::AsyncMethod(m) => self.body(&m.body),
-                        hir::TypeExpression::Field(_) | hir::TypeExpression::Constructor(_) => {}
+                        hir::TypeExpression::InstanceMethod(m) => {
+                            self.signature(&m.type_parameters, &m.arguments, &m.return_type);
+                            self.body(&m.body);
+                        }
+                        hir::TypeExpression::StaticMethod(m) => {
+                            self.signature(&m.type_parameters, &m.arguments, &m.return_type);
+                            self.body(&m.body);
+                        }
+                        hir::TypeExpression::AsyncMethod(m) => {
+                            self.signature(&m.type_parameters, &m.arguments, &m.return_type);
+                            self.body(&m.body);
+                        }
+                        hir::TypeExpression::Field(f) => self.type_node(&f.value_type),
+                        hir::TypeExpression::Constructor(c) => {
+                            c.members.iter().for_each(|t| self.type_node(t))
+                        }
                     }
                 }
             }
             hir::TopLevelExpression::Constant(n) => self.constant(&n.value),
-            hir::TopLevelExpression::ModuleMethod(n) => self.body(&n.body),
+            hir::TopLevelExpression::ModuleMethod(n) => {
+                self.signature(&n.type_parameters, &n.arguments, &n.return_type);
+                self.body(&n.body);
+            }
             hir::TopLevelExpression::Trait(n) => {
+                self.type_parameter_requirements(&n.type_parameters);
+                n.requirements.iter().for_each(|r| self.type_name(r));
+
                 for expr in &n.body {
                     match expr {
-                        hir::TraitExpression::InstanceMethod(m) => self.body(&m.body),
-                        hir::TraitExpression::RequiredMethod(_) => {}
+                        hir::TraitExpression::InstanceMethod(m) => {
+                            self.signature(&m.type_parameters, &m.arguments, &m.return_type);
+                            self.body(&m.body);
+                        }
+                        hir::TraitExpression::RequiredMethod(m) => {
+                            self.signature(&m.type_parameters, &m.arguments, &m.return_type);
+                        }
                     }
                 }
             }
             hir::TopLevelExpression::Implement(n) => {
+                let typ = n.type_instance.map(|i| i.instance_of());
+
+                self.type_name(&n.trait_name);
+                self.refer(n.type_name.location, typ.map(SymbolId::Type));
+                self.bounds(typ, &n.bounds);
+
                 for m in &n.body {
+                    self.signature(&m.type_parameters, &m.arguments, &m.return_type);
                     self.body(&m.body);
                 }
             }
             hir::TopLevelExpression::Reopen(n) => {
+                self.refer(n.type_name.location, n.type_id.map(SymbolId::Type));
+                self.bounds(n.type_id, &n.bounds);
+
                 for expr in &n.body {
                     match expr {
-                        hir::ReopenTypeExpression::InstanceMethod(m) => self.body(&m.body),
-                        hir::ReopenTypeExpression::StaticMethod(m) => self.body(&m.body),
-                        hir::ReopenTypeExpression::AsyncMethod(m) => self.body(&m.body),
+                        hir::ReopenTypeExpression::InstanceMethod(m) => {
+                            self.signature(&m.type_parameters, &m.arguments, &m.return_type);
+                            self.body(&m.body);
+                        }
+                        hir::ReopenTypeExpression::StaticMethod(m) => {
+                            self.signature(&m.type_parameters, &m.arguments, &m.return_type);
+                            self.body(&m.body);
+                        }
+                        hir::ReopenTypeExpression::AsyncMethod(m) => {
+                            self.signature(&m.type_parameters, &m.arguments, &m.return_type);
+                            self.body(&m.body);
+                        }
                     }
                 }
             }
-            hir::TopLevelExpression::ExternType(_)
-            | hir::TopLevelExpression::ExternFunction(_)
-            | hir::TopLevelExpression::Import(_)
-            | hir::TopLevelExpression::ExternImport(_) => {}
+            hir::TopLevelExpression::ExternType(n) => {
+                n.fields.iter().for_each(|f| self.type_node(&f.value_type))
+            }
+            hir::TopLevelExpression::ExternFunction(n) => {
+                self.signature(&[], &n.arguments, &n.return_type)
+            }
+            hir::TopLevelExpression::Import(n) => self.import(n),
+            hir::TopLevelExpression::ExternImport(_) => {}
         }
     }
 
@@ -241,7 +806,25 @@ impl<'a> Walker<'a> {
     /// - `call_with_receiver` returns `Owned(Type(id))` for `module.Type`
     ///   used as a receiver (compiler/src/type_check/expressions.rs:3826).
     fn static_receiver(&self, node: &hir::Expression) -> Option<TypeRef> {
-        let symbol = match node {
+        match self.static_lookup(node)? {
+            Symbol::Type(id) => Some(TypeRef::Owned(TypeEnum::Type(id))),
+            Symbol::Module(id) => Some(TypeRef::module(id)),
+            _ => None,
+        }
+    }
+
+    /// The type or module a name with no stored kind refers to, as
+    /// `static_receiver` finds it.
+    fn static_symbol(&self, node: &hir::Expression) -> Option<SymbolId> {
+        match self.static_lookup(node)? {
+            Symbol::Type(id) => Some(SymbolId::Type(id)),
+            Symbol::Module(id) => Some(SymbolId::Module(id)),
+            _ => None,
+        }
+    }
+
+    fn static_lookup(&self, node: &hir::Expression) -> Option<Symbol> {
+        match node {
             hir::Expression::ConstantRef(n) if matches!(n.kind, ConstantKind::Unknown) => {
                 match &n.source {
                     None => self.symbols.get(&n.name).copied(),
@@ -257,12 +840,6 @@ impl<'a> Walker<'a> {
                 }
                 _ => None,
             },
-            _ => None,
-        };
-
-        match symbol? {
-            Symbol::Type(id) => Some(TypeRef::Owned(TypeEnum::Type(id))),
-            Symbol::Module(id) => Some(TypeRef::module(id)),
             _ => None,
         }
     }
@@ -333,18 +910,46 @@ impl<'a> Walker<'a> {
                 let synthetic = generated(&n.name.name);
 
                 self.stored(n.name.location, "Binding", typ, synthetic);
+
+                if let Some(id) = n.variable_id
+                    && !synthetic
+                {
+                    self.declare(n.name.location, SymbolId::Variable(id));
+                }
+
+                if let Some(t) = &n.value_type {
+                    self.type_node(t);
+                }
             }
             P::Tuple(n) => n.values.iter().for_each(|p| self.pattern(p)),
-            P::Constructor(n) => n.values.iter().for_each(|p| self.pattern(p)),
-            P::Type(n) => n.values.iter().for_each(|f| self.pattern(&f.pattern)),
+            P::Constructor(n) => {
+                self.refer(n.name.location, n.constructor_id.map(SymbolId::Constructor));
+                n.values.iter().for_each(|p| self.pattern(p))
+            }
+            P::Type(n) => n.values.iter().for_each(|f| {
+                self.refer(f.field.location, f.field_id.map(SymbolId::Field));
+                self.pattern(&f.pattern)
+            }),
             P::Or(n) => n.patterns.iter().for_each(|p| self.pattern(p)),
             P::Array(n) => n.values.iter().for_each(|p| self.pattern(p)),
-            P::Constant(_)
-            | P::Int(_)
-            | P::String(_)
-            | P::Wildcard(_)
-            | P::True(_)
-            | P::False(_) => {}
+            P::Constant(n) => {
+                let symbol = match n.kind {
+                    ConstantPatternKind::Constructor(id) => Some(SymbolId::Constructor(id)),
+                    ConstantPatternKind::String(id) | ConstantPatternKind::Int(id) => {
+                        Some(SymbolId::Constant(id))
+                    }
+                    ConstantPatternKind::Unknown => None,
+                };
+
+                if let Some(src) = &n.source {
+                    let module = self.module_named(&src.name);
+
+                    self.refer(src.location, module);
+                }
+
+                self.refer(tail(n.location, &n.name), symbol);
+            }
+            P::Int(_) | P::String(_) | P::Wildcard(_) | P::True(_) | P::False(_) => {}
         }
     }
 
@@ -430,10 +1035,12 @@ impl<'a> Walker<'a> {
             }
             E::AssignField(n) => {
                 self.stored(n.location, "AssignField", Some(n.resolved_type), synthetic);
+                self.refer(n.field.location, n.field_id.map(SymbolId::Field));
                 self.expression(&n.value);
             }
             E::ReplaceField(n) => {
                 self.stored(n.location, "ReplaceField", Some(n.resolved_type), synthetic);
+                self.refer(n.field.location, n.field_id.map(SymbolId::Field));
                 self.expression(&n.value);
             }
             E::AssignSetter(n) => {
@@ -442,6 +1049,7 @@ impl<'a> Walker<'a> {
                 let typ = self.call_kind(&n.kind);
 
                 self.stored(n.location, "AssignSetter", typ, synthetic);
+                self.refer(n.name.location, call_symbol(&n.kind));
 
                 let receiver = self.receiver(&n.receiver, false);
 
@@ -455,6 +1063,7 @@ impl<'a> Walker<'a> {
                     Some(n.resolved_type),
                     synthetic,
                 );
+                self.refer(n.name.location, n.field_id.map(SymbolId::Field));
                 self.receiver(&n.receiver, false);
                 self.expression(&n.value);
             }
@@ -465,6 +1074,11 @@ impl<'a> Walker<'a> {
                     Some(n.resolved_type),
                     synthetic,
                 );
+
+                if !generated(&n.variable.name) {
+                    self.refer(n.variable.location, n.variable_id.map(SymbolId::Variable));
+                }
+
                 self.expression(&n.value);
             }
             E::ReplaceVariable(n) => {
@@ -474,6 +1088,11 @@ impl<'a> Walker<'a> {
                     Some(n.resolved_type),
                     synthetic,
                 );
+
+                if !generated(&n.variable.name) {
+                    self.refer(n.variable.location, n.variable_id.map(SymbolId::Variable));
+                }
+
                 self.expression(&n.value);
             }
             // Not stored: `break_expression` and `next_expression` always
@@ -514,12 +1133,20 @@ impl<'a> Walker<'a> {
                     .receiver
                     .as_ref()
                     .is_some_and(|r| r.location() == n.location);
-                self.stored(
-                    n.location,
-                    "Call",
-                    typ,
-                    synthetic || generated_receiver || same_as_receiver,
-                );
+                let synthetic = synthetic || generated_receiver || same_as_receiver;
+
+                self.stored(n.location, "Call", typ, synthetic);
+
+                if !synthetic {
+                    let symbol = match n.kind {
+                        CallKind::Unknown => self.static_symbol(node),
+                        _ => call_symbol(&n.kind),
+                    };
+
+                    self.refer(n.name.location, symbol);
+                }
+
+                n.type_arguments.iter().for_each(|t| self.type_node(t));
 
                 if let Some(r) = &n.receiver {
                     let receiver = self.receiver(r, false);
@@ -543,7 +1170,15 @@ impl<'a> Walker<'a> {
                 for arg in &n.arguments {
                     let value = match arg {
                         hir::Argument::Positional(a) => &a.value,
-                        hir::Argument::Named(a) => &a.value,
+                        hir::Argument::Named(a) => {
+                            if !synthetic {
+                                let symbol = self.named_argument(&n.kind, &a.name.name);
+
+                                self.refer(a.name.location, symbol);
+                            }
+
+                            &a.value
+                        }
                     };
                     // `not x` becomes `x == false`, with the `false` at the
                     // location of the whole expression.
@@ -569,6 +1204,18 @@ impl<'a> Walker<'a> {
                         .map(|a| a.variable.value_type(self.db));
 
                     self.stored(arg.name.location, "Binding", typ, false);
+
+                    if let Some(a) = args.iter().find(|a| a.index == i) {
+                        self.declare(arg.name.location, SymbolId::Variable(a.variable));
+                    }
+
+                    if let Some(t) = &arg.value_type {
+                        self.type_node(t);
+                    }
+                }
+
+                if let Some(t) = &n.return_type {
+                    self.type_node(t);
                 }
 
                 self.body(&n.body);
@@ -580,13 +1227,25 @@ impl<'a> Walker<'a> {
                     ConstantKind::Method(info) => Some(info.returns),
                     _ => Some(n.resolved_type),
                 };
+                let synthetic = synthetic || generated(&n.name);
 
-                self.stored(
-                    n.location,
-                    "ConstantRef",
-                    typ,
-                    synthetic || generated(&n.name),
-                );
+                self.stored(n.location, "ConstantRef", typ, synthetic);
+
+                if !synthetic {
+                    let symbol = match &n.kind {
+                        ConstantKind::Unknown => self.static_symbol(node),
+                        ConstantKind::Constant(id) => Some(SymbolId::Constant(*id)),
+                        ConstantKind::Method(info) => Some(SymbolId::Method(info.id)),
+                    };
+
+                    if let Some(src) = &n.source {
+                        let module = self.module_named(&src.name);
+
+                        self.refer(src.location, module);
+                    }
+
+                    self.refer(tail(n.location, &n.name), symbol);
+                }
             }
             E::DefineVariable(n) => {
                 let generated_var =
@@ -625,6 +1284,7 @@ impl<'a> Walker<'a> {
                 let typ = n.info.as_ref().map(|i| i.variable_type);
 
                 self.stored(n.location, "FieldRef", typ, synthetic);
+                self.refer(n.location, n.info.as_ref().map(|i| SymbolId::Field(i.id)));
             }
             E::Float(n) => _ = self.stored(n.location, "Float", Some(n.resolved_type), synthetic),
             E::Int(n) => _ = self.stored(n.location, "Int", Some(n.resolved_type), synthetic),
@@ -635,13 +1295,19 @@ impl<'a> Walker<'a> {
                     IdentifierKind::Variable(id) => Some(id.value_type(self.db)),
                     IdentifierKind::Method(info) => Some(info.returns),
                 };
+                let synthetic = synthetic || generated(&n.name);
 
-                self.stored(
-                    n.location,
-                    "IdentifierRef",
-                    typ,
-                    synthetic || generated(&n.name),
-                );
+                self.stored(n.location, "IdentifierRef", typ, synthetic);
+
+                if !synthetic {
+                    let symbol = match &n.kind {
+                        IdentifierKind::Unknown => self.static_symbol(node),
+                        IdentifierKind::Variable(id) => Some(SymbolId::Variable(*id)),
+                        IdentifierKind::Method(info) => Some(SymbolId::Method(info.id)),
+                    };
+
+                    self.refer(n.location, symbol);
+                }
             }
             E::Loop(n) => {
                 // Not stored: `loop_expression` returns Nil if a `break`
@@ -702,6 +1368,7 @@ impl<'a> Walker<'a> {
                     // own. The method is in `pointer_to_method`.
                     hir::Expression::IdentifierRef(v) if n.pointer_to_method.is_some() => {
                         self.stored(v.location, "PointerToMethod", None, false);
+                        self.refer(v.location, n.pointer_to_method.map(SymbolId::Method));
                     }
                     v => self.expression(v),
                 }
@@ -774,6 +1441,7 @@ impl<'a> Walker<'a> {
             E::TypeCast(n) => {
                 self.stored(n.location, "TypeCast", Some(n.resolved_type), synthetic);
                 self.expression(&n.value);
+                self.type_node(&n.cast_to);
             }
             E::Try(n) => {
                 let typ = self.try_type(n);
@@ -781,7 +1449,10 @@ impl<'a> Walker<'a> {
                 self.push(n.location, "Try", typ, Origin::Derived, synthetic);
                 self.expression(&n.expression);
             }
-            E::SizeOf(n) => _ = self.stored(n.location, "SizeOf", Some(n.resolved_type), synthetic),
+            E::SizeOf(n) => {
+                self.stored(n.location, "SizeOf", Some(n.resolved_type), synthetic);
+                self.type_node(&n.argument);
+            }
         }
     }
 
@@ -805,6 +1476,32 @@ impl<'a> Walker<'a> {
             (ThrowKind::Result(ok, _), ThrowKind::Result(_, _) | ThrowKind::Infer(_)) => Some(ok),
             _ => None,
         }
+    }
+}
+
+/// The `SymbolId` of a module's symbol.
+fn symbol_id(symbol: Symbol) -> Option<SymbolId> {
+    Some(match symbol {
+        Symbol::Type(id) => SymbolId::Type(id),
+        Symbol::Trait(id) => SymbolId::Trait(id),
+        Symbol::Module(id) => SymbolId::Module(id),
+        Symbol::TypeParameter(id) => SymbolId::TypeParameter(id),
+        Symbol::Constant(id) => SymbolId::Constant(id),
+        Symbol::Method(id) => SymbolId::Method(id),
+    })
+}
+
+/// The symbol a call's name refers to.
+fn call_symbol(kind: &CallKind) -> Option<SymbolId> {
+    match kind {
+        CallKind::Call(info) => Some(SymbolId::Method(info.id)),
+        CallKind::GetField(info) | CallKind::SetField(info) => Some(SymbolId::Field(info.id)),
+        CallKind::GetConstant(id) => Some(SymbolId::Constant(*id)),
+        CallKind::TypeInstance(info) => Some(SymbolId::Type(info.type_id)),
+        CallKind::Unknown
+        | CallKind::CallClosure(_)
+        | CallKind::ReadPointer(_)
+        | CallKind::WritePointer => None,
     }
 }
 

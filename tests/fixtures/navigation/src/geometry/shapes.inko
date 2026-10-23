@@ -1,0 +1,19 @@
+let pub ORIGIN = 0
+
+trait pub Area {
+  fn pub area -> Float
+}
+
+type pub Circle {
+  let pub @radius: Float
+
+  fn pub static new(radius: Float) -> Circle {
+    Circle(radius: radius)
+  }
+}
+
+impl Area for Circle {
+  fn pub area -> Float {
+    @radius * @radius * 3.0
+  }
+}

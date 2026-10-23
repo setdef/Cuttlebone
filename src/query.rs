@@ -1,16 +1,20 @@
-//! The questions Cuttlebone answers: the type at a position, and the members
-//! available after a `.`.
+//! The questions Cuttlebone answers: the type at a position, the members
+//! available after a `.`, and where the symbol at a position is declared and
+//! referred to.
 //!
 //! Every answer is computed from a fresh type check of the file and what it
 //! imports. Nothing is kept between requests.
 use crate::check::{Target, project_root, run};
 use crate::position::{Encoding, HirPosition, Lines, Position, contains};
-use crate::walker::{Expr, Walker, expressions_pass_ran};
+use crate::walker::{
+    Expr, Reference, SymbolId, Walker, declarations, expressions_pass_ran, type_symbol,
+};
 use compiler::hir;
 use location::Location;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -118,6 +122,15 @@ impl MemberKind {
     }
 }
 
+/// A range in a file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Place {
+    /// The path the compiler read the file from: the project's own files,
+    /// `dep/`'s, or the standard library's in the session's `std`.
+    pub file: PathBuf,
+    pub range: Range,
+}
+
 /// An answer, and how long it took.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Answer<T> {
@@ -128,14 +141,14 @@ pub struct Answer<T> {
 
 /// The type of the expression at a position.
 pub fn type_at(session: &Session, request: &Request) -> Answer<TypeAt> {
-    answer(session, request, |_, _, walker, lines, at| {
-        let Some(expr) = select(&walker.out, at) else {
+    answer(session, request, false, |scope| {
+        let Some(expr) = select(&scope.walker.out, scope.at) else {
             return Ok(None);
         };
 
         Ok(Some(TypeAt {
             typ: typed(expr)?.to_string(),
-            range: range(lines, &expr.location),
+            range: range(scope.lines, &expr.location),
             kind: expr.kind.to_string(),
         }))
     })
@@ -144,7 +157,9 @@ pub fn type_at(session: &Session, request: &Request) -> Answer<TypeAt> {
 /// The members available on the receiver of the call whose name is at a
 /// position, e.g. at `foo` in `value.foo`.
 pub fn members_at(session: &Session, request: &Request) -> Answer<MembersAt> {
-    answer(session, request, |db, module, walker, lines, at| {
+    answer(session, request, false, |scope| {
+        let (db, module, walker, lines, at) =
+            (scope.db, scope.module, scope.walker, scope.lines, scope.at);
         let Some(call) = walker
             .calls
             .iter()
@@ -174,6 +189,211 @@ pub fn members_at(session: &Session, request: &Request) -> Answer<MembersAt> {
             members,
         }))
     })
+}
+
+/// Where the symbol at a position is declared: a method (for a call, the
+/// called method), a variable, a field, a type, trait, type parameter,
+/// constant, constructor or module. On a declaration's own name, that
+/// declaration.
+pub fn definition(session: &Session, request: &Request) -> Answer<Place> {
+    answer(session, request, false, |scope| {
+        let Some(reference) = symbol_at(
+            &scope.walker.references,
+            &scope.walker.declarations,
+            scope.at,
+        ) else {
+            return Ok(None);
+        };
+        let index = Index::new(scope);
+
+        Ok(index
+            .declaration(reference.symbol)
+            .map(|(file, location)| scope.place(&file, location)))
+    })
+}
+
+/// Where the type of the expression at a position is declared, without
+/// its ownership or type arguments: `ref Option[String]` is `Option`. On a
+/// type name (such as in a signature), that type. `None` for types without
+/// a declaration: closures, C types and `Never`.
+pub fn type_definition(session: &Session, request: &Request) -> Answer<Place> {
+    answer(session, request, false, |scope| {
+        let db = scope.db;
+        let symbol = match select(&scope.walker.out, scope.at) {
+            Some(expr) => {
+                typed(expr)?;
+
+                let Some(symbol) = expr.raw.and_then(|t| type_symbol(db, t)) else {
+                    return Ok(None);
+                };
+
+                symbol
+            }
+            None => match symbol_at(
+                &scope.walker.references,
+                &scope.walker.declarations,
+                scope.at,
+            ) {
+                Some(
+                    r @ Reference {
+                        symbol: SymbolId::Type(_) | SymbolId::Trait(_) | SymbolId::TypeParameter(_),
+                        ..
+                    },
+                ) => r.symbol,
+                _ => return Ok(None),
+            },
+        };
+        let index = Index::new(scope);
+
+        Ok(index
+            .declaration(symbol)
+            .map(|(file, location)| scope.place(&file, location)))
+    })
+}
+
+/// Every reference to the symbol at a position in the project's own
+/// modules (its `src/` and `test/`, not `dep/` or the standard library),
+/// sorted by file and position. With `include_declaration`, its declaration
+/// too, if that's in the project.
+///
+/// This type checks the whole project, not only the file and what it
+/// imports, so modules that don't import the file are searched too.
+pub fn references(
+    session: &Session,
+    request: &Request,
+    include_declaration: bool,
+) -> Answer<Vec<Place>> {
+    answer(session, request, true, |scope| {
+        let Some(reference) = symbol_at(
+            &scope.walker.references,
+            &scope.walker.declarations,
+            scope.at,
+        ) else {
+            return Ok(None);
+        };
+        let symbol = reference.symbol;
+        let mut found: Vec<(PathBuf, Location)> = Vec::new();
+        let mut collect = |file: &Path, walker: &Walker| {
+            let declared = walker.declarations.iter().filter(|_| include_declaration);
+
+            for r in walker.references.iter().chain(declared) {
+                if r.symbol == symbol {
+                    found.push((file.to_path_buf(), r.location));
+                }
+            }
+        };
+
+        // Not even variables are local to one module: a named argument
+        // (`moved(by: 2)`) refers to a method's argument.
+        for module in scope.modules {
+            let file = module.module_id.file(scope.db);
+
+            if file == scope.file {
+                collect(&file, scope.walker);
+            } else if scope.in_project(&file) {
+                let mut walker = Walker::new(scope.db, module.module_id);
+
+                walker.module(module);
+                collect(&file, &walker);
+            }
+        }
+
+        found.sort_by_key(|(file, l)| (file.clone(), l.line_start, l.column_start));
+        found.dedup();
+
+        Ok(Some(
+            found
+                .into_iter()
+                .map(|(file, location)| scope.place(&file, location))
+                .collect(),
+        ))
+    })
+}
+
+/// The name at a position that refers to or declares a symbol: the
+/// innermost one containing it.
+pub fn symbol_at<'a>(
+    references: &'a [Reference],
+    declarations: &'a [Reference],
+    at: HirPosition,
+) -> Option<&'a Reference> {
+    references
+        .iter()
+        .chain(declarations)
+        .filter(|r| contains(&r.location, at))
+        .min_by_key(|r| {
+            let l = r.location;
+
+            (
+                std::cmp::Reverse((l.line_start, l.column_start)),
+                (l.line_end, l.column_end),
+            )
+        })
+}
+
+/// Where each symbol of a check is declared.
+pub struct Index {
+    declared: HashMap<SymbolId, (PathBuf, Location)>,
+}
+
+impl Index {
+    /// The declarations of every module checked, and the variables of the
+    /// walked module.
+    fn new(scope: &Scope) -> Index {
+        let mut index = Index::from_modules(scope.db, scope.modules);
+
+        for d in &scope.walker.declarations {
+            index.add(&scope.file, d);
+        }
+
+        index
+    }
+
+    /// The declarations of `modules`, without their variables other than
+    /// methods' arguments (which need walking method bodies).
+    pub fn from_modules(db: &Database, modules: &[hir::Module]) -> Index {
+        let mut index = Index {
+            declared: HashMap::new(),
+        };
+
+        for module in modules {
+            let file = module.module_id.file(db);
+
+            index.declared.insert(
+                SymbolId::Module(module.module_id),
+                (
+                    file.clone(),
+                    // The start of the file, with no width.
+                    Location {
+                        line_start: 1,
+                        line_end: 1,
+                        column_start: 1,
+                        column_end: 0,
+                    },
+                ),
+            );
+
+            for d in declarations(db, module) {
+                index.add(&file, &d);
+            }
+        }
+
+        index
+    }
+
+    /// Adds a declaration. The first one wins: a variable in an `or`
+    /// pattern is declared once per alternative.
+    pub fn add(&mut self, file: &Path, declaration: &Reference) {
+        if let Entry::Vacant(e) = self.declared.entry(declaration.symbol) {
+            e.insert((file.to_path_buf(), declaration.location));
+        }
+    }
+
+    /// The file and the name's location, or `None` if the symbol has no
+    /// declaration in the checked modules.
+    pub fn declaration(&self, symbol: SymbolId) -> Option<(PathBuf, Location)> {
+        self.declared.get(&symbol).cloned()
+    }
 }
 
 /// The identifier `complete` inserts at the cursor. Any identifier that
@@ -315,28 +535,97 @@ fn range(lines: &Lines, location: &Location) -> Range {
     Range { start, end }
 }
 
-type Inspect<'a, T> = dyn FnOnce(&Database, ModuleId, &Walker, &Lines, HirPosition) -> Result<Option<T>, Unavailable>
-    + Send
-    + 'a;
+/// What a query sees: the checked modules, the requested file's walked HIR,
+/// and the position.
+struct Scope<'a> {
+    db: &'a Database,
+    /// Every module checked, including imported ones.
+    modules: &'a [hir::Module],
+    /// The requested file.
+    file: PathBuf,
+    module: ModuleId,
+    walker: &'a Walker<'a>,
+    lines: &'a Lines<'a>,
+    at: HirPosition,
+    target: &'a Target,
+    encoding: Encoding,
+    /// The text of files other than the requested one, as read for `place`.
+    texts: RefCell<HashMap<PathBuf, String>>,
+}
+
+impl Scope<'_> {
+    /// A location in any file as a range in the request's encoding.
+    fn place(&self, file: &Path, location: Location) -> Place {
+        if file == self.file {
+            return Place {
+                file: file.to_path_buf(),
+                range: range(self.lines, &location),
+            };
+        }
+
+        let mut texts = self.texts.borrow_mut();
+        let text = texts.entry(file.to_path_buf()).or_insert_with(|| {
+            self.target
+                .overlay
+                .get(file)
+                .cloned()
+                .unwrap_or_else(|| std::fs::read_to_string(file).unwrap_or_default())
+        });
+
+        Place {
+            file: file.to_path_buf(),
+            range: range(&Lines::with_encoding(text, self.encoding), &location),
+        }
+    }
+
+    /// Whether a module is one of the project's own (in its `src/` or
+    /// `test/`), rather than a dependency's or the standard library's.
+    fn in_project(&self, file: &Path) -> bool {
+        match &self.target.file {
+            Some(f) => f == file,
+            None => {
+                file.starts_with(self.target.root.join("src"))
+                    || file.starts_with(self.target.root.join("test"))
+            }
+        }
+    }
+}
+
+type Inspect<'a, T> = dyn FnOnce(&Scope) -> Result<Option<T>, Unavailable> + Send + 'a;
 
 /// Type checks the request's file and passes its walked HIR to `inspect`.
+/// With `project` set, it checks the whole project the file is part of
+/// (unless the file is outside its `src/` and `test/`), not just the file
+/// and what it imports.
 fn answer<T: Send>(
     session: &Session,
     request: &Request,
-    inspect: impl FnOnce(
-        &Database,
-        ModuleId,
-        &Walker,
-        &Lines,
-        HirPosition,
-    ) -> Result<Option<T>, Unavailable>
-    + Send,
+    project: bool,
+    inspect: impl FnOnce(&Scope) -> Result<Option<T>, Unavailable> + Send,
 ) -> Answer<T> {
     let start = Instant::now();
     let inspect: Box<Inspect<T>> = Box::new(inspect);
-    let result = prepare(session, request).and_then(|(target, text)| {
-        guarded(move || analyze(&target, &text, request.position, request.encoding, inspect))
-            .unwrap_or_else(|message| Err(Unavailable::new("compilerPanic", message)))
+    let result = prepare(session, request).and_then(|(mut target, text)| {
+        let file = target.file.clone().unwrap();
+
+        if project
+            && (file.starts_with(target.root.join("src"))
+                || file.starts_with(target.root.join("test")))
+        {
+            target.file = None;
+        }
+
+        guarded(move || {
+            analyze(
+                &target,
+                &file,
+                &text,
+                request.position,
+                request.encoding,
+                inspect,
+            )
+        })
+        .unwrap_or_else(|message| Err(Unavailable::new("compilerPanic", message)))
     });
 
     Answer {
@@ -387,6 +676,7 @@ fn canonical(path: &Path) -> Result<PathBuf, Unavailable> {
 
 fn analyze<T>(
     target: &Target,
+    file: &Path,
     text: &str,
     position: Position,
     encoding: Encoding,
@@ -396,7 +686,6 @@ fn analyze<T>(
     let at = lines
         .to_hir(position)
         .ok_or_else(|| invalid_position(position))?;
-    let file = target.file.clone().unwrap();
 
     let run = run(target, false, false, |db, modules: &[hir::Module]| {
         if !expressions_pass_ran(modules) {
@@ -414,7 +703,18 @@ fn analyze<T>(
         let mut walker = Walker::new(db, module.module_id);
 
         walker.module(module);
-        inspect(db, module.module_id, &walker, &lines, at)
+        inspect(&Scope {
+            db,
+            modules,
+            file: file.to_path_buf(),
+            module: module.module_id,
+            walker: &walker,
+            lines: &lines,
+            at,
+            target,
+            encoding,
+            texts: RefCell::new(HashMap::new()),
+        })
     })
     .map_err(|e| Unavailable::new("compilerError", e))?;
 
