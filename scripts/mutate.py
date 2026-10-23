@@ -19,7 +19,8 @@ M = [
   "    ) -> Result<(), CompileError> {\n        let start = Instant::now();\n\n        // When checking a project",
   "    ) -> Result<(), CompileError> {\n        self.prepare()?;\n        let start = Instant::now();\n\n        // When checking a project",
   "--test lsp queries_never_sync"),
- ("no required-version check", "src/check.rs", "    check_required_version(target)?;\n", "", "--test manifest"),
+ ("no required-version check", "src/check.rs", "    check_required_version(target)?;\n\n    let mut compiler = Compiler::new(target.config()?);\n    let start", "    let mut compiler = Compiler::new(target.config()?);\n    let start", "--test manifest"),
+ ("diagnostics skip the required-version check", "src/check.rs", "    check_required_version(target)?;\n\n    let mut compiler = Compiler::new(target.config()?);\n    // The compiler", "    let mut compiler = Compiler::new(target.config()?);\n    // The compiler", "--test manifest diagnostics_refuse"),
  ("dependency manifests ignored", "src/check.rs", "paths.push(version.join(MANIFEST_FILE));", "let _ = version;", "--test manifest"),
  ("always UTF-16", "src/lsp.rs", '"utf-8" => Some(Encoding::Utf8),', '"utf-8" => Some(Encoding::Utf16),', "--test lsp utf8"),
  ("UTF-8 counts chars", "src/position.rs", "Encoding::Utf8 => text.len() as u32,", "Encoding::Utf8 => text.chars().count() as u32,", "--test lsp non_ascii"),
@@ -37,7 +38,7 @@ M = [
   "            match job {\n                Ok(job) => self.answer(connection, pending, job.run()),\n                Err(reason) => self.answer(connection, pending, Outcome::Failed(reason)),\n            }", "--test lsp aborting"),
  ("version mismatch accepted", "src/lsp.rs", "    if installed != supported {", "    if installed == \"never\" {", "--test lsp a_different_inko"),
  ("no placeholder", "src/query.rs", "        copy.insert_str(offset, PLACEHOLDER);\n", "        let _ = offset;\n", "--test complete"),
- ("didSave text ignored", "src/lsp.rs", "                    doc.text = text;\n", "                    let _ = (doc, text);\n", "--test lsp saving"),
+ ("didSave text ignored", "src/lsp.rs", "                    && doc.text != text\n                {\n                    doc.text = text;\n", "                    && doc.text != text\n                {\n                    let _ = &text;\n", "--test lsp saving"),
  ("didClose ignored", "src/lsp.rs", "                    && let Some(doc) = self.documents.remove(&p.text_document.uri)", "                    && let Some(doc) = None::<Document>", "--test lsp a_session"),
  ("workspace folders ignored", "src/lsp.rs", "        (Some(folders), _, _) if !folders.is_empty() => {", "        (Some(folders), _, _) if folders.is_empty() => {", "--test lsp workspace_folders"),
  ("other open documents not sent", "src/lsp.rs", "                contents: self.contents(),\n            },\n            deadline: Some(self.options.timeout + DEADLINE_MARGIN),\n        })", "                contents: self.contents().into_iter().filter(|(p, _)| Some(p) == pending.uri.to_file_path().ok().as_ref()).collect(),\n            },\n            deadline: Some(self.options.timeout + DEADLINE_MARGIN),\n        })", "--test lsp unsaved_changes_to_an_imported"),
@@ -80,7 +81,7 @@ M = [
  ("no status for definitions", "src/lsp.rs", "            Outcome::Place(answer) => {\n                let status = status_of(&answer);", "            Outcome::Place(answer) => {\n                let status = (Ok(()), Duration::ZERO);", "--test navigation broken_code"),
  ("type definition answers definition", "src/worker.rs", "Outcome::Place(query::type_definition(&self.session, &self.request))", "Outcome::Place(query::definition(&self.session, &self.request))", "--test navigation type_definition"),
  # The guardrails (AGENTS.md).
- ("query uses lsp", "src/query.rs", "use crate::check::{Target, project_root, run};\n", "use crate::check::{Target, project_root, run};\nuse crate::lsp as _;\n", "--test guardrails layers"),
+ ("query uses lsp", "src/query.rs", "use crate::check::{Target, diagnose, project_root, run};\n", "use crate::check::{Target, diagnose, project_root, run};\nuse crate::lsp as _;\n", "--test guardrails layers"),
  ("position uses walker", "src/position.rs", "impl Encoding {\n", "use crate::walker as _;\nimpl Encoding {\n", "--test guardrails layers"),
  # The editor's name is split so that this file doesn't name one itself.
  ("an editor named in code", "src/lsp.rs", "//! The language server: standard LSP over stdio", "//! The language server, for " + "Ema" + "cs: standard LSP over stdio", "--test guardrails editor"),

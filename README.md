@@ -22,6 +22,8 @@ Reports, in docs/history/:
   into checks.
 - [MILESTONE-3.md](docs/history/MILESTONE-3.md): definition, type
   definition and references.
+- [MILESTONE-4.md](docs/history/MILESTONE-4.md): diagnostics, document
+  highlight, signature help and inlay hints.
 
 Setting it up in VS Code and Neovim: [editors/](editors/README.md). The rules
 every change follows, for people and coding agents: [AGENTS.md](AGENTS.md).

@@ -60,6 +60,36 @@ fn a_project_that_requires_a_newer_inko_is_refused() {
     );
 }
 
+/// Diagnostics refuse it the same way, rather than report errors from a
+/// standard library the project doesn't support.
+#[test]
+fn diagnostics_refuse_a_project_that_requires_a_newer_inko() {
+    let root = project("requires-newer-diagnostics", "require inko 99.0.0\n", &[]);
+    let session = cuttlebone::query::Session {
+        std: cuttlebone::dump::upstream_std(),
+        projects: vec![root.clone()],
+    };
+    let request = cuttlebone::query::Request {
+        file: root,
+        position: cuttlebone::position::Position {
+            line: 0,
+            character: 0,
+        },
+        encoding: cuttlebone::position::Encoding::Utf16,
+        contents: Default::default(),
+    };
+    let err = cuttlebone::query::diagnostics(&session, &request)
+        .result
+        .unwrap_err();
+
+    assert_eq!(err.code, "compilerError");
+    assert!(
+        err.message.contains("requires Inko 99.0.0"),
+        "{}",
+        err.message
+    );
+}
+
 #[test]
 fn a_dependency_that_requires_a_newer_inko_is_refused() {
     let root = project(
