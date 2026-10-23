@@ -200,3 +200,70 @@ fn a_worker_process_costs_little_more_than_checking_in_the_servers_thread() {
         c
     );
 }
+
+/// The client-side times of `RUNS` requests at a position, each of which
+/// must have a result.
+fn request_times(client: &mut Client, method: &str, params: serde_json::Value) -> Vec<Duration> {
+    (0..RUNS)
+        .map(|_| {
+            let start = Instant::now();
+            let response = client.request(method, params.clone());
+
+            assert!(!response["result"].is_null(), "{}: {}", method, response);
+            start.elapsed()
+        })
+        .collect()
+}
+
+fn position(file: &Path, line: u32, character: u32) -> serde_json::Value {
+    json!({
+        "textDocument": { "uri": common::client::uri(file) },
+        "position": { "line": line, "character": character },
+        "context": { "includeDeclaration": true },
+    })
+}
+
+#[test]
+fn definition_and_type_definition_on_a_std_sized_project_are_fast_enough() {
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let mut client = Client::initialized(&root, json!({}));
+    let (line, character) = at(&text, "[1, 2].size", 7, false);
+
+    for method in ["textDocument/definition", "textDocument/typeDefinition"] {
+        let times = request_times(&mut client, method, position(&file, line, character));
+        let median = median(times.clone());
+
+        eprintln!(
+            "{} on a std-sized project: {:?} (all: {:?})",
+            method, median, times
+        );
+        assert!(
+            median < LIMIT,
+            "{}: median {:?} exceeds {:?}",
+            method,
+            median,
+            LIMIT
+        );
+    }
+}
+
+#[test]
+fn references_across_std_are_fast_enough() {
+    // std as the project: references check all of std/src and std/test
+    // (hundreds of modules), not only what one file imports.
+    let std = upstream_std();
+    let file = std.join("std/net/http/server.inko");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut client = Client::initialized(std.parent().unwrap(), json!({}));
+    let (line, character) = at(&text, "LimitReader.new(file, limit: range.size)", 0, false);
+    let times = request_times(
+        &mut client,
+        "textDocument/references",
+        position(&file, line, character),
+    );
+    let median = median(times.clone());
+
+    eprintln!("references across std: {:?} (all: {:?})", median, times);
+    assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
+}
