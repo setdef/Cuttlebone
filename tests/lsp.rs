@@ -854,11 +854,14 @@ fn a_hung_worker_exits_by_itself_if_the_server_dies() {
     let start = Instant::now();
 
     while alive(worker) {
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "the orphaned worker {} is still running",
-            worker
-        );
+        if start.elapsed() > Duration::from_secs(5) {
+            // Don't leave it behind (e.g. under scripts/mutate.py).
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &worker.to_string()])
+                .status();
+            panic!("the orphaned worker {} was still running", worker);
+        }
+
         std::thread::sleep(Duration::from_millis(50));
     }
 }

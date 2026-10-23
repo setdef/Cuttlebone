@@ -3,7 +3,9 @@
 // characters, which must show $EXPECTED in a Markdown code block. Then asks
 // for the definition at the first $DEFINITION plus $DEFINITION_OFFSET
 // characters, which must cover $DEFINED on line $DEFINED_LINE (1-based) of
-// $FILE.
+// $FILE. Then inserts $BROKEN after line $BROKEN_AFTER, waits for a
+// diagnostic with code $ERROR_CODE covering $ERROR_TEXT, removes the line
+// and waits for the diagnostic to go. Nothing is saved.
 const assert = require('assert');
 const vscode = require('vscode');
 
@@ -60,9 +62,46 @@ async function run() {
     );
   }, `a definition covering ${process.env.DEFINED}`, () => `definitions: ${JSON.stringify(found)}`);
 
+  // Diagnostics: insert a line with an error, wait for its diagnostic, then
+  // remove it and wait for the diagnostic to go.
+  const after = Number(process.env.BROKEN_AFTER);
+  const code = process.env.ERROR_CODE;
+  const errors = () =>
+    vscode.languages
+      .getDiagnostics(document.uri)
+      .filter((d) => (typeof d.code === 'object' ? d.code.value : d.code) === code)
+      .map((d) => ({ line: d.range.start.line + 1, text: document.getText(d.range) }));
+  const insert = new vscode.WorkspaceEdit();
+
+  insert.insert(document.uri, new vscode.Position(after, 0), process.env.BROKEN + '\n');
+  assert.ok(await vscode.workspace.applyEdit(insert));
+  await waitFor(
+    () => {
+      const found = errors();
+
+      return found.length === 1 && found[0].line === after + 1 && found[0].text === process.env.ERROR_TEXT;
+    },
+    `a ${code} diagnostic covering ${process.env.ERROR_TEXT}`,
+    () => `diagnostics: ${JSON.stringify(vscode.languages.getDiagnostics(document.uri))}`,
+  );
+
+  const remove = new vscode.WorkspaceEdit();
+
+  remove.delete(document.uri, new vscode.Range(after, 0, after + 1, 0));
+  assert.ok(await vscode.workspace.applyEdit(remove));
+  await waitFor(
+    () => errors().length === 0,
+    `the ${code} diagnostic to go`,
+    () => `diagnostics: ${JSON.stringify(vscode.languages.getDiagnostics(document.uri))}`,
+  );
+  await vscode.commands.executeCommand('workbench.action.files.revert');
+
   console.log(`vscode: ok: hover at ${process.env.NEEDLE} shows ${process.env.EXPECTED} (positions in ${encoding})`);
   console.log(
     `vscode: ok: definition at ${process.env.DEFINITION} is ${process.env.DEFINED} on line ${process.env.DEFINED_LINE}`,
+  );
+  console.log(
+    `vscode: ok: a ${code} diagnostic covered ${process.env.ERROR_TEXT} on line ${after + 1}, and cleared when the line was removed`,
   );
 }
 

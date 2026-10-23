@@ -8,7 +8,9 @@ questions about types over standard LSP, for any editor with an LSP client
 ([docs/lsp.md](docs/lsp.md)): hover shows the type at a position,
 completion after `.` lists members with their signatures, and go to
 definition, go to type definition and find references locate symbols by the
-compiler's own ids. It publishes the same diagnostics as `inko check`.
+compiler's own ids. It publishes the same diagnostics as `inko check`,
+highlights a symbol's uses in a file, shows the signature of the call being
+typed, and shows inferred types and parameter names as inlay hints.
 
 Reports, in docs/history/:
 
@@ -94,8 +96,12 @@ also fast enough for the latency limits.
 | `tests/corpus_definition.rs` | every reference in std/src selects its own symbol, and goes to a declaration of the same id and name |
 | `tests/diagnostics.rs` | the oracle: diagnostics match the installed `inko check --format json` exactly (file, lines, columns, level, ID, message, order) for every project in tests/fixtures/diagnostics, which between them produce every diagnostic `inko check` can, for std, and for unsaved text |
 | `tests/publish.rs` | diagnostics over LSP: every file published without opening it, ranges in both encodings, every fixture project, edits that add and fix errors (and clear them), the debounce, queries first, superseded and hung checks, a compiler panic, what's a target, turning them off |
+| `tests/highlight.rs` | document highlights over LSP in both encodings: bindings and assignments as writes, fields, same-named symbols, methods, types, closure arguments, `null`, broken code |
+| `tests/signature.rs` | signature help over LSP in both encodings: positional and named arguments (in any order), nested calls, type arguments, unclosed argument lists while typing, `null` outside parentheses, for operators and unresolved methods |
+| `tests/inlay.rs` | inlay hints over LSP in both encodings: every rule for type and parameter hints, and the requested range |
 | `tests/latency.rs` | latency limits for every query, also while a diagnostics check runs, and the cost of a worker process |
 | `tests/golden.rs` | `dump-types` output for a few std modules and fixtures, compared with `tests/golden/*.txt`. Run `UPDATE_GOLDEN=1 cargo test` to rewrite them. |
+| `tests/editors.rs` | the Neovim smoke check (below) under `cargo test`, if `nvim` is on `PATH` |
 | `tests/guardrails.rs` | the layering of src/, no editor named in code, nothing named after Inko, no machine-specific paths, and patches/README.md accounting for every patch line |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |
 
@@ -110,5 +116,6 @@ test-only code (`scripts/check-release.sh`). Tests build with the
 don't.
 
 `editors/check.sh` starts the server from VS Code and Neovim headlessly and
-checks that a hover and a go to definition work (see
+checks that a hover and a go to definition work, and that a diagnostic
+appears for an error and clears when it's fixed (see
 [editors/](editors/README.md)).

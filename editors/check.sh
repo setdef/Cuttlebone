@@ -1,9 +1,11 @@
 #!/bin/sh
 # Smoke checks in real editors: each starts cuttlebone through the editor's
 # own LSP client, opens tests/fixtures/unicode/src/main.inko, and checks
-# that a hover after non-ASCII text shows the right type, and that go to
-# definition from a name after non-ASCII text finds its binding. Neovim must
-# negotiate UTF-8 positions, and VS Code gets UTF-16.
+# that a hover after non-ASCII text shows the right type, that go to
+# definition from a name after non-ASCII text finds its binding, and that an
+# error typed after non-ASCII text gets a diagnostic, which goes away when
+# the line is removed again. Neovim must negotiate UTF-8 positions, and VS
+# Code gets UTF-16. Nothing is saved.
 #
 # Usage: editors/check.sh [neovim] [vscode]     (default: both)
 #
@@ -35,9 +37,17 @@ DEFINITION="'日本' + e"
 DEFINITION_OFFSET=7
 DEFINED_LINE=12
 DEFINED='e'
+# A line inserted after line 12, with an undefined name after '日本' (6
+# bytes, 2 UTF-16 units): the diagnostic must cover exactly the name, so
+# its range must be in the editor's encoding.
+BROKEN="    let g = '日本' + nope"
+BROKEN_AFTER=12
+ERROR_CODE=invalid-symbol
+ERROR_TEXT=nope
 INKO=${INKO:-}
 export CUTTLEBONE WORKSPACE FILE NEEDLE OFFSET EXPECTED INKO
 export DEFINITION DEFINITION_OFFSET DEFINED_LINE DEFINED
+export BROKEN BROKEN_AFTER ERROR_CODE ERROR_TEXT
 
 editors=${*:-neovim vscode}
 status=0

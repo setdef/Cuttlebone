@@ -1,7 +1,8 @@
 //! The language server: standard LSP over stdio, documented in docs/lsp.md.
 //!
 //! One thread runs the loop below. It keeps the open documents, queues
-//! queries (hover, completion, definition, type definition and references),
+//! queries (hover, completion, definition, type definition, references,
+//! document highlight, signature help and inlay hints),
 //! and runs each query in a worker process
 //! (see `worker`) with a timeout, one at a time. Edits and
 //! `$/cancelRequest` cancel queries they make pointless, and a query waits

@@ -109,6 +109,27 @@ and standard library the session checks with, and whether status
 notifications and [diagnostics](#diagnostics) are on. Diagnostics need no
 capability: the server publishes them unless `diagnostics` is `false`.
 
+### Clients that turn on every capability
+
+Some clients (JetBrains' LSP support, for one) use every capability a
+server advertises, with no setting per feature, and diagnostics need no
+capability at all. If the client, or a plugin for Inko in it, already
+provides a feature itself, the user sees it twice: two hovers, two sets of
+inlay hints, every error reported twice.
+
+Cuttlebone can't know what else is running, so turning a feature off is the
+client's job, on its side:
+
+- **Requests** (hover, completion, definition, type definition,
+  references, document highlight, signature help, inlay hints): don't send
+  them, or don't show their answers. A client that registers capabilities
+  through its own configuration can leave them out; one that can't can drop
+  the server's capability from the `InitializeResult` before its LSP layer
+  sees it.
+- **Diagnostics**: send `"diagnostics": false` in `initializationOptions`.
+  Cuttlebone then never checks for or publishes them, which also saves the
+  full checks.
+
 ## Documents
 
 `didOpen`, `didChange` (full or incremental), `didSave` and `didClose` keep
@@ -378,9 +399,17 @@ position, as an array of `DocumentHighlight`s sorted by position:
     {"range": {"start": {"line": 32, "character": 12}, "end": {"line": 32, "character": 17}}, "kind": 3},
     {"range": {"start": {"line": 41, "character": 4}, "end": {"line": 41, "character": 9}}, "kind": 3},
     {"range": {"start": {"line": 41, "character": 12}, "end": {"line": 41, "character": 17}}, "kind": 2},
-    {"range": {"start": {"line": 48, "character": 36}, "end": {"line": 48, "character": 41}}, "kind": 2}
+    {"range": {"start": {"line": 42, "character": 4}, "end": {"line": 42, "character": 9}}, "kind": 3},
+    {"range": {"start": {"line": 43, "character": 16}, "end": {"line": 43, "character": 21}}, "kind": 2},
+    {"range": {"start": {"line": 48, "character": 37}, "end": {"line": 48, "character": 42}}, "kind": 2},
+    {"range": {"start": {"line": 51, "character": 26}, "end": {"line": 51, "character": 31}}, "kind": 3}
 ]}
 ```
+
+for `total` in tests/fixtures/features/src/main.inko: `let mut total = 0`,
+`total = total + 1`, `total += ...`, `counter.add(total, 2)`,
+`describe("日本", total, ...)` (in UTF-16, `日本` is two units) and
+`case Some(first) -> total = first`.
 
 The symbol, and which names refer to it, are found as for
 [references](#textdocumentreferences), by the compiler's ids, but only in

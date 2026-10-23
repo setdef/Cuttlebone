@@ -8,10 +8,11 @@ mod common;
 
 use common::client::fake_inko;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[test]
-fn neovim_starts_the_server_negotiates_utf8_hovers_and_goes_to_a_definition() {
+fn neovim_starts_the_server_negotiates_utf8_hovers_goes_to_a_definition_and_shows_diagnostics() {
     if Command::new("nvim").arg("--version").output().is_err() {
         eprintln!("skipped: no nvim on PATH");
         return;
@@ -19,7 +20,7 @@ fn neovim_starts_the_server_negotiates_utf8_hovers_and_goes_to_a_definition() {
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let state = Path::new(env!("CARGO_TARGET_TMPDIR")).join("nvim-state");
-    let out = Command::new("nvim")
+    let mut child = Command::new("nvim")
         .args(["--headless", "--clean", "-c"])
         .arg(format!(
             "luafile {}",
@@ -37,9 +38,30 @@ fn neovim_starts_the_server_negotiates_utf8_hovers_and_goes_to_a_definition() {
         .env("DEFINITION_OFFSET", "7")
         .env("DEFINED_LINE", "12")
         .env("DEFINED", "e")
+        // An error after non-ASCII text gets a diagnostic covering the
+        // name, which goes when the line does.
+        .env("BROKEN", "    let g = '日本' + nope")
+        .env("BROKEN_AFTER", "12")
+        .env("ERROR_CODE", "invalid-symbol")
+        .env("ERROR_TEXT", "nope")
         .env("XDG_STATE_HOME", &state)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    let start = Instant::now();
+
+    // Neovim waits at most 20 s for each step itself.
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed() > Duration::from_secs(120) {
+            let _ = child.kill();
+            panic!("neovim didn't finish within 120 s");
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let out = child.wait_with_output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
 
@@ -51,6 +73,14 @@ fn neovim_starts_the_server_negotiates_utf8_hovers_and_goes_to_a_definition() {
     );
     assert!(
         stdout.contains("neovim: ok: definition at '日本' + e is e on line 12"),
+        "{}",
+        stdout
+    );
+    assert!(
+        stdout.contains(
+            "neovim: ok: a invalid-symbol diagnostic covered nope on line 13, and cleared when \
+             the line was removed"
+        ),
         "{}",
         stdout
     );

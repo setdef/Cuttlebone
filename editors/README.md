@@ -20,10 +20,15 @@ Each check:
    expects `Array[Int]`
 4. goes to the definition of `e` on the line `let f = '日本' + e`, and
    expects the `e` that `let e` binds, on line 12
+5. inserts the line `let g = '日本' + nope` after line 12 (without saving),
+   waits for an `invalid-symbol` diagnostic whose range covers exactly
+   `nope`, then removes the line and waits for the diagnostic to go
 
 `中文` and `日本` are 6 bytes but 2 UTF-16 units. A position in the wrong
 encoding lands on `size` and shows `Int`, or lands past the end of the line
-and has no definition, so the check also proves the encoding negotiation: Neovim gets UTF-8, VS Code UTF-16. Each check prints
+and has no definition, and a diagnostic range in the wrong encoding doesn't
+cover `nope`, so the check also proves the encoding negotiation: Neovim
+gets UTF-8, VS Code UTF-16. Each check prints
 `<editor>: ok: ...` or `<editor>: FAIL: ...`, and the script exits non-zero
 on any failure.
 
@@ -59,7 +64,12 @@ should list `cuttlebone` as attached. Press `K` on an expression to see its
 type, and `<C-]>` (or `:lua vim.lsp.buf.definition()`) on a name to go to
 its definition. `grr` lists its references. Type `.` after a value and
 press `<C-x><C-o>` to see its members (or let your completion plugin show
-them).
+them). Errors and warnings show as diagnostics (`]d` goes to the next; `:lua
+vim.diagnostic.setqflist()` lists them all). `:lua
+vim.lsp.buf.document_highlight()` highlights the name under the cursor's
+other uses; `<C-s>` in insert mode shows the signature of the call you're
+typing in; `:lua vim.lsp.inlay_hint.enable()` turns on inlay hints, which
+Neovim leaves off by default.
 
 ## VS Code
 
@@ -91,10 +101,20 @@ To try it by hand:
    in `let e`. ⇧F12 on it lists both. ⌘-click `Stdout` to open std.stdio.
 8. On a new line in `main`, type `out.`. The suggestions list `print` and
    the other `Stdout` methods, each with its signature.
-9. If nothing happens, open **View → Output** and pick *Cuttlebone* in the
+9. The **Problems** panel (⇧⌘M) lists the file's warnings: `f` is unused.
+   Type `nope` on a new line in `main`: a red squiggle appears under it after
+   a moment, and goes when you delete it.
+10. Click on `e`: its other uses are highlighted. Type `out.print(`: the
+    signature shows, with `bytes` active. Inferred types (`: Array[Int]`)
+    and parameter names show as inlay hints; **Editor › Inlay Hints:
+    Enabled** turns them off.
+11. If nothing happens, open **View → Output** and pick *Cuttlebone* in the
    drop-down. It shows the server's log, including a refused Inko version.
 
 To install it for everyday use instead, run **Developer: Install Extension
 from Location…** from the Command Palette, and choose `editors/vscode` (after
 `npm ci`). An Inko extension you already have may also register `.inko`
-files; that's fine. If it also shows hovers, you'll see both.
+files; that's fine. If it also shows hovers, you'll see both. If it also
+reports diagnostics, turn Cuttlebone's off with `"diagnostics": false` in
+`initializationOptions` (docs/lsp.md, "Clients that turn on every
+capability").
