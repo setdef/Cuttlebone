@@ -53,5 +53,6 @@ type async Main {
     Stdout.new.print(error.message + other.message + ORIGIN.to_string)
     Stdout.new.print(describe(Shape.Square(3)).to_string + total(circles).to_string)
     Stdout.new.print(maybe.get.x.to_string + areas.size.to_string + pair.0.to_string + n.to_string)
+    Stdout.new.print(match '中文😀' { case s -> s.size.to_string })
   }
 }

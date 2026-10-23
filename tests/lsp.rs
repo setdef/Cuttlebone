@@ -91,7 +91,7 @@ fn copy_dir(from: &Path, to: &Path) {
 // The handshake.
 
 #[test]
-fn initialize_advertises_only_hover_completion_and_incremental_sync() {
+fn initialize_advertises_only_what_works() {
     let mut client = Client::start();
     let response = client.initialize(&fixture("members"), json!({}), json!({}));
     let result = &response["result"];
@@ -103,13 +103,19 @@ fn initialize_advertises_only_hover_completion_and_incremental_sync() {
         keys,
         [
             "completionProvider",
+            "definitionProvider",
             "experimental",
             "hoverProvider",
             "positionEncoding",
+            "referencesProvider",
             "textDocumentSync",
+            "typeDefinitionProvider",
         ]
     );
     assert_eq!(capabilities["hoverProvider"], true);
+    assert_eq!(capabilities["definitionProvider"], true);
+    assert_eq!(capabilities["typeDefinitionProvider"], true);
+    assert_eq!(capabilities["referencesProvider"], true);
     assert_eq!(
         capabilities["completionProvider"],
         json!({ "triggerCharacters": ["."], "resolveProvider": false })
@@ -1175,7 +1181,7 @@ fn unknown_methods_and_invalid_params_get_errors_and_the_server_keeps_going() {
     let mut client = Client::initialized(&root, json!({}));
 
     assert_eq!(
-        client.request("textDocument/definition", json!({}))["error"]["code"],
+        client.request("textDocument/implementation", json!({}))["error"]["code"],
         -32601
     );
     assert_eq!(

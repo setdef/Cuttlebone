@@ -518,7 +518,7 @@ fn references_to_a_std_symbol_are_only_in_the_project() {
     // String.size: the declaration is in std, so it's left out.
     assert_eq!(
         references(MAIN, "'中文😀'.size", 7, true),
-        places(&[(MAIN, 50, "size")])
+        places(&[(MAIN, 50, "size"), (MAIN, 55, "size")])
     );
 }
 

@@ -316,12 +316,18 @@ pub fn uri(path: &Path) -> String {
 /// A fake `inko` that reports `version`, and the pinned std for
 /// `inko print std`, so tests don't depend on what's installed.
 pub fn fake_inko(version: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("inko-{}", version));
+    fake_inko_with_std(version, &upstream_std(), &format!("inko-{}", version))
+}
+
+/// A fake `inko` in a directory named `name`, that reports `version` and
+/// `std` as its standard library.
+pub fn fake_inko_with_std(version: &str, std: &Path, name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     let path = dir.join("inko");
     let script = format!(
         "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'inko {}' ;;\n  print) echo '{}' ;;\n  *) exit 1 ;;\nesac\n",
         version,
-        upstream_std().display()
+        std.display()
     );
 
     std::fs::create_dir_all(&dir).unwrap();

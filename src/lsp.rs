@@ -1,14 +1,15 @@
 //! The language server: standard LSP over stdio, documented in docs/lsp.md.
 //!
 //! One thread runs the loop below. It keeps the open documents, queues
-//! hover and completion requests, and runs each query in a worker process
+//! queries (hover, completion, definition, type definition and references),
+//! and runs each query in a worker process
 //! (see `worker`) with a timeout, one at a time. Edits and
 //! `$/cancelRequest` cancel queries they make pointless, and a query waits
 //! until its document has been still for a moment (`debounce`) before it
 //! starts.
 use crate::check::{VERSION, upstream_version};
 use crate::position::{Encoding, Position};
-use crate::query::{self, Answer, MemberKind, MembersAt, Session, TypeAt, Unavailable};
+use crate::query::{self, Answer, MemberKind, MembersAt, Place, Session, TypeAt, Unavailable};
 use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query};
 use crossbeam_channel::{Receiver, Sender, select};
 use lsp_server::{
@@ -128,7 +129,7 @@ struct Document {
     changed: Option<Instant>,
 }
 
-/// A hover or completion request waiting to run.
+/// A query waiting to run.
 struct Pending {
     id: RequestId,
     method: &'static str,
@@ -209,6 +210,9 @@ impl Server {
                     resolve_provider: Some(false),
                     ..Default::default()
                 }),
+                definition_provider: Some(lsp::OneOf::Left(true)),
+                type_definition_provider: Some(lsp::TypeDefinitionProviderCapability::Simple(true)),
+                references_provider: Some(lsp::OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(lsp::ServerInfo {
@@ -290,6 +294,20 @@ impl Server {
         let (method, query) = match request.method.as_str() {
             "textDocument/hover" => ("textDocument/hover", Query::Type),
             "textDocument/completion" => ("textDocument/completion", Query::Complete),
+            "textDocument/definition" => ("textDocument/definition", Query::Definition),
+            "textDocument/typeDefinition" => ("textDocument/typeDefinition", Query::TypeDefinition),
+            "textDocument/references" => (
+                "textDocument/references",
+                Query::References {
+                    // ReferenceParams requires the context, but a client
+                    // that leaves it out gets the references alone.
+                    include_declaration: request
+                        .params
+                        .pointer("/context/includeDeclaration")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                },
+            ),
             "shutdown" => {
                 self.shut_down = true;
                 self.cancel_all(connection);
@@ -566,6 +584,24 @@ impl Server {
 
                 (completion(answer.result), status)
             }
+            Outcome::Place(answer) => {
+                let status = status_of(&answer);
+                let result = match answer.result {
+                    Ok(Some(place)) => location(place),
+                    _ => Value::Null,
+                };
+
+                (result, status)
+            }
+            Outcome::Places(answer) => {
+                let status = status_of(&answer);
+                let result = match answer.result {
+                    Ok(Some(places)) => Value::Array(places.into_iter().map(location).collect()),
+                    _ => Value::Null,
+                };
+
+                (result, status)
+            }
             Outcome::Failed(reason) => (Value::Null, (Err(reason), Duration::ZERO)),
         };
 
@@ -654,6 +690,19 @@ fn completion(result: Result<Option<MembersAt>, Unavailable>) -> Value {
         items,
     })
     .unwrap()
+}
+
+/// A place as an LSP `Location`, or `null` for a path that can't be a
+/// `file:` URI.
+fn location(place: Place) -> Value {
+    match Url::from_file_path(&place.file) {
+        Ok(uri) => serde_json::to_value(lsp::Location {
+            uri,
+            range: range(place.range),
+        })
+        .unwrap(),
+        Err(_) => Value::Null,
+    }
 }
 
 fn range(r: query::Range) -> lsp::Range {

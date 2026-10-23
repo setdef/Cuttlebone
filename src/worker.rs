@@ -6,7 +6,7 @@
 //! JSON to its stdin and closes it. The worker writes an `Outcome` as JSON to
 //! stdout and exits. Anything on its stderr (such as a panic's message) is
 //! passed on to the server's stderr.
-use crate::query::{self, Answer, MembersAt, Request, Session, TypeAt, Unavailable};
+use crate::query::{self, Answer, MembersAt, Place, Request, Session, TypeAt, Unavailable};
 use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -36,6 +36,12 @@ pub enum Query {
     Type,
     /// `query::complete`.
     Complete,
+    /// `query::definition`.
+    Definition,
+    /// `query::type_definition`.
+    TypeDefinition,
+    /// `query::references`.
+    References { include_declaration: bool },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +59,8 @@ pub struct Job {
 pub enum Outcome {
     Type(Answer<TypeAt>),
     Members(Answer<MembersAt>),
+    Place(Answer<Place>),
+    Places(Answer<Vec<Place>>),
     /// The worker didn't produce an answer: it timed out, crashed or
     /// couldn't be started.
     Failed(Unavailable),
@@ -64,6 +72,17 @@ impl Job {
         match self.query {
             Query::Type => Outcome::Type(query::type_at(&self.session, &self.request)),
             Query::Complete => Outcome::Members(query::complete(&self.session, &self.request)),
+            Query::Definition => Outcome::Place(query::definition(&self.session, &self.request)),
+            Query::TypeDefinition => {
+                Outcome::Place(query::type_definition(&self.session, &self.request))
+            }
+            Query::References {
+                include_declaration,
+            } => Outcome::Places(query::references(
+                &self.session,
+                &self.request,
+                include_declaration,
+            )),
         }
     }
 }
