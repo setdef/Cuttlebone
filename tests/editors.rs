@@ -11,7 +11,7 @@ use std::path::Path;
 use std::process::Command;
 
 #[test]
-fn neovim_starts_the_server_negotiates_utf8_and_hovers() {
+fn neovim_starts_the_server_negotiates_utf8_hovers_and_goes_to_a_definition() {
     if Command::new("nvim").arg("--version").output().is_err() {
         eprintln!("skipped: no nvim on PATH");
         return;
@@ -32,6 +32,11 @@ fn neovim_starts_the_server_negotiates_utf8_and_hovers() {
         .env("NEEDLE", "[3].size")
         .env("OFFSET", "0")
         .env("EXPECTED", "Array[Int]")
+        // The wrong encoding is past the end of the line.
+        .env("DEFINITION", "'日本' + e")
+        .env("DEFINITION_OFFSET", "7")
+        .env("DEFINED_LINE", "12")
+        .env("DEFINED", "e")
         .env("XDG_STATE_HOME", &state)
         .output()
         .unwrap();
@@ -41,6 +46,11 @@ fn neovim_starts_the_server_negotiates_utf8_and_hovers() {
     assert!(out.status.success(), "{}{}", stdout, stderr);
     assert!(
         stdout.contains("neovim: ok: hover at [3].size shows Array[Int] (positions in utf-8)"),
+        "{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("neovim: ok: definition at '日本' + e is e on line 12"),
         "{}",
         stdout
     );

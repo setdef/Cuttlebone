@@ -552,3 +552,37 @@ fn a_named_argument_goes_to_the_argument_or_field() {
         places(&[(MAIN, 10, "x"), (MAIN, 11, "x"), (MAIN, 43, "x")])
     );
 }
+
+#[test]
+fn a_qualified_constant_is_two_references() {
+    // `shapes.ORIGIN`: the module, then the constant, each at its own name.
+    assert_eq!(
+        references(MAIN, "ORIGIN.to_string", 0, false),
+        places(&[
+            (MAIN, 3, "ORIGIN"),
+            (MAIN, 52, "ORIGIN"),
+            ("src/qualified.inko", 3, "ORIGIN")
+        ])
+    );
+
+    let project = Project::new("navigation");
+    let file = "src/qualified.inko";
+
+    for (offset, expected) in [
+        (0, ("src/geometry/shapes.inko", 0, "")),
+        (7, ("src/geometry/shapes.inko", 0, "ORIGIN")),
+    ] {
+        let place = query::definition(
+            &project.session,
+            &request(&project, file, "shapes.ORIGIN", offset),
+        )
+        .result
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            describe(&project, &place),
+            (expected.0.to_string(), expected.1, expected.2.to_string())
+        );
+    }
+}

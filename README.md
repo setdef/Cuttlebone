@@ -5,8 +5,10 @@ Cuttlebone, a language server for Inko.
 It links the upstream compiler crates from a pinned release with a small
 patch (see [patches/](patches/README.md)), type checks with them, and answers
 questions about types over standard LSP, for any editor with an LSP client
-([docs/lsp.md](docs/lsp.md)): hover shows the type at a position, and
-completion after `.` lists members with their signatures.
+([docs/lsp.md](docs/lsp.md)): hover shows the type at a position,
+completion after `.` lists members with their signatures, and go to
+definition, go to type definition and find references locate symbols by the
+compiler's own ids.
 
 Reports, in docs/history/:
 
@@ -45,10 +47,12 @@ code. `.cargo/config.toml` assumes Homebrew's `llvm@18`. Set
 ## Layout
 
 - `src/walker.rs`: walks the typed HIR, recording each expression's type,
-  which nodes desugaring introduced, and cross-checks of the types it
-  reconstructs.
-- `src/query.rs`: the type at a position, and the members after a `.`
-  (inserting a placeholder for completion), and catching compiler panics.
+  which nodes desugaring introduced, cross-checks of the types it
+  reconstructs, and every name that refers to or declares a symbol, by the
+  compiler's ids.
+- `src/query.rs`: the type at a position, the members after a `.`
+  (inserting a placeholder for completion), declarations and references,
+  and catching compiler panics.
 - `src/position.rs`: converting between the compiler's positions (1-based,
   grapheme clusters) and editors' (0-based, UTF-16 or UTF-8).
 - `src/check.rs`: running a check, with no side effects.
@@ -82,7 +86,10 @@ also fast enough for the latency limits.
 | `tests/crosscheck.rs` | reconstructed types agree with what the compiler stores |
 | `tests/citations.rs` | the upstream lines the code cites still say what it mirrors |
 | `tests/lsp.rs` | the real binary as an LSP server over stdio: initialize, encodings, documents, hover, completion, status, panics, timeouts, aborts, cancellation, debouncing, side effects |
-| `tests/latency.rs` | latency limits, and the cost of a worker process |
+| `tests/definition.rs` | definition, type definition and references on every kind of name, same-named symbols in different modules, broken code, both encodings |
+| `tests/navigation.rs` | the same over LSP, in UTF-8 and UTF-16, with status reasons, an installed std that isn't `.upstream/`, and a package in `dep/` |
+| `tests/corpus_definition.rs` | every reference in std/src selects its own symbol, and goes to a declaration of the same id and name |
+| `tests/latency.rs` | latency limits for every query, and the cost of a worker process |
 | `tests/golden.rs` | `dump-types` output for a few std modules and fixtures, compared with `tests/golden/*.txt`. Run `UPDATE_GOLDEN=1 cargo test` to rewrite them. |
 | `tests/guardrails.rs` | the layering of src/, no editor named in code, nothing named after Inko, no machine-specific paths, and patches/README.md accounting for every patch line |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |
@@ -98,4 +105,5 @@ test-only code (`scripts/check-release.sh`). Tests build with the
 don't.
 
 `editors/check.sh` starts the server from VS Code and Neovim headlessly and
-checks that a hover works (see [editors/](editors/README.md)).
+checks that a hover and a go to definition work (see
+[editors/](editors/README.md)).

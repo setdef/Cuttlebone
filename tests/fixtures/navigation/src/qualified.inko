@@ -1,0 +1,5 @@
+import geometry.shapes
+
+fn pub origin -> Int {
+  shapes.ORIGIN
+}

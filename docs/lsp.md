@@ -31,7 +31,7 @@ All of these are optional.
 | `inko` | string | `inko` on `PATH` | The `inko` executable to check the version of and take the standard library from. |
 | `checkTimeoutMs` | number | 5000 | How long one check may run before it's killed (see [Robustness](#robustness)). |
 | `debounceMs` | number | 50 | How long a document must go without edits before a query on it starts (see [Debouncing and cancellation](#debouncing-and-cancellation)). |
-| `statusNotifications` | boolean | false | Send a [`cuttlebone/status`](#status) notification before each hover and completion response. |
+| `statusNotifications` | boolean | false | Send a [`cuttlebone/status`](#status) notification before each query's response (hover, completion, definition, type definition, references). |
 
 ### The Inko version
 
@@ -90,6 +90,9 @@ Only what works:
     "textDocumentSync": {"openClose": true, "change": 2, "save": {"includeText": true}},
     "hoverProvider": true,
     "completionProvider": {"triggerCharacters": ["."], "resolveProvider": false},
+    "definitionProvider": true,
+    "typeDefinitionProvider": true,
+    "referencesProvider": true,
     "experimental": {"cuttlebone": {"inko": "0.21.1", "std": "/path/to/std", "statusNotifications": false}}
   },
   "serverInfo": {"name": "cuttlebone", "version": "0.1.0"}
@@ -231,6 +234,131 @@ for `receiver.name`:
 The result is `null` when the cursor isn't after a `.`, or when there's no
 answer ([status](#status) says why). It's never a guess.
 
+## `textDocument/definition`
+
+Where the symbol at the position is declared, as one `Location`:
+
+```json
+→ {"jsonrpc": "2.0", "id": 4, "method": "textDocument/definition", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/main.inko"},
+    "position": {"line": 44, "character": 34}}}
+← {"jsonrpc": "2.0", "id": 4, "result": {
+    "uri": "file:///home/me/hello/src/main.inko",
+    "range": {"start": {"line": 14, "character": 9}, "end": {"line": 14, "character": 14}}}}
+```
+
+The range is the declared name (`moved` in `fn pub moved(by: Int)`), not
+the whole declaration. A module's range is empty, at the start of its file.
+
+| At | Goes to |
+|---|---|
+| a method call, `x.moved(2)`, `moved(2)`, or an operator such as `+` | the called method. For a static call, `Point.new`, the static method. |
+| a call through a type parameter's bound (`shape.area` with `T: Area`) | the trait's method |
+| a call to a default method a type inherits from a trait without redefining it (`iter.map`) | the trait's method |
+| a call to a method a type implements for a trait | the type's implementation |
+| a variable | its binding: `let`, a pattern (`case Some(x)`), a method's argument, a closure's argument, a `for` loop's variable |
+| a named argument, `new(x: 1)` | the method's argument |
+| a field, `@x`, or `point.x`, or `x:` in `Point(x: 1)`, or in a pattern | the field's declaration (`@x` in `let pub @x: Int`) |
+| a type, trait or type parameter, in a signature (`-> Point`, `T: Area`, `Array[T]`) or an expression (`Point.new`, `Point(x: 1)`) | its declaration. `Self` is the type it stands for. |
+| a constant | its declaration |
+| a constructor, `Option.Some(x)` or `case Some(x)` | the constructor (`case Some(T)`) |
+| a module in an import (`shapes` in `import geometry.shapes`), or used as a receiver (`beta.Error`) | the module's file. Each segment of an import's path goes to the module it names, if that module was checked: `geometry` alone has none. |
+| an imported symbol, `Circle` in `import geometry.shapes (Circle)`, or its alias | the symbol's declaration. `self` is the module. |
+| a declaration's own name | that declaration |
+
+Symbols are matched by the compiler's ids, never by name, so two modules'
+`Error` types are never confused.
+
+The result is `null` when there's nothing at the position (a comment, a
+literal, a keyword), or the name doesn't resolve (an undefined method, say).
+It's never a guess. It's also `null` when there's no answer, with the same
+[status](#status) reasons as hover.
+
+**Where locations point.** A location's file is the one the compiler read:
+
+- the project's own files
+- a dependency's files in the project's `dep/`
+- the standard library's files in the directory `inko print std` printed,
+  which `experimental.cuttlebone.std` reports
+
+So every location is a file on the user's machine that matches what they
+compile against. Positions use the negotiated encoding, in whichever file
+the location is in.
+
+## `textDocument/typeDefinition`
+
+Where the type of the expression at the position is declared, as one
+`Location`. The type's ownership (`ref`, `mut`, `uni`) and type arguments are
+stripped: for a value of type `ref Option[String]`, the result is `Option`'s
+declaration in std.option.
+
+| The type | Goes to |
+|---|---|
+| a type, with any ownership and type arguments (`Point`, `ref Option[String]`, `uni Array[Int]`) | the type's declaration (`Option`) |
+| a trait (`ref ToString`) | the trait's declaration |
+| a type parameter (`T`, or `ref T`), even one with an `impl ... if T: Trait` bound | the type parameter's declaration (`T` in `fn total[T: Area]`) |
+| a tuple (`(Int, String)`) | the `TupleN` type in std.tuple that it's an instance of (`Tuple2`) |
+| a module used as a receiver | the module's file |
+| a closure (`fn (Int) -> Int`), `Never`, a C type (`Int32`, `Pointer[T]`) | `null`: they have no declaration |
+
+Which expression a position means is the same as for
+[hover](#which-expression-a-position-means), so a method call is its return
+type. On a type name with no expression there, such as one in a signature,
+the result is that type's (or trait's or type parameter's) declaration.
+
+The result is `null` when nothing is at the position or the type has no
+declaration, and `null` with status `unavailable` (reason `untyped`) when the
+expression has no type.
+
+## `textDocument/references`
+
+Every reference to the symbol at the position, as an array of `Location`s,
+sorted by file and position:
+
+```json
+→ {"jsonrpc": "2.0", "id": 5, "method": "textDocument/references", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/main.inko"},
+    "position": {"line": 45, "character": 16},
+    "context": {"includeDeclaration": true}}}
+← {"jsonrpc": "2.0", "id": 5, "result": [
+    {"uri": "file:///home/me/hello/src/alpha.inko", "range": {"start": {"line": 1, "character": 9}, "end": {"line": 1, "character": 14}}},
+    {"uri": "file:///home/me/hello/src/alpha.inko", "range": {"start": {"line": 4, "character": 37}, "end": {"line": 4, "character": 42}}},
+    {"uri": "file:///home/me/hello/src/alpha.inko", "range": {"start": {"line": 5, "character": 4}, "end": {"line": 5, "character": 9}}},
+    {"uri": "file:///home/me/hello/src/main.inko", "range": {"start": {"line": 1, "character": 14}, "end": {"line": 1, "character": 19}}},
+    {"uri": "file:///home/me/hello/src/main.inko", "range": {"start": {"line": 45, "character": 16}, "end": {"line": 45, "character": 21}}}
+]}
+```
+
+- **The symbol** is found as for [definition](#textdocumentdefinition), on a
+  reference or on a declaration's name. References are the same kinds of
+  names definition goes from, and are matched by the compiler's ids.
+- **Where it looks:** the project's own modules, in its `src/` and `test/`.
+  Not dependencies or the standard library, even when the symbol is
+  declared there. A file outside a project's `src/` and `test/` is its own
+  project.
+- **The whole project is type checked**, not just the file and what it
+  imports, so modules that don't import the file are found. This costs
+  more than the other queries ([cost](#freshness-cost-and-side-effects)).
+- **`context.includeDeclaration`** adds the declaration's name, if it's in
+  the project. A request without `context` is treated as
+  `includeDeclaration: false`.
+- **Distinct ids are distinct symbols.** A call through a type parameter's
+  bound (`T: ToString`, `x.to_string`) refers to the trait's method, and a
+  call on a `String` to `String`'s own `to_string`, so the two don't find
+  each other. Calls to an inherited default method do count as references to
+  the trait's method, and an enum constructor's calls and patterns are the
+  same symbol.
+- **Desugaring** doesn't add references: a `for` loop's `Some(value)`,
+  `$`-variables, the `==` that `!x` becomes, and string interpolation's
+  `to_string` aren't listed.
+
+The result is `null` when nothing is at the position, `[]` when the symbol
+has no references in the project, and `null` with a [status](#status)
+reason when there's no answer. Because the whole project is checked, an
+error that stops type checking anywhere in it (a syntax error, or an error
+in a declaration) makes references unavailable, even if the file itself is
+fine.
+
 ## Status
 
 LSP results have nowhere to say *why* there's no answer, so Cuttlebone sends
@@ -247,8 +375,9 @@ a custom notification if the client opts in with
 }}
 ```
 
-- **When it's sent:** for every hover and completion request that gets a
-  result, just before the response, with the request's `id`. Requests
+- **When it's sent:** for every query (hover, completion, definition, type
+  definition and references) that gets a result, just before the
+  response, with the request's `id`. Requests
   answered with an error (cancelled, superseded, invalid) get none.
 - **Why opt-in:** clients that don't know the notification would otherwise
   receive one they don't handle. A client that doesn't opt in gets plain LSP
@@ -274,7 +403,7 @@ there was no check.
 | `invalidPosition` | The position's line is past the end of the document. |
 | `noHir` | The file, or a module it imports, couldn't be parsed or found (for example a syntax error, or an import of a module that doesn't exist), so nothing was type checked. |
 | `declarationErrors` | An error in a declaration (for example an undefined type in a signature) stopped the type checker before it typed any method body. |
-| `untyped` | The compiler couldn't type the expression at the position (or the receiver, for completion), usually because of an error in it. Other expressions in the file may still have types. |
+| `untyped` | The compiler couldn't type the expression at the position (or the receiver, for completion; or the expression, for type definition), usually because of an error in it. Other expressions in the file may still have types. |
 | `compilerPanic` | The compiler panicked. `message` has the panic's message and location. |
 | `compilerError` | The compiler reported an internal error, such as a project whose `inko.pkg` (or a dependency's) requires a newer Inko, or a manifest that doesn't parse. |
 | `timeout` | The check took longer than `checkTimeoutMs`, and was killed. |
@@ -331,7 +460,9 @@ The server's own subprocesses (`inko --version`, `inko print std`) have a
   the request. Queries don't lower to MIR, which types never depend on.
 - **Cost.** A query on a file that imports all of the standard library (116
   modules) takes about 120 ms on an Apple M1 Max. One on a typical std
-  module takes 30 to 100 ms.
+  module takes 30 to 100 ms. References check the whole project instead of
+  one file and its imports: about 270 ms for all of std's own `src/` and
+  `test/` as the project.
 - **No side effects.** Unlike `inko check`, a query never syncs `dep/`, never
   touches the network, and never creates or locks anything in Inko's data
   directory. It writes nothing anywhere. It does enforce the Inko version

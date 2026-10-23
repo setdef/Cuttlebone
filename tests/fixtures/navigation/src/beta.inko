@@ -7,6 +7,6 @@ type pub Error {
   }
 
   fn pub message -> String {
-    @code.to_string
+    '中文😀 ' + @code.to_string
   }
 }

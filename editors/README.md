@@ -18,10 +18,12 @@ Each check:
 2. opens `tests/fixtures/unicode/src/main.inko`
 3. hovers `[3]` on the line `let e = '中文' + [3].size.to_string`, and
    expects `Array[Int]`
+4. goes to the definition of `e` on the line `let f = '日本' + e`, and
+   expects the `e` that `let e` binds, on line 12
 
-`中文` is 6 bytes but 2 UTF-16 units. A position in the wrong encoding lands
-on `size` and shows `Int`, so the check also proves the encoding
-negotiation: Neovim gets UTF-8, VS Code UTF-16. Each check prints
+`中文` and `日本` are 6 bytes but 2 UTF-16 units. A position in the wrong
+encoding lands on `size` and shows `Int`, or lands past the end of the line
+and has no definition, so the check also proves the encoding negotiation: Neovim gets UTF-8, VS Code UTF-16. Each check prints
 `<editor>: ok: ...` or `<editor>: FAIL: ...`, and the script exits non-zero
 on any failure.
 
@@ -54,8 +56,10 @@ configuration in nvim-lspconfig's format, for Neovim's built-in
 
 To check by hand: open an `.inko` file, then run `:checkhealth vim.lsp`. It
 should list `cuttlebone` as attached. Press `K` on an expression to see its
-type. Type `.` after a value and press `<C-x><C-o>` to see its members (or
-let your completion plugin show them).
+type, and `<C-]>` (or `:lua vim.lsp.buf.definition()`) on a name to go to
+its definition. `grr` lists its references. Type `.` after a value and
+press `<C-x><C-o>` to see its members (or let your completion plugin show
+them).
 
 ## VS Code
 
@@ -83,9 +87,11 @@ To try it by hand:
 5. Open `src/main.inko` from the Explorer.
 6. Hover over `[3]` in `let e = '中文' + [3].size.to_string`. The hover shows
    `Array[Int]`; over `size` it shows `Int`.
-7. On a new line in `main`, type `out.`. The suggestions list `print` and
+7. Press F12 on the `e` in `let f = '日本' + e`. The cursor goes to the `e`
+   in `let e`. ⇧F12 on it lists both. ⌘-click `Stdout` to open std.stdio.
+8. On a new line in `main`, type `out.`. The suggestions list `print` and
    the other `Stdout` methods, each with its signature.
-8. If nothing happens, open **View → Output** and pick *Cuttlebone* in the
+9. If nothing happens, open **View → Output** and pick *Cuttlebone* in the
    drop-down. It shows the server's log, including a refused Inko version.
 
 To install it for everyday use instead, run **Developer: Install Extension

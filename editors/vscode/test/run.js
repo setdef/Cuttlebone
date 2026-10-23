@@ -3,7 +3,8 @@
 // otherwise the usual install location, otherwise downloads VS Code.
 //
 // Environment: CUTTLEBONE (the binary), WORKSPACE (a project directory),
-// FILE (an .inko file in it), NEEDLE, OFFSET and EXPECTED (see suite.js),
+// FILE (an .inko file in it), NEEDLE, OFFSET, EXPECTED, DEFINITION,
+// DEFINITION_OFFSET, DEFINED_LINE and DEFINED (see suite.js),
 // INKO (optional).
 const fs = require('fs');
 const os = require('os');

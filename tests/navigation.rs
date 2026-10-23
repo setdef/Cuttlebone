@@ -281,6 +281,19 @@ fn references_honour_include_declaration_and_keep_same_names_apart() {
                 (MAIN.to_string(), 46, "Error".to_string()),
             ]
         );
+        // In another file, after non-ASCII text: Int.to_string.
+        assert!(
+            references(
+                &mut client,
+                &root,
+                &text,
+                "ORIGIN.to_string",
+                7,
+                false,
+                utf8
+            )
+            .contains(&("src/beta.inko".to_string(), 9, "to_string".to_string())),
+        );
         // After non-ASCII text.
         assert_eq!(
             references(&mut client, &root, &text, "case s ->", 5, true, utf8),

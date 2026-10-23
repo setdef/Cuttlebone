@@ -1,6 +1,9 @@
 // Runs inside VS Code: points the extension at $CUTTLEBONE, opens $FILE,
 // and asks VS Code for the hover at the first $NEEDLE plus $OFFSET
-// characters, which must show $EXPECTED in a Markdown code block.
+// characters, which must show $EXPECTED in a Markdown code block. Then asks
+// for the definition at the first $DEFINITION plus $DEFINITION_OFFSET
+// characters, which must cover $DEFINED on line $DEFINED_LINE (1-based) of
+// $FILE.
 const assert = require('assert');
 const vscode = require('vscode');
 
@@ -24,14 +27,7 @@ async function run() {
   await waitFor(() => client.isRunning(), 'the server to start');
 
   const encoding = client.initializeResult.capabilities.positionEncoding;
-  const text = document.getText();
-  const index = text.indexOf(process.env.NEEDLE);
-
-  assert.notStrictEqual(index, -1, `${process.env.NEEDLE} isn't in the file`);
-
-  // OFFSET counts characters; VS Code's offsets are UTF-16.
-  const offset = index + [...process.env.NEEDLE].slice(0, Number(process.env.OFFSET)).join('').length;
-  const position = document.positionAt(offset);
+  const position = positionOf(document, process.env.NEEDLE, process.env.OFFSET);
   const expected = '```inko\n' + process.env.EXPECTED + '\n```';
   let shown = [];
 
@@ -43,7 +39,41 @@ async function run() {
     return shown.includes(expected);
   }, `a hover showing ${process.env.EXPECTED}`, () => `hovers: ${JSON.stringify(shown)}`);
 
+  // With the wrong encoding, the position is past the end of the line, and
+  // there's no definition.
+  const at = positionOf(document, process.env.DEFINITION, process.env.DEFINITION_OFFSET);
+  let found = [];
+
+  await waitFor(async () => {
+    const locations = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, at);
+
+    // Location or LocationLink.
+    found = locations.map((l) => ({
+      file: (l.uri || l.targetUri).fsPath,
+      range: l.targetSelectionRange || l.range || l.targetRange,
+    }));
+    return found.some(
+      (l) =>
+        l.file === document.uri.fsPath &&
+        l.range.start.line === Number(process.env.DEFINED_LINE) - 1 &&
+        document.getText(l.range) === process.env.DEFINED,
+    );
+  }, `a definition covering ${process.env.DEFINED}`, () => `definitions: ${JSON.stringify(found)}`);
+
   console.log(`vscode: ok: hover at ${process.env.NEEDLE} shows ${process.env.EXPECTED} (positions in ${encoding})`);
+  console.log(
+    `vscode: ok: definition at ${process.env.DEFINITION} is ${process.env.DEFINED} on line ${process.env.DEFINED_LINE}`,
+  );
+}
+
+// The position `offset` characters into the first `needle`.
+function positionOf(document, needle, offset) {
+  const index = document.getText().indexOf(needle);
+
+  assert.notStrictEqual(index, -1, `${needle} isn't in the file`);
+
+  // The offset counts characters; VS Code's offsets are UTF-16.
+  return document.positionAt(index + [...needle].slice(0, Number(offset)).join('').length);
 }
 
 async function waitFor(condition, what, detail = () => '') {
