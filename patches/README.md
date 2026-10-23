@@ -70,7 +70,7 @@ line), and it's what keeps queries free of side effects. `prepare` does two
 things:
 
 - It refuses a project whose manifests require a newer Inko. Cuttlebone
-  repeats this check itself (`check_required_version` in src/lib.rs), with
+  repeats this check itself (`check_required_version` in src/check.rs), with
   absolute paths, because `prepare` reads `inko.pkg` relative to the working
   directory.
 - It calls `sync_if_needed`. That function first creates

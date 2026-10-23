@@ -14,8 +14,11 @@ Reports, in docs/history/:
 - [MILESTONE-1.md](docs/history/MILESTONE-1.md): the type service (with a
   custom protocol, since replaced).
 - [MILESTONE-2.md](docs/history/MILESTONE-2.md): the language server.
+- [GUARDRAILS.md](docs/history/GUARDRAILS.md): turning the standing rules
+  into checks.
 
-- [editors/](editors/README.md): setting it up in VS Code and Neovim.
+Setting it up in VS Code and Neovim: [editors/](editors/README.md). The rules
+every change follows, for people and coding agents: [AGENTS.md](AGENTS.md).
 
 ## Building
 
@@ -48,17 +51,21 @@ code. `.cargo/config.toml` assumes Homebrew's `llvm@18`. Set
   (inserting a placeholder for completion), and catching compiler panics.
 - `src/position.rs`: converting between the compiler's positions (1-based,
   grapheme clusters) and editors' (0-based, UTF-16 or UTF-8).
-- `src/lib.rs`: running a check, with no side effects.
+- `src/check.rs`: running a check, with no side effects.
 - `src/worker.rs`: running one query in a child process.
 - `src/lsp.rs`: the LSP front end: documents, the queue, timeouts,
   cancellation and debouncing.
+- `src/dump.rs`: helpers for dump-types and the tests only.
 
-The core (`lib.rs`, `query.rs`, `walker.rs`, `position.rs`) doesn't know
-about LSP.
+The core (`check.rs`, `query.rs`, `walker.rs`, `position.rs`) doesn't know
+about LSP. tests/guardrails.rs enforces the layering (see AGENTS.md).
 
 ## Tests
 
-    cargo test
+    scripts/install-hooks.sh   # once per clone: run scripts/check.sh before each commit
+    scripts/check.sh           # formatting, clippy, tests, the patch, the release build
+    scripts/check.sh --full    # and the mutation runner (several minutes)
+    cargo test                 # the tests alone
 
 Dependencies (the compiler) are optimized even in debug builds, so this is
 also fast enough for the latency limits.
@@ -77,10 +84,18 @@ also fast enough for the latency limits.
 | `tests/lsp.rs` | the real binary as an LSP server over stdio: initialize, encodings, documents, hover, completion, status, panics, timeouts, aborts, cancellation, debouncing, side effects |
 | `tests/latency.rs` | latency limits, and the cost of a worker process |
 | `tests/golden.rs` | `dump-types` output for a few std modules and fixtures, compared with `tests/golden/*.txt`. Run `UPDATE_GOLDEN=1 cargo test` to rewrite them. |
+| `tests/guardrails.rs` | the layering of src/, no editor named in code, nothing named after Inko, no machine-specific paths, and patches/README.md accounting for every patch line |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |
 
-`scripts/mutate.py` breaks behaviours on purpose, one at a time, and checks
-that a test fails for each.
+`scripts/mutate.py` breaks behaviours and rules on purpose, one at a time,
+and checks that a test (or clippy, or a check script) fails for each.
+
+`scripts/check.sh` also checks that `patches/upstream.patch` applies to a
+fresh copy of the pinned release and matches `.upstream/inko`
+(`scripts/check-patch.sh`), and that the release server contains no
+test-only code (`scripts/check-release.sh`). Tests build with the
+`fault-injection` feature (docs/lsp.md, "Testing faults"); release builds
+don't.
 
 `editors/check.sh` starts the server from VS Code and Neovim headlessly and
 checks that a hover works (see [editors/](editors/README.md)).

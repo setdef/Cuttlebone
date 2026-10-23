@@ -6,7 +6,11 @@ once), runs the tests that should catch it, and restores the file. Run it
 from anywhere; pass words to run only the mutations whose names contain
 them, e.g. `scripts/mutate.py timeout`. A mutation reported as NOT CAUGHT
 means a behaviour has no test; SKIP means its snippet changed, so update
-the snippet.
+the snippet. It exits with status 1 unless every mutation is caught.
+
+The last field names what should catch the mutation: `--test FILE [FILTER]`
+for `cargo test`, or `sh:COMMAND` for a command that must fail (for rules
+that clippy or a check script enforces).
 """
 import subprocess, sys, os, json
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -15,8 +19,8 @@ M = [
   "    ) -> Result<(), CompileError> {\n        let start = Instant::now();\n\n        // When checking a project",
   "    ) -> Result<(), CompileError> {\n        self.prepare()?;\n        let start = Instant::now();\n\n        // When checking a project",
   "--test lsp queries_never_sync"),
- ("no required-version check", "src/lib.rs", "    check_required_version(target)?;\n", "", "--test manifest"),
- ("dependency manifests ignored", "src/lib.rs", "paths.push(version.join(MANIFEST_FILE));", "let _ = version;", "--test manifest"),
+ ("no required-version check", "src/check.rs", "    check_required_version(target)?;\n", "", "--test manifest"),
+ ("dependency manifests ignored", "src/check.rs", "paths.push(version.join(MANIFEST_FILE));", "let _ = version;", "--test manifest"),
  ("always UTF-16", "src/lsp.rs", '"utf-8" => Some(Encoding::Utf8),', '"utf-8" => Some(Encoding::Utf16),', "--test lsp utf8"),
  ("UTF-8 counts chars", "src/position.rs", "Encoding::Utf8 => text.len() as u32,", "Encoding::Utf8 => text.chars().count() as u32,", "--test lsp non_ascii"),
  ("incremental edits replace everything", "src/lsp.rs", "    let Some(r) = change.range else {", "    let Some(r) = None::<lsp::Range> else {", "--test lsp several_changes"),
@@ -47,6 +51,18 @@ M = [
  ("full sync advertised", "src/lsp.rs", "change: Some(lsp::TextDocumentSyncKind::INCREMENTAL),", "change: Some(lsp::TextDocumentSyncKind::FULL),", "--test lsp initialize_advertises"),
  ("no worker deadline", "src/worker.rs", "            std::process::exit(DEADLINE_STATUS);", "            let _ = DEADLINE_STATUS;", "--test lsp a_hung_worker"),
  ("byte_offset ignores CR", "src/query.rs", "    let line = line.strip_suffix('\\r').unwrap_or(line);\n", "", "--test complete byte_offsets"),
+ # The guardrails (AGENTS.md).
+ ("query uses lsp", "src/query.rs", "use crate::check::{Target, project_root, run};\n", "use crate::check::{Target, project_root, run};\nuse crate::lsp as _;\n", "--test guardrails layers"),
+ ("position uses walker", "src/position.rs", "impl Encoding {\n", "use crate::walker as _;\nimpl Encoding {\n", "--test guardrails layers"),
+ # The editor's name is split so that this file doesn't name one itself.
+ ("an editor named in code", "src/lsp.rs", "//! The language server: standard LSP over stdio", "//! The language server, for " + "Ema" + "cs: standard LSP over stdio", "--test guardrails editor"),
+ ("a binary named after Inko", "Cargo.toml", 'name = "dump-types"', 'name = "inko-dump-types"', "--test guardrails named_after"),
+ ("an unjustified patch line", "patches/upstream.patch", "+    pub overlay: IndexMap<PathBuf, Vec<u8>>,\n", "+    pub overlay: IndexMap<PathBuf, Vec<u8>>,\n+    pub unjustified: bool,\n", "--test guardrails patches_readme"),
+ ("a path from one machine", "AGENTS.md", "Never modify any checkout of Inko's own repository.", "Never modify ~/src/inko.", "--test guardrails paths"),
+ ("printing to stdout in the library", "src/query.rs", "pub fn type_at(session: &Session, request: &Request) -> Answer<TypeAt> {\n", "pub fn type_at(session: &Session, request: &Request) -> Answer<TypeAt> {\n    println!();\n", "sh:cargo clippy --quiet --all-targets"),
+ ("unsafe code", "src/position.rs", "impl Encoding {\n", "impl Encoding {\n    pub fn unsafe_code() {\n        unsafe {}\n    }\n", "sh:cargo clippy --quiet --all-targets"),
+ ("fault injection in release builds", "Cargo.toml", "fault-injection = []\n", "default = [\"fault-injection\"]\nfault-injection = []\n", "sh:scripts/check-release.sh"),
+ ("a patch that doesn't apply to the release", "patches/upstream.patch", "-mod hir;\n", "-mod hir_typo;\n", "sh:scripts/check-patch.sh"),
 ]
 only = sys.argv[1:]
 results = []
@@ -58,10 +74,18 @@ for name, path, old, new, test in M:
         results.append((name, "SKIP: pattern count %d" % src.count(old))); print(results[-1], flush=True); continue
     open(p, "w").write(src.replace(old, new))
     try:
-        r = subprocess.run("cargo test " + test.split(" ")[0] + " " + test.split(" ")[1] + (" -- " + test.split(" ",2)[2] if test.count(" ") >= 2 else ""),
-                           shell=True, cwd=ROOT, capture_output=True, text=True, timeout=900)
-        out = r.stdout + r.stderr
-        if "could not compile" in out or "error[" in out:
+        if test.startswith("sh:"):
+            r = subprocess.run(test[3:], shell=True, cwd=ROOT, capture_output=True, text=True, timeout=900)
+            out = r.stdout + r.stderr
+            reason = next((l.strip() for l in out.splitlines() if l.startswith("error") or l.startswith("the ") or l.startswith("patches/")), "")
+            verdict = "caught by %s: %s" % (test[3:], reason) if r.returncode != 0 else "NOT CAUGHT"
+        else:
+            r = subprocess.run("cargo test " + test.split(" ")[0] + " " + test.split(" ")[1] + (" -- " + test.split(" ",2)[2] if test.count(" ") >= 2 else ""),
+                               shell=True, cwd=ROOT, capture_output=True, text=True, timeout=900)
+            out = r.stdout + r.stderr
+        if test.startswith("sh:"):
+            pass
+        elif "could not compile" in out or "error[" in out:
             verdict = "BUILD ERROR"
         elif r.returncode != 0 and "FAILED" in out:
             failed = [l.split()[1] for l in out.splitlines() if l.startswith("test ") and l.endswith("FAILED")]
@@ -73,4 +97,6 @@ for name, path, old, new, test in M:
     finally:
         open(p, "w").write(src)
     results.append((name, verdict)); print(results[-1], flush=True)
-print("%d of %d caught" % (sum(v.startswith("caught") for _, v in results), len(results)))
+caught = sum(v.startswith("caught") for _, v in results)
+print("%d of %d caught" % (caught, len(results)))
+sys.exit(0 if results and caught == len(results) else 1)
