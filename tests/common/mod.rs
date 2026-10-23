@@ -122,3 +122,4 @@ pub fn position_of(text: &str, needle: &str, offset: u32) -> Position {
         character: before[start..].encode_utf16().count() as u32 + offset,
     }
 }
+pub mod client;
