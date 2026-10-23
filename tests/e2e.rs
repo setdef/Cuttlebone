@@ -508,3 +508,28 @@ fn the_installed_inko_works_when_its_version_matches() {
 
     assert_eq!(reply["result"]["type"], "Int", "{}", reply);
 }
+
+#[test]
+fn a_failed_handshake_after_a_successful_one_leaves_the_server_uninitialized() {
+    let root = fixture("members");
+    let file = root.join("src/main.inko");
+    let mut server = Server::initialized(&root);
+    let reply = server.request("initialize", json!({ "inko": fake_inko("0.20.0") }));
+
+    assert_eq!(reply["reason"]["code"], "inkoVersionMismatch");
+
+    let reply = server.request(
+        "typeAt",
+        json!({ "file": file, "position": { "line": 0, "character": 0 } }),
+    );
+
+    assert_eq!(reply["reason"]["code"], "notInitialized");
+
+    // And a later successful one works again.
+    let reply = server.request(
+        "initialize",
+        json!({ "inko": fake_inko(upstream_version()) }),
+    );
+
+    assert_eq!(reply["status"], "fresh");
+}

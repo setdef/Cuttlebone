@@ -148,6 +148,10 @@ impl Server {
     }
 
     fn initialize(&mut self, id: Value, params: &Value) -> Value {
+        // A failed handshake leaves the server uninitialized, even if an
+        // earlier one succeeded.
+        self.session = None;
+
         if let Some(v) = params.get("protocol").and_then(Value::as_u64)
             && v != PROTOCOL
         {

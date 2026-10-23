@@ -356,3 +356,14 @@ fn a_try_the_type_checker_rejects_is_untyped() {
     );
     assert_eq!(p.type_of(MAIN, needle, 0), "Int");
 }
+
+#[test]
+fn crlf_line_endings_dont_shift_positions() {
+    let p = unicode();
+    let text = p.read(MAIN).replace('\n', "\r\n");
+    let t = p.type_at(MAIN, Some(&text), "4.5", 0).unwrap().unwrap();
+
+    assert_eq!(t.typ, "Float");
+    assert_eq!(t.range.start, position_of(&text, "4.5", 0));
+    assert_eq!(t.range.end, position_of(&text, "4.5", 3));
+}

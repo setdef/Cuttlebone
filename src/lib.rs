@@ -8,6 +8,7 @@ use compiler::config::Config;
 use compiler::hir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use types::Database;
 
@@ -146,15 +147,44 @@ pub struct Run<R> {
     pub total: Duration,
 }
 
+/// Serializes checks, because each one changes the working directory.
+static CHECKING: Mutex<()> = Mutex::new(());
+
+/// Restores the working directory when dropped, including on a panic.
+struct WorkingDirectory(PathBuf);
+
+impl WorkingDirectory {
+    fn enter(dir: &Path) -> Result<WorkingDirectory, String> {
+        let old = std::env::current_dir().map_err(|e| e.to_string())?;
+
+        std::env::set_current_dir(dir).map_err(|e| format!("{}: {}", dir.display(), e))?;
+        Ok(WorkingDirectory(old))
+    }
+}
+
+impl Drop for WorkingDirectory {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
 /// Type checks a target and passes the typed HIR to `inspect`. With `mir`
 /// set it also lowers to MIR, where some errors (e.g. moves) are found, but
 /// types never depend on that.
+///
+/// The check runs with the target's root as the working directory, because
+/// the compiler reads `inko.pkg` from there (compiler/src/pkg/manifest.rs:12
+/// and compiler/src/pkg/sync.rs:201-211): for the Inko version the project
+/// requires, and to sync `dep/` if the manifest changed since the last sync,
+/// as `inko check` does.
 pub fn run<R>(
     target: &Target,
     mir: bool,
     print_diagnostics: bool,
     inspect: impl FnOnce(&Database, &[hir::Module]) -> R,
 ) -> Result<Run<R>, String> {
+    let _lock = CHECKING.lock().unwrap_or_else(|e| e.into_inner());
+    let _cwd = WorkingDirectory::enter(&target.root)?;
     let mut compiler = Compiler::new(target.config()?);
     let start = Instant::now();
     let mut type_check = Duration::ZERO;

@@ -98,3 +98,37 @@ fn contents_paths_may_be_given_in_any_form_that_names_the_file() {
         "Int"
     );
 }
+
+#[test]
+fn the_projects_manifest_is_read_from_its_root() {
+    // The compiler reads inko.pkg from the working directory, so checks run
+    // in the project's root. This test's working directory is the
+    // repository, which has no inko.pkg.
+    let root = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("requires-newer-inko");
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("inko.pkg"), "require inko 99.0.0\n").unwrap();
+    std::fs::write(root.join("src/main.inko"), "let A = 1\n").unwrap();
+
+    let session = query::Session {
+        std: cuttlebone::upstream_std(),
+        project: Some(root.canonicalize().unwrap()),
+    };
+    let request = query::Request {
+        file: root.join("src/main.inko"),
+        position: cuttlebone::position::Position {
+            line: 0,
+            character: 8,
+        },
+        contents: Default::default(),
+    };
+    let err = query::type_at(&session, &request).result.unwrap_err();
+
+    assert_eq!(err.code, "compilerError");
+    assert!(
+        err.message.contains("requires Inko 99.0.0"),
+        "{}",
+        err.message
+    );
+    assert!(!std::env::current_dir().unwrap().starts_with(&root));
+}

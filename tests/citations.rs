@@ -23,6 +23,11 @@ const CITATIONS: &[(&str, &str)] = &[
     ),
     ("compiler/src/mir/passes.rs:1836", ".unwrap()"),
     (
+        "compiler/src/pkg/manifest.rs:12",
+        "PathBuf::from(MANIFEST_FILE)",
+    ),
+    ("compiler/src/pkg/sync.rs:201-211", "read(MANIFEST_FILE)"),
+    (
         "compiler/src/type_check/expressions.rs:1335-1342",
         "hir::Expression::infer_recover(old)",
     ),
