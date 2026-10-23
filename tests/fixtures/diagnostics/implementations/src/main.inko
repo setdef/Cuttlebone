@@ -1,0 +1,18 @@
+# Implementing traits: these are found before methods are checked.
+trait Named {
+  fn name -> String
+}
+
+trait Greeter: Named {
+  fn greet -> String {
+    "hi"
+  }
+}
+
+type Person {}
+
+impl Greeter for Person {}
+
+type async Main {
+  fn async main {}
+}

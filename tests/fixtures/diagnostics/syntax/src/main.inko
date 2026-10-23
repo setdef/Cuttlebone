@@ -1,0 +1,8 @@
+# A syntax error after non-ASCII text: 👩‍👩‍👦 is one column for the compiler.
+import other
+
+type async Main {
+  fn async main {
+    let family = "👩‍👩‍👦 日本" + )
+  }
+}

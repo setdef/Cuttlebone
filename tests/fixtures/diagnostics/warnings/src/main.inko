@@ -1,0 +1,10 @@
+# Only warnings: the check passes. "日本"
+import std.stdio (Stdout)
+import std.fs.path (Path)
+
+type async Main {
+  fn async main {
+    let unused = 10
+    Stdout.new.print('é')
+  }
+}

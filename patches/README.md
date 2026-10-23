@@ -7,7 +7,7 @@ makes the source of every modified file available.
 
 Nothing in the type checker, the types crate, or code generation changes. It
 adds one way into the compiler (a hook), one input (an overlay of source
-text), and makes the typed HIR readable. The counts are the patch's own
+text), and makes the typed HIR and the diagnostics readable. The counts are the patch's own
 (`git apply --numstat`); tests/guardrails.rs fails if they disagree, so a
 line can't be added without updating this table and justifying it below.
 
@@ -15,7 +15,8 @@ line can't be added without updating this table and justifying it below.
 |---|---|---|
 | compiler/src/lib.rs | +1 -1 | `mod hir` becomes `pub mod hir`, so Cuttlebone can read the typed HIR. |
 | compiler/src/hir.rs | +469 -469 | Every `pub(crate)` becomes `pub`, except `struct LowerToHir`. Mechanical. |
-| compiler/src/compiler.rs | +16 -1 | The `check_with` hook, which doesn't sync `dep/`. |
+| compiler/src/compiler.rs | +20 -1 | The `check_with` hook, which doesn't sync `dep/`, and the `diagnostics` accessor. |
+| compiler/src/diagnostics.rs | +7 -7 | `Diagnostic` and the accessors Cuttlebone reads become `pub`. |
 | compiler/src/config.rs | +4 | The overlay field. |
 | compiler/src/modules_parser.rs | +5 -1 | Reading the overlay. |
 
@@ -113,6 +114,52 @@ home directory, and fails if anything is created.
   golden tests still lower to MIR by returning `true`.
 - `typed?;`: the original early return, for when `inspect` continues.
 
+```diff
++
++    pub fn diagnostics(&self) -> impl Iterator<Item = &crate::diagnostics::Diagnostic> {
++        self.state.diagnostics.iter()
++    }
+ }
+```
+
+Every error and warning a check reported, for `textDocument/publishDiagnostics`
+(docs/lsp.md, "Diagnostics"). The compiler keeps them in `State`, which is
+private, and only prints them (`print_diagnostics`, through the text or JSON
+presenter). Reading them directly is the smallest way out; the alternative,
+setting the JSON presenter and parsing what it prints to stderr, would mean
+capturing the process's stderr and a parser for a format that isn't quite
+JSON (it escapes strings with Rust's `{:?}`).
+
+- It's the last method of `impl Compiler`, after `prepare`, so no line that
+  Cuttlebone's code cites (tests/citations.rs) moves.
+- It returns an iterator rather than `&Diagnostics`, so the `Diagnostics`
+  collection and its builder methods stay `pub(crate)`.
+- The full path, `crate::diagnostics::Diagnostic`, saves a `use` line.
+
+### compiler/src/diagnostics.rs
+
+```diff
+-pub(crate) enum DiagnosticId {
++pub enum DiagnosticId {
+```
+```diff
+-pub(crate) struct Diagnostic {
++pub struct Diagnostic {
+```
+```diff
+-    pub(crate) fn is_error(&self) -> bool {
++    pub fn is_error(&self) -> bool {
+```
+and the same for `id`, `message`, `file` and `location`.
+
+These are what `inko check --format json` prints (compiler/src/presenters.rs,
+`JsonPresenter::to_json`): the ID, error or warning, the file, and the
+location. `DiagnosticId` must be public because `id` returns it; Cuttlebone
+only formats it with its `Display`, which gives the ID as `inko check`
+prints it (`invalid-symbol`). The fields stay private, `new` and `kind`
+stay `pub(crate)` (`is_error` says the same as `kind`), and so do
+`Diagnostics` and `DiagnosticType`.
+
 ### compiler/src/config.rs
 
 ```diff
@@ -167,6 +214,9 @@ hash lookup per module.
    - Re-apply the `check_with` hook to `Compiler::check`, the overlay field
      to `Config`, and the overlay lookup to `ModulesParser::parse`, as shown
      above.
+   - Add `Compiler::diagnostics` at the end of `impl Compiler`, and make
+     `DiagnosticId`, `Diagnostic` and its `is_error`, `id`, `message`,
+     `file` and `location` public.
 3. Run `scripts/refresh-patch.sh`, then `cargo test`.
    - `tests/citations.rs` fails for each upstream line Cuttlebone's code
      cites that moved or changed. For each, reread the cited upstream code,
@@ -179,3 +229,6 @@ hash lookup per module.
      Regenerate them with `UPDATE_GOLDEN=1 cargo test`, and look at the diff
      for `<missing>` and for changes in which nodes are `synthetic`.
    - `tests/corpus.rs` fails if any std expression lost its type.
+   - `tests/diagnostics.rs` fails if Cuttlebone's diagnostics differ from
+     the new release's `inko check` (which must then be installed). Its
+     fixtures may need new cases for new diagnostic IDs.

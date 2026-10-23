@@ -17,11 +17,20 @@ const CITATIONS: &[(&str, &str)] = &[
         "ast/src/lexer.rs:518-520",
         "self.column += value.graphemes(true).count() as u32;",
     ),
+    ("compiler/src/diagnostics.rs:25-50", "BorrowValueType,"),
+    (
+        "inko/src/command/check.rs:62-70",
+        "compiler.print_diagnostics();",
+    ),
     (
         "compiler/src/hir.rs:21-29",
         "const ARRAY_LIT_VAR: &str = \"$array\";",
     ),
     ("compiler/src/mir/passes.rs:1836", ".unwrap()"),
+    (
+        "compiler/src/compiler.rs:258-261",
+        "self.check_with(file, |_, _| true)",
+    ),
     ("compiler/src/compiler.rs:795-810", "fn prepare(&mut self)"),
     (
         "compiler/src/compiler.rs:812",
@@ -179,7 +188,7 @@ fn citations_in_code() -> Vec<String> {
                     &text[start..i],
                     rest[..end].trim_end_matches('-')
                 );
-                let upstream = ["ast/", "compiler/", "types/", "location/"]
+                let upstream = ["ast/", "compiler/", "inko/", "types/", "location/"]
                     .iter()
                     .any(|p| citation.starts_with(p));
 

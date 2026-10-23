@@ -1,0 +1,32 @@
+# Errors in method bodies, after non-ASCII text: "日本" + é 👩‍👩‍👦
+import std.stdio (Stdout)
+import helper
+
+type Point {
+  let @x: Int
+  let @y: Int
+
+  fn hidden -> Int {
+    @x
+  }
+}
+
+type async Main {
+  fn async main {
+    let out = Stdout.new
+    let text = "👩‍👩‍👦" + undefined_variable
+    let point = Point(x: 1)
+
+    out.print(text.nope)
+    out.print(1)
+    point.x = 2
+    text as Int
+    break
+    throw 'é'
+    helper.help(1, 2)
+    point.hidden
+    match Option.Some(1) {
+      case Some(a) or None -> {}
+    }
+  }
+}

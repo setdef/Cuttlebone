@@ -1,0 +1,4 @@
+# "日本": the same error in another module is reported too.
+trait Twice {}
+
+trait Twice {}

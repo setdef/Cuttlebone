@@ -1,0 +1,6 @@
+# Constants are evaluated while lowering to MIR. "日本"
+let EQUAL = true == false
+
+type async Main {
+  fn async main {}
+}

@@ -1,0 +1,18 @@
+# Methods that can't be defined.
+type NotAsync {
+  fn async run {}
+}
+
+type async Worker {
+  fn pub value -> Int {
+    1
+  }
+
+  fn async answer -> Int {
+    42
+  }
+}
+
+type async Main {
+  fn async main {}
+}

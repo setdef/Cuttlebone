@@ -1,0 +1,8 @@
+# The project's test/ directory is checked too.
+fn pub test_value -> Int {
+  let values = [1]
+  let a = values
+  let b = values
+
+  0
+}

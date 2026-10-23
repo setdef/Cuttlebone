@@ -1,0 +1,3 @@
+fn pub help(value: Int) -> Int {
+  value + "日本"
+}

@@ -1,5 +1,5 @@
 diff --git a/compiler/src/compiler.rs b/compiler/src/compiler.rs
-index 42fad9f..8ea4d39 100644
+index 42fad9f..946847c 100644
 --- a/compiler/src/compiler.rs
 +++ b/compiler/src/compiler.rs
 @@ -257,7 +257,17 @@ impl Compiler {
@@ -35,6 +35,17 @@ index 42fad9f..8ea4d39 100644
  
          let res = self.compile_mir(hir).map(|_| ());
  
+@@ -797,6 +812,10 @@ LLVM module timings:
+         sync_if_needed(&self.state.config.dependencies)?;
+         Ok(())
+     }
++
++    pub fn diagnostics(&self) -> impl Iterator<Item = &crate::diagnostics::Diagnostic> {
++        self.state.diagnostics.iter()
++    }
+ }
+ 
+ #[cfg(test)]
 diff --git a/compiler/src/config.rs b/compiler/src/config.rs
 index 0b0d735..7730a39 100644
 --- a/compiler/src/config.rs
@@ -57,6 +68,61 @@ index 0b0d735..7730a39 100644
          })
      }
  
+diff --git a/compiler/src/diagnostics.rs b/compiler/src/diagnostics.rs
+index 70ac1eb..7859be2 100644
+--- a/compiler/src/diagnostics.rs
++++ b/compiler/src/diagnostics.rs
+@@ -22,7 +22,7 @@ pub fn info(label: &str, message: &str) {
+ 
+ /// The unique ID of a diagnostic.
+ #[derive(PartialEq, Eq, Copy, Clone)]
+-pub(crate) enum DiagnosticId {
++pub enum DiagnosticId {
+     DuplicateSymbol,
+     InvalidAssign,
+     InvalidCall,
+@@ -105,7 +105,7 @@ impl fmt::Display for DiagnosticType {
+ }
+ 
+ /// A single diagnostic such as a warning or error.
+-pub(crate) struct Diagnostic {
++pub struct Diagnostic {
+     kind: DiagnosticType,
+     id: DiagnosticId,
+     message: String,
+@@ -124,7 +124,7 @@ impl Diagnostic {
+         Self { kind, id, message, file, location }
+     }
+ 
+-    pub(crate) fn is_error(&self) -> bool {
++    pub fn is_error(&self) -> bool {
+         matches!(self.kind, DiagnosticType::Error)
+     }
+ 
+@@ -132,19 +132,19 @@ impl Diagnostic {
+         self.kind
+     }
+ 
+-    pub(crate) fn id(&self) -> DiagnosticId {
++    pub fn id(&self) -> DiagnosticId {
+         self.id
+     }
+ 
+-    pub(crate) fn message(&self) -> &str {
++    pub fn message(&self) -> &str {
+         &self.message
+     }
+ 
+-    pub(crate) fn file(&self) -> &PathBuf {
++    pub fn file(&self) -> &PathBuf {
+         &self.file
+     }
+ 
+-    pub(crate) fn location(&self) -> &Location {
++    pub fn location(&self) -> &Location {
+         &self.location
+     }
+ }
 diff --git a/compiler/src/hir.rs b/compiler/src/hir.rs
 index e9c45b3..97bbea5 100644
 --- a/compiler/src/hir.rs

@@ -1,0 +1,5 @@
+import missing.module
+
+fn pub other -> Int {
+  1
+}

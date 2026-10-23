@@ -1,0 +1,20 @@
+# Traits and their implementations.
+trait Shape {
+  fn area -> Int
+}
+
+type Square {}
+
+impl Shape for Square {
+  fn perimeter -> Int {
+    4
+  }
+}
+
+type Circle {}
+
+impl Shape for Circle {}
+
+type async Main {
+  fn async main {}
+}

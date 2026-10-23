@@ -1,0 +1,34 @@
+# Errors only lowering to MIR finds: moves, exhaustiveness, unreachable code.
+import std.stdio (Stdout)
+import std.fs.path (Path)
+
+type async Main {
+  fn async main {
+    let out = Stdout.new
+    let text = "👩‍👩‍👦"
+    let values = [1, 2]
+    let moved = values
+    let again = values
+
+    let unused = 10
+
+    out.print(text)
+
+    let option = Option.Some(1)
+
+    match option {
+      case Some(1) -> {}
+    }
+
+    let Some(value) = option
+
+    loop {
+      let gone = moved
+    }
+  }
+
+  fn returns -> Int {
+    return 1
+    2
+  }
+}

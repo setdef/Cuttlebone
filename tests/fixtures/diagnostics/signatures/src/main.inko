@@ -1,0 +1,20 @@
+# Types in signatures. "日本" 👩‍👩‍👦
+type Box[T] {
+  let @value: T
+}
+
+fn first(value: Missing) -> Int {
+  0
+}
+
+fn second(value: Box[Int, Int]) -> Int {
+  0
+}
+
+fn third(value: ref Int) -> Int {
+  0
+}
+
+type async Main {
+  fn async main {}
+}

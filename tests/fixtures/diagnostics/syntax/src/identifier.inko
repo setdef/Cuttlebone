@@ -1,0 +1,4 @@
+fn pub identifier -> Int {
+  let 日 = 1
+  日
+}

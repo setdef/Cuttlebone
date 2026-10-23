@@ -4,7 +4,7 @@
 //!
 //! Every answer is computed from a fresh type check of the file and what it
 //! imports. Nothing is kept between requests.
-use crate::check::{Target, project_root, run};
+use crate::check::{Target, diagnose, project_root, run};
 use crate::position::{Encoding, HirPosition, Lines, Position, contains};
 use crate::walker::{
     Expr, Reference, SymbolId, Walker, declarations, expressions_pass_ran, type_symbol,
@@ -310,6 +310,139 @@ pub fn references(
     })
 }
 
+/// A diagnostic, as `inko check` reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub file: PathBuf,
+    /// An error, or else a warning.
+    pub error: bool,
+    /// The compiler's ID for it, e.g. `invalid-symbol`.
+    pub id: String,
+    pub message: String,
+    /// In the request's encoding.
+    pub range: Range,
+    /// The first and last line, as the compiler reports them (1-based).
+    pub lines: [u32; 2],
+    /// The first and last column, as the compiler reports them (1-based
+    /// grapheme clusters, inclusive).
+    pub columns: [u32; 2],
+}
+
+/// Everything a full check of a project (or a file outside one) reported.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagnostics {
+    /// In the order the compiler reported them, which may be in any file
+    /// the check read.
+    pub diagnostics: Vec<Diagnostic>,
+    /// Why the list may be incomplete: the compiler panicked
+    /// (`compilerPanic`), and these are what it reported before that.
+    pub incomplete: Option<Unavailable>,
+}
+
+/// What diagnostics for a file come from: a full check of its project
+/// directory if it's in the project's `src/` or `test/`, or else of the file
+/// alone, as `inko check` would check it. `None` for the standard library's
+/// files and dependencies' (in a `dep/` directory next to a `src/`), which
+/// aren't the user's to fix.
+pub fn diagnostics_target(session: &Session, file: &Path) -> Option<PathBuf> {
+    let file = canonical(file).ok()?;
+
+    if file.starts_with(session.std.canonicalize().unwrap_or(session.std.clone())) {
+        return None;
+    }
+
+    if file.ancestors().any(|a| {
+        a.file_name().is_some_and(|n| n == "dep")
+            && a.parent().is_some_and(|p| p.join("src").is_dir())
+    }) {
+        return None;
+    }
+
+    let root = root_of(session, &file);
+
+    Some(if in_sources(&root, &file) { root } else { file })
+}
+
+/// Every diagnostic `inko check` reports for a target (from
+/// `diagnostics_target`, in `request.file`): a project directory, or a
+/// file. Unlike the other queries, this lowers to MIR, which reports some
+/// errors (e.g. moves) and warnings of its own. `request.position` is
+/// ignored.
+pub fn diagnostics(session: &Session, request: &Request) -> Answer<Diagnostics> {
+    let start = Instant::now();
+    let result = canonical(&request.file).and_then(|path| {
+        let mut overlay = HashMap::new();
+
+        for (p, text) in &request.contents {
+            overlay.insert(canonical(p)?, text.clone());
+        }
+
+        let target = if path.is_dir() {
+            Target {
+                root: path,
+                file: None,
+                tests: true,
+                std: session.std.clone(),
+                overlay,
+            }
+        } else {
+            Target {
+                root: root_of(session, &path),
+                file: Some(path),
+                tests: true,
+                std: session.std.clone(),
+                overlay,
+            }
+        };
+
+        // The panic hook records the message on the thread that panicked.
+        guarded(|| diagnose(&target).map(|d| (d, PANIC.with(|p| p.borrow_mut().take()))))
+            .map_err(|message| Unavailable::new("compilerPanic", message))?
+            .map_err(|e| Unavailable::new("compilerError", e))
+            .map(|(diagnosis, panic)| {
+                let incomplete = diagnosis.panicked.then(|| {
+                    Unavailable::new(
+                        "compilerPanic",
+                        panic.unwrap_or_else(|| "the compiler panicked".to_string()),
+                    )
+                });
+                let mut texts: HashMap<PathBuf, String> = HashMap::new();
+                let diagnostics = diagnosis
+                    .diagnostics
+                    .into_iter()
+                    .map(|d| {
+                        let text = texts.entry(d.file.clone()).or_insert_with(|| {
+                            target.overlay.get(&d.file).cloned().unwrap_or_else(|| {
+                                std::fs::read_to_string(&d.file).unwrap_or_default()
+                            })
+                        });
+                        let l = d.location;
+
+                        Diagnostic {
+                            range: range(&Lines::with_encoding(text, request.encoding), &l),
+                            file: d.file,
+                            error: d.error,
+                            id: d.id,
+                            message: d.message,
+                            lines: [l.line_start, l.line_end],
+                            columns: [l.column_start, l.column_end],
+                        }
+                    })
+                    .collect();
+
+                Some(Diagnostics {
+                    diagnostics,
+                    incomplete,
+                })
+            })
+    });
+
+    Answer {
+        result,
+        elapsed: start.elapsed(),
+    }
+}
+
 /// The name at a position that refers to or declares a symbol: the
 /// innermost one containing it.
 pub fn symbol_at<'a>(
@@ -608,10 +741,7 @@ fn answer<T: Send>(
     let result = prepare(session, request).and_then(|(mut target, text)| {
         let file = target.file.clone().unwrap();
 
-        if project
-            && (file.starts_with(target.root.join("src"))
-                || file.starts_with(target.root.join("test")))
-        {
+        if project && in_sources(&target.root, &file) {
             target.file = None;
         }
 
@@ -648,18 +778,8 @@ fn prepare(session: &Session, request: &Request) -> Result<(Target, String), Una
         None => read(&file)?,
     };
 
-    // The innermost project wins, e.g. a dependency checked out inside
-    // another project.
-    let root = session
-        .projects
-        .iter()
-        .filter(|p| file.starts_with(p.join("src")) || file.starts_with(p.join("test")))
-        .max_by_key(|p| p.components().count())
-        .cloned()
-        .unwrap_or_else(|| project_root(&file));
-
     let target = Target {
-        root,
+        root: root_of(session, &file),
         file: Some(file),
         tests: true,
         std: session.std.clone(),
@@ -667,6 +787,23 @@ fn prepare(session: &Session, request: &Request) -> Result<(Target, String), Una
     };
 
     Ok((target, text))
+}
+
+/// The project a file is checked as part of. The innermost project root
+/// wins, e.g. a dependency checked out inside another project.
+fn root_of(session: &Session, file: &Path) -> PathBuf {
+    session
+        .projects
+        .iter()
+        .filter(|p| in_sources(p, file))
+        .max_by_key(|p| p.components().count())
+        .cloned()
+        .unwrap_or_else(|| project_root(file))
+}
+
+/// Whether a file is in a project's `src/` or `test/`.
+fn in_sources(root: &Path, file: &Path) -> bool {
+    file.starts_with(root.join("src")) || file.starts_with(root.join("test"))
 }
 
 fn canonical(path: &Path) -> Result<PathBuf, Unavailable> {

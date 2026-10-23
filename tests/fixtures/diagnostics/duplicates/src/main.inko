@@ -1,0 +1,8 @@
+# Types are defined first, so a duplicate stops the check there.
+type Duplicate {}
+
+type Duplicate {}
+
+type async Main {
+  fn async main {}
+}

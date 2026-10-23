@@ -1,0 +1,22 @@
+# Implementing a trait twice.
+trait Named {
+  fn name -> String
+}
+
+type Circle {}
+
+impl Named for Circle {
+  fn name -> String {
+    "circle"
+  }
+}
+
+impl Named for Circle {
+  fn name -> String {
+    "日本"
+  }
+}
+
+type async Main {
+  fn async main {}
+}

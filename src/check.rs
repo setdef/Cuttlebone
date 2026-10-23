@@ -5,7 +5,9 @@ use compiler::config::Config;
 use compiler::hir;
 use compiler::pkg::manifest::{MANIFEST_FILE, Manifest};
 use compiler::pkg::version::Version;
+use location::Location;
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use types::Database;
@@ -219,4 +221,63 @@ pub fn run<R>(
         type_check,
         total,
     })
+}
+
+/// A diagnostic as the compiler reports it.
+#[derive(Clone, Debug)]
+pub struct Reported {
+    pub file: PathBuf,
+    pub error: bool,
+    /// The diagnostic's ID, e.g. `invalid-symbol`.
+    pub id: String,
+    pub message: String,
+    /// 1-based lines, and 1-based grapheme cluster columns. The end is
+    /// inclusive.
+    pub location: Location,
+}
+
+/// What a full check reported.
+pub struct Diagnosis {
+    /// Errors and warnings, in the order the compiler reported them.
+    pub diagnostics: Vec<Reported>,
+    /// Whether the compiler panicked. `diagnostics` then holds what it
+    /// reported before that. The panic's message went to the panic hook.
+    pub panicked: bool,
+}
+
+/// Checks a target the way `inko check` does (compiler/src/compiler.rs:258-261,
+/// inko/src/command/check.rs:62-70), including lowering to MIR, where some
+/// errors (e.g. moves) and warnings are found, and returns every diagnostic.
+/// Like `run`, it has no side effects.
+pub fn diagnose(target: &Target) -> Result<Diagnosis, String> {
+    check_required_version(target)?;
+
+    let mut compiler = Compiler::new(target.config()?);
+    // The compiler is only read after a panic, to collect what it reported
+    // before it.
+    let res = catch_unwind(AssertUnwindSafe(|| {
+        compiler.check_with(target.file.clone(), |_, _| true)
+    }));
+    let diagnostics = compiler
+        .diagnostics()
+        .map(|d| Reported {
+            file: d.file().clone(),
+            error: d.is_error(),
+            id: d.id().to_string(),
+            message: d.message().to_string(),
+            location: *d.location(),
+        })
+        .collect();
+
+    match res {
+        Ok(Err(CompileError::Internal(e))) => Err(e),
+        Ok(_) => Ok(Diagnosis {
+            diagnostics,
+            panicked: false,
+        }),
+        Err(_) => Ok(Diagnosis {
+            diagnostics,
+            panicked: true,
+        }),
+    }
 }

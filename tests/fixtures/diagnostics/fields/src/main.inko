@@ -1,0 +1,17 @@
+# Fields. "é" before a field: é
+type Square {
+  let @side: Int
+  let @side: Int
+}
+
+type Private {
+  let pub @visible: Int
+}
+
+type copy Point {
+  let mut @x: Int
+}
+
+type async Main {
+  fn async main {}
+}
