@@ -30,7 +30,7 @@ fn project(name: &str, manifest: &str, deps: &[(&str, &str)]) -> PathBuf {
 
 fn type_of_a(root: &Path) -> Result<Option<String>, Unavailable> {
     let session = Session {
-        std: cuttlebone::upstream_std(),
+        std: cuttlebone::dump::upstream_std(),
         projects: vec![root.to_path_buf()],
     };
     let request = Request {

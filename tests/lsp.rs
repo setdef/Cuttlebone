@@ -8,7 +8,7 @@ mod common;
 
 use common::client::{Client, Launch, at, fake_inko, uri};
 use common::fixture;
-use cuttlebone::upstream_version;
+use cuttlebone::check::upstream_version;
 use cuttlebone::worker::FAULT_VARIABLE;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -121,7 +121,7 @@ fn initialize_advertises_only_hover_completion_and_incremental_sync() {
         capabilities["experimental"]["cuttlebone"],
         json!({
             "inko": "0.21.1",
-            "std": cuttlebone::upstream_std(),
+            "std": cuttlebone::dump::upstream_std(),
             "statusNotifications": false,
         })
     );

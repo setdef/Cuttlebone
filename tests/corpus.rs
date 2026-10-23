@@ -1,6 +1,7 @@
 //! Every expression in the standard library (src/ and test/) must have a
 //! type, except for the allow-listed kinds below.
-use cuttlebone::{Status, Target, check, format_expr, upstream_std};
+use cuttlebone::check::Target;
+use cuttlebone::dump::{Status, check, format_expr, upstream_std};
 
 /// Expression kinds that may lack a type, and why.
 const ALLOWED: &[(&str, Status, &str)] = &[(

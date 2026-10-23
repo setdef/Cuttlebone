@@ -3,9 +3,10 @@
 mod common;
 
 use common::{Project, position_of};
+use cuttlebone::check::Target;
+use cuttlebone::dump::{check, upstream_std};
 use cuttlebone::position::Position;
 use cuttlebone::query::Range;
-use cuttlebone::{Target, check, upstream_std};
 
 const MAIN: &str = "src/main.inko";
 

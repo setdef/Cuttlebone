@@ -1,5 +1,5 @@
 //! A minimal LSP client that drives the real `cuttlebone` binary over stdio.
-use cuttlebone::upstream_std;
+use cuttlebone::dump::upstream_std;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -115,7 +115,7 @@ impl Client {
 
     /// Sends `initialize`, and returns the response.
     pub fn initialize(&mut self, root: &Path, options: Value, capabilities: Value) -> Value {
-        let mut init = json!({ "inko": fake_inko(cuttlebone::upstream_version()) });
+        let mut init = json!({ "inko": fake_inko(cuttlebone::check::upstream_version()) });
 
         merge(&mut init, options);
         self.request(

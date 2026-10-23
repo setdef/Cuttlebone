@@ -1,8 +1,8 @@
 //! Helpers shared by the integration tests.
 #![allow(dead_code)]
+use cuttlebone::dump::upstream_std;
 use cuttlebone::position::{Encoding, Position};
 use cuttlebone::query::{self, MembersAt, Request, Session, TypeAt, Unavailable};
-use cuttlebone::upstream_std;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

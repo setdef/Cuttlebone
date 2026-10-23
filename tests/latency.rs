@@ -4,9 +4,9 @@
 mod common;
 
 use common::client::{Client, at};
+use cuttlebone::dump::upstream_std;
 use cuttlebone::position::{Encoding, Position};
 use cuttlebone::query::{self, Request, Session};
-use cuttlebone::upstream_std;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

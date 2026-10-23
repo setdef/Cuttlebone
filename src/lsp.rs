@@ -6,10 +6,10 @@
 //! `$/cancelRequest` cancel queries they make pointless, and a query waits
 //! until its document has been still for a moment (`debounce`) before it
 //! starts.
+use crate::check::{VERSION, upstream_version};
 use crate::position::{Encoding, Position};
 use crate::query::{self, Answer, MemberKind, MembersAt, Session, TypeAt, Unavailable};
 use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query};
-use crate::{VERSION, upstream_version};
 use crossbeam_channel::{Receiver, Sender, select};
 use lsp_server::{
     Connection, ErrorCode, Message, Notification, ProtocolError, Request, RequestId, Response,

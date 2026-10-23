@@ -24,7 +24,7 @@ fn neovim_starts_the_server_negotiates_utf8_and_hovers() {
             root.join("editors/neovim/check.lua").display()
         ))
         .env("CUTTLEBONE", env!("CARGO_BIN_EXE_cuttlebone"))
-        .env("INKO", fake_inko(cuttlebone::upstream_version()))
+        .env("INKO", fake_inko(cuttlebone::check::upstream_version()))
         .env("FILE", root.join("tests/fixtures/unicode/src/main.inko"))
         // As in editors/check.sh: the wrong encoding lands on `size`.
         .env("NEEDLE", "[3].size")

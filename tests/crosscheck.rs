@@ -4,8 +4,10 @@
 //! See `CrossCheck` in src/walker.rs.
 mod common;
 
+use cuttlebone::check::Target;
+use cuttlebone::dump::{check, cross_checks, format_expr, upstream_std};
 use cuttlebone::walker::CrossCheck;
-use cuttlebone::{Origin, Target, check, cross_checks, format_expr, upstream_std};
+use cuttlebone::walker::Origin;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 

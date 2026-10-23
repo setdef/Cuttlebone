@@ -4,7 +4,9 @@
 mod common;
 
 use common::{PLACEHOLDER, Project};
-use cuttlebone::{Origin, Status, Target, check, upstream_std};
+use cuttlebone::check::Target;
+use cuttlebone::dump::{Status, check, upstream_std};
+use cuttlebone::walker::Origin;
 
 const MAIN: &str = "src/main.inko";
 

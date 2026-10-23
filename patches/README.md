@@ -7,15 +7,17 @@ makes the source of every modified file available.
 
 Nothing in the type checker, the types crate, or code generation changes. It
 adds one way into the compiler (a hook), one input (an overlay of source
-text), and makes the typed HIR readable.
+text), and makes the typed HIR readable. The counts are the patch's own
+(`git apply --numstat`); tests/guardrails.rs fails if they disagree, so a
+line can't be added without updating this table and justifying it below.
 
-| File | Lines | Why |
+| File | Lines (added, removed) | Why |
 |---|---|---|
-| compiler/src/lib.rs | 1 changed | `mod hir` becomes `pub mod hir`, so Cuttlebone can read the typed HIR. |
-| compiler/src/hir.rs | 469 changed | Every `pub(crate)` becomes `pub`, except `struct LowerToHir`. Mechanical. |
-| compiler/src/compiler.rs | +16, 1 changed | The `check_with` hook, which doesn't sync `dep/`. |
+| compiler/src/lib.rs | +1 -1 | `mod hir` becomes `pub mod hir`, so Cuttlebone can read the typed HIR. |
+| compiler/src/hir.rs | +469 -469 | Every `pub(crate)` becomes `pub`, except `struct LowerToHir`. Mechanical. |
+| compiler/src/compiler.rs | +16 -1 | The `check_with` hook, which doesn't sync `dep/`. |
 | compiler/src/config.rs | +4 | The overlay field. |
-| compiler/src/modules_parser.rs | +5, 1 changed | Reading the overlay. |
+| compiler/src/modules_parser.rs | +5 -1 | Reading the overlay. |
 
 ## Every line, and why
 

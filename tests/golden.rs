@@ -1,7 +1,8 @@
 //! Golden-file tests: dump-types' output for a few modules must match
 //! tests/golden/*.txt. Run with UPDATE_GOLDEN=1 to rewrite the files, then
 //! review the diff.
-use cuttlebone::{Target, check, format_expr, upstream_std};
+use cuttlebone::check::Target;
+use cuttlebone::dump::{check, format_expr, upstream_std};
 use std::path::{Path, PathBuf};
 
 fn golden(name: &str, file: PathBuf) {

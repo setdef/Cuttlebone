@@ -3,9 +3,9 @@
 //!
 //! Every answer is computed from a fresh type check of the file and what it
 //! imports. Nothing is kept between requests.
+use crate::check::{Target, project_root, run};
 use crate::position::{Encoding, HirPosition, Lines, Position, contains};
 use crate::walker::{Expr, Walker, expressions_pass_ran};
-use crate::{Target, project_root, run};
 use compiler::hir;
 use location::Location;
 use serde::{Deserialize, Serialize};

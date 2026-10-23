@@ -33,7 +33,7 @@ pub enum Encoding {
     /// UTF-16 code units, LSP's default.
     #[default]
     Utf16,
-    /// Bytes, as in Neovim.
+    /// Bytes, LSP's `utf-8` position encoding.
     Utf8,
 }
 

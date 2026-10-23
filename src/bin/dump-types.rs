@@ -1,7 +1,8 @@
 //! Prints every expression of an Inko project or file with its type.
 //!
 //! Usage: dump-types [--std DIR] [--no-tests] [--summary] PATH
-use cuttlebone::{Status, Target, check, format_expr, upstream_std};
+use cuttlebone::check::Target;
+use cuttlebone::dump::{Status, check, format_expr, upstream_std};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
