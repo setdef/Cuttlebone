@@ -8,10 +8,13 @@ questions about types over standard LSP, for any editor with an LSP client
 ([docs/lsp.md](docs/lsp.md)): hover shows the type at a position, and
 completion after `.` lists members with their signatures.
 
-- [SPIKE.md](SPIKE.md): the feasibility spike.
-- [MILESTONE-1.md](MILESTONE-1.md): the type service (with a custom protocol,
-  since replaced).
-- [MILESTONE-2.md](MILESTONE-2.md): the language server.
+Reports, in docs/history/:
+
+- [SPIKE.md](docs/history/SPIKE.md): the feasibility spike.
+- [MILESTONE-1.md](docs/history/MILESTONE-1.md): the type service (with a
+  custom protocol, since replaced).
+- [MILESTONE-2.md](docs/history/MILESTONE-2.md): the language server.
+
 - [editors/](editors/README.md): setting it up in VS Code and Neovim.
 
 ## Building

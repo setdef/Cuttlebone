@@ -1,7 +1,7 @@
 # Milestone 1: a type service for Parakeet
 
 **Done.** `cuttlebone` is a long-lived process that speaks a small JSON
-protocol on stdio ([docs/protocol.md](docs/protocol.md)). After a handshake
+protocol on stdio ([docs/protocol.md](../protocol.md)). After a handshake
 that checks the project's Inko version, it answers two questions:
 
 - `typeAt(file, position)`: the type of the expression at a position.

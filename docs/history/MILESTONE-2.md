@@ -1,7 +1,7 @@
 # Milestone 2: a general-purpose language server
 
 **Done.** `cuttlebone` is now a standard LSP server
-([docs/lsp.md](docs/lsp.md)) for any editor with an LSP client. Milestone
+([docs/lsp.md](../lsp.md)) for any editor with an LSP client. Milestone
 1's custom protocol and its tests are gone. Nothing in Cuttlebone assumes a
 particular editor: Parakeet is one client among many.
 

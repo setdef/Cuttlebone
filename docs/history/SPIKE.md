@@ -9,7 +9,7 @@ kept out of tree?
 ## What the patch does
 
 `patches/upstream.patch`, against v0.21.1 (details and rebase recipe in
-[patches/README.md](patches/README.md)):
+[patches/README.md](../../patches/README.md)):
 
 | Part | Files | Lines |
 |---|---|---|

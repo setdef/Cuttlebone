@@ -317,7 +317,7 @@ Each query runs in a fresh worker process (`cuttlebone --worker`):
   don't outlive it for longer than that.
 
 On an Apple M1 Max, a worker adds 13 to 20 ms to a 100 ms check of a file
-that imports all of std, in a release build (MILESTONE-2.md has the
+that imports all of std, in a release build ([history/MILESTONE-2.md](history/MILESTONE-2.md) has the
 numbers).
 
 The server's own subprocesses (`inko --version`, `inko print std`) have a
