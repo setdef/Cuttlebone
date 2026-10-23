@@ -316,8 +316,9 @@ Each query runs in a fresh worker process (`cuttlebone --worker`):
   `checkTimeoutMs` plus 1 s. If the server is killed outright, its workers
   don't outlive it for longer than that.
 
-On an Apple M1 Max, a worker adds 1 to 10 ms to a 110 to 130 ms check
-(MILESTONE-2.md has the numbers).
+On an Apple M1 Max, a worker adds 13 to 20 ms to a 100 ms check of a file
+that imports all of std, in a release build (MILESTONE-2.md has the
+numbers).
 
 The server's own subprocesses (`inko --version`, `inko print std`) have a
 10 s timeout.
