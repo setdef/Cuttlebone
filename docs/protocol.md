@@ -238,7 +238,7 @@ Result, or `null` when the position isn't on a call's name:
 |---|---|
 | `name` | What to insert after the `.`. |
 | `kind` | `method`, `field`, `constant` or `type`. |
-| `signature` | The declaration, with the receiver's type arguments filled in (e.g. `fn pub inline get(index: Int) -> Result[ref Int, OutOfBounds]` on an `Array[Int]`). |
+| `signature` | The declaration, with the receiver's type arguments filled in, including in default methods from generic traits (e.g. `fn pub inline get(index: Int) -> Result[ref Int, OutOfBounds]` on an `Array[Int]`). |
 | `type` | What using the member gives: a method's return type, a field's or constant's type, or the type itself. |
 | `module` | The module that defines it. |
 

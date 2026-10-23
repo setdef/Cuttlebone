@@ -16,7 +16,8 @@ use std::sync::Once;
 use std::time::{Duration, Instant};
 use types::format::TypeFormatter;
 use types::{
-    Block, Database, MethodId, MethodLookup, ModuleId, Symbol, TypeArguments, TypeEnum, TypeRef,
+    Block, Database, MethodId, MethodLookup, MethodSource, ModuleId, Symbol, TypeArguments,
+    TypeEnum, TypeRef,
 };
 
 /// What a request needs to know about the project.
@@ -403,10 +404,25 @@ fn members(
             continue;
         }
 
-        // A method in an `impl ... if T: Trait` block uses a copy of `T`
-        // with those bounds, which gets the same argument as `T`.
+        // A default method a type gets from a generic trait uses the trait's
+        // type parameters, which the type's implementation of the trait
+        // assigns (e.g. `impl Iter[ref T] for Iter`).
         let mut arguments = arguments.clone();
 
+        if let MethodSource::Implemented(ins, _) | MethodSource::Inherited(ins, _) = id.source(db)
+            && let Some(inherited) = ins.type_arguments(db)
+        {
+            let args = arguments.get_or_insert_with(TypeArguments::new);
+
+            for (param, value) in inherited.pairs() {
+                if args.get(param).is_none() {
+                    args.assign(param, value);
+                }
+            }
+        }
+
+        // A method in an `impl ... if T: Trait` block uses a copy of `T`
+        // with those bounds, which gets the same argument as `T`.
         if let Some(args) = arguments.as_mut() {
             for (original, bounded) in id.bounds(db).iter() {
                 if let Some(value) = args.get(*original) {

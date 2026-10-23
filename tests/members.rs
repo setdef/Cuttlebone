@@ -225,3 +225,23 @@ fn a_position_that_isnt_a_call_has_no_members() {
 
     assert_eq!(query::members_at(&p.session, &request).result, Ok(None));
 }
+
+#[test]
+fn a_generic_traits_default_methods_get_the_types_arguments() {
+    // IntoIter[Int] implements Iter[T] with its own T, and gets Iter's
+    // default methods, which use Iter's T.
+    let m = members(
+        "numbers.get(0).or(0)",
+        &format!("numbers.into_iter.{}", PLACEHOLDER),
+    );
+
+    assert_eq!(m.receiver, "IntoIter[Int]");
+    assert_eq!(
+        member(&m, "to_array").signature,
+        "fn pub move to_array -> Array[Int]"
+    );
+    assert_eq!(
+        member(&m, "map").signature,
+        "fn pub move map[R](func: fn (Int) -> R) -> Map[Int, IntoIter[Int], R]"
+    );
+}
