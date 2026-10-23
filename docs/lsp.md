@@ -352,7 +352,8 @@ For tests only: with `CUTTLEBONE_FAULT=hang:<suffix>` or
 `CUTTLEBONE_FAULT=abort:<suffix>` in the server's environment, a worker
 checking a file whose path ends with `<suffix>` hangs or aborts instead of
 checking. No real input is known to do either, and the server must survive
-both.
+both. Only builds with the `fault-injection` cargo feature have this, and
+only `cargo test` enables it: release builds ignore the variable.
 
 ## Example
 

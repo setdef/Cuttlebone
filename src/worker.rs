@@ -25,7 +25,9 @@ pub const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
 /// For testing robustness only: makes a worker hang (`hang`) or abort
 /// (`abort`) instead of checking, when the checked file's path ends with
 /// the text after the `:`, e.g. `hang:src/slow.inko`. No real input is
-/// known to do either, and the server must survive both.
+/// known to do either, and the server must survive both. Only in builds with
+/// the `fault-injection` feature, which only the tests enable.
+#[cfg(feature = "fault-injection")]
 pub const FAULT_VARIABLE: &str = "CUTTLEBONE_FAULT";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +86,7 @@ pub fn serve() -> Result<(), String> {
         });
     }
 
+    #[cfg(feature = "fault-injection")]
     inject_fault(&job);
 
     let outcome = serde_json::to_string(&job.run()).unwrap();
@@ -95,6 +98,7 @@ pub fn serve() -> Result<(), String> {
         .map_err(|e| format!("couldn't write the outcome: {}", e))
 }
 
+#[cfg(feature = "fault-injection")]
 fn inject_fault(job: &Job) {
     let Ok(fault) = std::env::var(FAULT_VARIABLE) else {
         return;

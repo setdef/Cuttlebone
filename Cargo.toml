@@ -19,6 +19,17 @@ crossbeam-channel = "0.5.17"
 url = "2"
 serde = { version = "1", features = ["derive"] }
 
+[features]
+# CUTTLEBONE_FAULT, which makes workers hang or abort (docs/lsp.md, "Testing
+# faults"). Only the tests enable it, through the dev-dependency below, so
+# release builds don't contain it.
+fault-injection = []
+
+[dev-dependencies]
+# The crate itself, so that `cargo test` builds the library and the
+# binaries the tests run with fault injection.
+cuttlebone = { path = ".", features = ["fault-injection"] }
+
 [[bin]]
 name = "cuttlebone"
 path = "src/bin/cuttlebone.rs"
