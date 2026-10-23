@@ -1,0 +1,31 @@
+# A valid program that tests/broken.rs breaks in different ways, sending the
+# broken text as unsaved contents.
+import std.stdio (Stdout)
+
+fn total(values: ref Array[Int]) -> Int {
+  let mut sum = 0
+  let mut i = 0
+
+  loop {
+    if i == values.size { break }
+
+    sum += values.get(i).or_panic
+    i += 1
+  }
+
+  sum
+}
+
+fn describe(values: ref Array[Int]) -> String {
+  'count: ${values.size}'
+}
+
+type async Main {
+  fn async main {
+    let values = [1, 2, 3]
+    let out = Stdout.new
+
+    out.print(describe(values))
+    out.print(total(values).to_string)
+  }
+}

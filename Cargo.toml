@@ -24,3 +24,8 @@ path = "src/bin/dump-types.rs"
 
 [profile.release]
 debug = "line-tables-only"
+
+# The upstream compiler is too slow unoptimized for the latency limits in
+# tests/e2e.rs, so dependencies are optimized even in debug builds.
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,11 @@
+# The empty src/std/map.inko shadows the standard library's std.map, and the
+# type checker panics ("The type std.map.Map isn't defined") when it looks
+# for Map. tests/panic.rs uses this to check that a compiler panic doesn't
+# take Cuttlebone down.
+import std.map
+
+type async Main {
+  fn async main {
+    let value = 1
+  }
+}

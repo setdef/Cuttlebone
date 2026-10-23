@@ -266,3 +266,18 @@ fn lexer_and_cuttlebone_segment_with_the_same_crate_version() {
 
     assert_eq!(versions, 1);
 }
+
+#[test]
+fn a_try_the_type_checker_rejects_is_untyped() {
+    // `try` on an Option in a method returning a Result is an error, and the
+    // type checker types it as one (type_check/expressions.rs:4415-4422).
+    let p = Project::new("crosscheck");
+    let text = p
+        .read(MAIN)
+        .replacen("fn first(values: ref Array[Int]) -> Option[Int] {", "fn first(values: ref Array[Int]) -> Result[Int, String] {", 1)
+        .replacen("  Option.Some(value)\n}\n\nfn inferred", "  Result.Ok(value)\n}\n\nfn inferred", 1);
+    let needle = "try values.get(0).ok";
+
+    assert_eq!(p.type_at(MAIN, Some(&text), needle, 0).unwrap_err().code, "untyped");
+    assert_eq!(p.type_of(MAIN, needle, 0), "Int");
+}
