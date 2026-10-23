@@ -118,6 +118,31 @@ impl<'a> Lines<'a> {
         }
     }
 
+    /// The text from a compiler position (line and column) up to another,
+    /// excluding the latter.
+    pub fn between(&self, from: (u32, u32), to: (u32, u32)) -> String {
+        let mut out = String::new();
+
+        for line in from.0..=to.0 {
+            let Some(text) = self.lines.get(line.saturating_sub(1) as usize) else {
+                break;
+            };
+            let first = if line == from.0 { from.1 } else { 1 };
+            let clusters = text.graphemes(true).skip(first.saturating_sub(1) as usize);
+
+            if line == to.0 {
+                let count = to.1.saturating_sub(first) as usize;
+
+                out.extend(clusters.take(count));
+            } else {
+                out.extend(clusters);
+                out.push('\n');
+            }
+        }
+
+        out
+    }
+
     /// A compiler location as a range of positions, with an exclusive end.
     pub fn range(&self, location: &Location) -> (Position, Position) {
         (

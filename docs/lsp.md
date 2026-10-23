@@ -96,6 +96,7 @@ Only what works:
     "typeDefinitionProvider": true,
     "referencesProvider": true,
     "documentHighlightProvider": true,
+    "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
     "experimental": {"cuttlebone": {"inko": "0.21.1", "std": "/path/to/std", "statusNotifications": false, "diagnostics": true}}
   },
   "serverInfo": {"name": "cuttlebone", "version": "0.1.0"}
@@ -394,6 +395,56 @@ argument `count` and a variable `count`, are never highlighted together.
 
 The result is `null` when there's nothing at the position, and `null` with
 a [status](#status) reason (the same as hover's) when there's no answer.
+
+## `textDocument/signatureHelp`
+
+The signature of the method a call's parentheses belong to, and which
+parameter the argument at the position is for. `(` and `,` trigger it.
+
+```json
+→ {"jsonrpc": "2.0", "id": 7, "method": "textDocument/signatureHelp", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/main.inko"},
+    "position": {"line": 43, "character": 23}}}
+← {"jsonrpc": "2.0", "id": 7, "result": {
+    "signatures": [{
+      "label": "fn mut add(amount: Int, times: Int)",
+      "parameters": [{"label": [11, 22]}, {"label": [24, 34]}],
+      "activeParameter": 1
+    }],
+    "activeSignature": 0,
+    "activeParameter": 1
+}}
+```
+
+- **Which call:** the innermost call written with parentheses whose
+  parentheses contain the position: after the `(` and up to the `)`. On
+  the method's name, before the `(` or after the `)`, it's the enclosing
+  call's, if any. A call without parentheses (`counter.reset`) has none.
+- **The signature** is the called method after the compiler's resolution,
+  formatted as completion's `detail` is, with the call's type arguments
+  filled in: `map` on an `Iter[ref Int]` given `fn (n) { n * 2 }` is
+  `fn pub move map[R](func: fn (ref Int) -> Int) -> ...`. There's one
+  signature, since Inko has no overloading.
+- **Parameters** are `[start, end)` offsets into the label, in the
+  negotiated encoding. Inko's identifiers are ASCII, so in practice the
+  offsets are the same in every encoding.
+- **The active parameter:**
+  - a positional argument is the parameter at its index
+  - a named argument (`times: 1`) is the parameter of that name, in any
+    order
+  - after a `,` with nothing typed yet, the next positional parameter, or
+    after named arguments, the first parameter not named yet
+  - `null` past the last parameter
+- **While typing.** `counter.add(` and `counter.add(1, ` don't parse. If the
+  document doesn't parse but does with a `)` inserted at the position,
+  Cuttlebone checks that copy instead (as completion inserts its
+  placeholder), so signature help works before the `)` is typed. Calls
+  with the wrong number of arguments still resolve.
+
+The result is `null` when the position isn't in a call's parentheses, or
+the call doesn't resolve to a method (an undefined method, a closure call,
+or a type's constructor such as `Point(x: 1)`), and `null` with a
+[status](#status) reason when there's no answer.
 
 ## Diagnostics
 

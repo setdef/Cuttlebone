@@ -11,6 +11,7 @@ default-run = "cuttlebone"
 compiler = { path = ".upstream/inko/compiler" }
 types = { path = ".upstream/inko/types" }
 location = { path = ".upstream/inko/location" }
+ast = { path = ".upstream/inko/ast" }
 serde_json = "1"
 unicode-segmentation = "1"
 lsp-server = "0.10"

@@ -15,7 +15,7 @@ use types::format::format_type;
 use types::{
     CallKind, ConstantId, ConstantKind, ConstantPatternKind, ConstructorId, Database, FieldId,
     IdentifierKind, MethodId, MethodKind, MethodSource, ModuleId, Receiver, Symbol, ThrowKind,
-    TraitId, TypeEnum, TypeId, TypeParameterId, TypeRef, VariableId,
+    TraitId, TypeArguments, TypeEnum, TypeId, TypeParameterId, TypeRef, VariableId,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -64,6 +64,21 @@ pub struct CallSite {
     /// Whether the receiver is `self`, which may call type-private methods
     /// (compiler/src/type_check/expressions.rs:4499).
     pub receiver_is_self: bool,
+}
+
+/// A call written with parentheses, for signature help.
+#[derive(Clone, Debug)]
+pub struct ArgumentList {
+    /// The whole call, up to and including its `)`.
+    pub location: Location,
+    /// Where the method name is.
+    pub name: Location,
+    /// Where the last type argument is, if there are any (`foo[A, B](...)`).
+    pub types: Option<Location>,
+    /// The called method and the call's type arguments, if it resolved.
+    pub method: Option<(MethodId, TypeArguments)>,
+    /// Each argument, and the name of a named one.
+    pub arguments: Vec<(Location, Option<String>)>,
 }
 
 /// What a name refers to, as one of the compiler's ids. Two names refer to
@@ -439,6 +454,8 @@ pub struct Walker<'a> {
     symbols: HashMap<String, Symbol>,
     pub out: Vec<Expr>,
     pub calls: Vec<CallSite>,
+    /// Every call written with parentheses, in the order walked.
+    pub argument_lists: Vec<ArgumentList>,
     pub checks: Vec<CrossCheck>,
     /// Every name that refers to a symbol, in the order walked. Names that
     /// desugaring introduced aren't included.
@@ -459,6 +476,7 @@ impl<'a> Walker<'a> {
             symbols: module.symbols(db).into_iter().collect(),
             out: Vec::new(),
             calls: Vec::new(),
+            argument_lists: Vec::new(),
             checks: Vec::new(),
             references: Vec::new(),
             declarations: Vec::new(),
@@ -1165,6 +1183,26 @@ impl<'a> Walker<'a> {
                 let synthetic = synthetic || generated_receiver || same_as_receiver;
 
                 self.stored(n.location, "Call", typ, synthetic);
+
+                if n.parens && !synthetic {
+                    self.argument_lists.push(ArgumentList {
+                        location: n.location,
+                        name: n.name.location,
+                        types: n.type_arguments.last().map(|t| t.location()),
+                        method: match &n.kind {
+                            CallKind::Call(info) => Some((info.id, info.type_arguments.clone())),
+                            _ => None,
+                        },
+                        arguments: n
+                            .arguments
+                            .iter()
+                            .map(|a| match a {
+                                hir::Argument::Positional(p) => (p.value.location(), None),
+                                hir::Argument::Named(n) => (n.location, Some(n.name.name.clone())),
+                            })
+                            .collect(),
+                    });
+                }
 
                 if !synthetic && !negation {
                     let symbol = match n.kind {

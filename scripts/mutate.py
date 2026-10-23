@@ -119,6 +119,16 @@ M = [
  ("highlights match by name", "src/query.rs", "        for r in walker.references.iter().filter(|r| r.symbol == symbol) {", "        for r in walker.references.iter().filter(|r| r.symbol.name(scope.db) == symbol.name(scope.db)) {", "--test highlight same_named"),
  ("highlight kinds swapped", "src/lsp.rs", "Access::Read => lsp::DocumentHighlightKind::READ,", "Access::Read => lsp::DocumentHighlightKind::TEXT,", "--test highlight a_variable"),
  ("no documentHighlightProvider", "src/lsp.rs", "                document_highlight_provider: Some(lsp::OneOf::Left(true)),\n", "", "--test lsp initialize_advertises"),
+ # Signature help.
+ ("no closing parenthesis inserted", "src/query.rs", "        copy.insert(offset, ')');", "        let _ = offset;", "--test signature unfinished"),
+ ("named arguments taken as positional", "src/query.rs", "        Some((_, Some(name))) => params.iter().position(|p| &p.name == name),", "        Some((_, Some(_))) => Some(slot),", "--test signature named"),
+ ("commas not counted", "src/query.rs", "                    .starts_with(',')", "                    .starts_with(';')", "--test signature positional"),
+ ("the outermost call wins", "src/query.rs", "        .max_by_key(|l| paren(l))?;", "        .min_by_key(|l| paren(l))?;", "--test signature nested"),
+ ("the call's type arguments ignored", "src/query.rs", "    let format = || TypeFormatter::new(db, None, Some(arguments));", "    let format = || { let _ = arguments; TypeFormatter::new(db, None, None) };", "--test signature type_arguments"),
+ ("parameter offsets from the label's start", "src/query.rs", "        .map_or(0, |i| i + 1);", "        .map_or(0, |_| 0);", "--test signature positional"),
+ ("after the ) counts as inside", "src/query.rs", "at <= (l.location.line_end, l.location.column_end))", "at <= (l.location.line_end, l.location.column_end + 1))", "--test signature null_outside"),
+ ("the ( counts as inside", "src/query.rs", ".filter(|l| paren(l) < at && at", ".filter(|l| paren(l) <= at && at", "--test signature null_outside"),
+ ("no signatureHelpProvider", "src/lsp.rs", "trigger_characters: Some(vec![\"(\".to_string(), \",\".to_string()]),", "trigger_characters: None,", "--test lsp initialize_advertises"),
 ]
 only = sys.argv[1:]
 results = []

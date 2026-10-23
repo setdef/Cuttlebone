@@ -123,3 +123,4 @@ pub fn position_of(text: &str, needle: &str, offset: u32) -> Position {
     }
 }
 pub mod client;
+pub mod features;

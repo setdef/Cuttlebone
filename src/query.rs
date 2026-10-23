@@ -7,7 +7,8 @@
 use crate::check::{Target, diagnose, project_root, run};
 use crate::position::{Encoding, HirPosition, Lines, Position, contains};
 use crate::walker::{
-    Expr, Reference, SymbolId, Walker, declarations, expressions_pass_ran, type_symbol,
+    ArgumentList, Expr, Reference, SymbolId, Walker, declarations, expressions_pass_ran,
+    type_symbol,
 };
 use compiler::hir;
 use location::Location;
@@ -609,35 +610,11 @@ pub const PLACEHOLDER: &str = "cuttlebone_completion_placeholder";
 /// whose receiver keeps its type.
 pub fn complete(session: &Session, request: &Request) -> Answer<MembersAt> {
     let start = Instant::now();
-    let prepared = canonical(&request.file).and_then(|file| {
-        let text = match request
-            .contents
-            .iter()
-            .find(|(p, _)| canonical(p).ok() == Some(file.clone()))
-        {
-            Some((_, text)) => text.clone(),
-            None => read(&file)?,
-        };
-        let offset = byte_offset(&text, request.position, request.encoding)
-            .ok_or_else(|| invalid_position(request.position))?;
-        let mut copy = text;
+    let prepared = edited(request, |text, offset| {
+        let mut copy = text.to_string();
 
         copy.insert_str(offset, PLACEHOLDER);
-
-        let mut contents: HashMap<PathBuf, String> = request
-            .contents
-            .iter()
-            .filter(|(p, _)| canonical(p).ok() != Some(file.clone()))
-            .map(|(p, t)| (p.clone(), t.clone()))
-            .collect();
-
-        contents.insert(file.clone(), copy);
-        Ok(Request {
-            file,
-            position: request.position,
-            encoding: request.encoding,
-            contents,
-        })
+        Some(copy)
     });
 
     match prepared {
@@ -652,6 +629,178 @@ pub fn complete(session: &Session, request: &Request) -> Answer<MembersAt> {
             elapsed: start.elapsed(),
         },
     }
+}
+
+/// A copy of a request whose file's text (from the request's contents, or
+/// from disk) is what `edit` makes of it, given the byte offset of the
+/// request's position. If `edit` returns `None`, the text is as it was.
+fn edited(
+    request: &Request,
+    edit: impl FnOnce(&str, usize) -> Option<String>,
+) -> Result<Request, Unavailable> {
+    let file = canonical(&request.file)?;
+    let text = match request
+        .contents
+        .iter()
+        .find(|(p, _)| canonical(p).ok() == Some(file.clone()))
+    {
+        Some((_, text)) => text.clone(),
+        None => read(&file)?,
+    };
+    let offset = byte_offset(&text, request.position, request.encoding)
+        .ok_or_else(|| invalid_position(request.position))?;
+    let copy = edit(&text, offset).unwrap_or(text);
+    let mut contents: HashMap<PathBuf, String> = request
+        .contents
+        .iter()
+        .filter(|(p, _)| canonical(p).ok() != Some(file.clone()))
+        .map(|(p, t)| (p.clone(), t.clone()))
+        .collect();
+
+    contents.insert(file.clone(), copy);
+    Ok(Request {
+        file,
+        position: request.position,
+        encoding: request.encoding,
+        contents,
+    })
+}
+
+/// A method's signature, for signature help.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signature {
+    /// The declaration as completion shows it, with the call's type
+    /// arguments filled in, e.g. `fn pub mut add(amount: Int, times: Int)`.
+    pub label: String,
+    /// Each parameter as `name: Type`, and its start and end in `label`, in
+    /// the request's encoding.
+    pub parameters: Vec<(String, [u32; 2])>,
+    /// The index of the parameter the argument at the position is for, if
+    /// it's one of them.
+    pub active: Option<u32>,
+}
+
+/// The signature of the method called by the innermost call, written with
+/// parentheses, whose parentheses contain a position, and which of its
+/// parameters the argument at the position is for. `None` if there's no
+/// such call, or it doesn't call a method that resolved (a closure, say).
+///
+/// While an argument list is being typed (`foo(` or `foo(a, `) the file
+/// doesn't parse, so if it doesn't, this inserts a `)` at the position in a
+/// copy of the file, if that makes it parse.
+pub fn signature_help(session: &Session, request: &Request) -> Answer<Signature> {
+    let start = Instant::now();
+    let prepared = edited(request, |text, offset| {
+        // Inserting a `)` into code that parses never makes it parse, so
+        // this only saves a parse.
+        if parses(text) {
+            return None;
+        }
+
+        let mut copy = text.to_string();
+
+        copy.insert(offset, ')');
+        parses(&copy).then_some(copy)
+    });
+    let mut answer = match prepared {
+        Ok(copy) => answer(session, &copy, false, |scope| Ok(signature(scope))),
+        Err(e) => Answer {
+            result: Err(e),
+            elapsed: Duration::ZERO,
+        },
+    };
+
+    answer.elapsed = start.elapsed();
+    answer
+}
+
+/// Whether a module's source parses.
+fn parses(text: &str) -> bool {
+    ast::parser::Parser::new(text.as_bytes().to_vec(), PathBuf::from("check.inko"))
+        .parse()
+        .is_ok()
+}
+
+fn signature(scope: &Scope) -> Option<Signature> {
+    let db = scope.db;
+    let at = (scope.at.line, scope.at.column);
+    // The `(` follows the name, or the type arguments' `]`, at once.
+    let paren = |list: &ArgumentList| {
+        let end = list
+            .types
+            .map_or((list.name.line_end, list.name.column_end), |t| {
+                (t.line_end, t.column_end + 1)
+            });
+
+        (end.0, end.1 + 1)
+    };
+    let list = scope
+        .walker
+        .argument_lists
+        .iter()
+        .filter(|l| paren(l) < at && at <= (l.location.line_end, l.location.column_end))
+        .max_by_key(|l| paren(l))?;
+    let (method, arguments) = list.method.as_ref()?;
+    let format = || TypeFormatter::new(db, None, Some(arguments));
+    let label = format().format(*method);
+    let mut params = method.arguments(db);
+
+    params.sort_by_key(|p| p.index);
+
+    let labels: Vec<String> = params
+        .iter()
+        .map(|p| format!("{}: {}", p.name, format().format(p.value_type)))
+        .collect();
+    let mut offset = label
+        .find(&format!("({})", labels.join(", ")))
+        .map_or(0, |i| i + 1);
+    let units = |byte: usize| scope.encoding.len(&label[..byte.min(label.len())]);
+    let parameters = labels
+        .into_iter()
+        .map(|l| {
+            let range = [units(offset), units(offset + l.len())];
+
+            offset += l.len() + 2;
+            (l, range)
+        })
+        .collect();
+
+    // The argument at the position: one per comma after an argument and
+    // before the position.
+    let slot = list
+        .arguments
+        .iter()
+        .filter(|(l, _)| {
+            (l.line_end, l.column_end) < at
+                && scope
+                    .lines
+                    .between((l.line_end, l.column_end + 1), at)
+                    .trim_start()
+                    .starts_with(',')
+        })
+        .count();
+    let active = match list.arguments.get(slot) {
+        Some((_, Some(name))) => params.iter().position(|p| &p.name == name),
+        Some((_, None)) => Some(slot),
+        // An argument not written yet: the next positional one, or the
+        // first not given by name.
+        None => {
+            let positional = list.arguments.iter().filter(|(_, n)| n.is_none()).count();
+            let named: Vec<&String> = list
+                .arguments
+                .iter()
+                .filter_map(|(_, n)| n.as_ref())
+                .collect();
+
+            (positional..params.len()).find(|i| !named.contains(&&params[*i].name))
+        }
+    };
+
+    Some(Signature {
+        label,
+        parameters,
+        active: active.filter(|i| *i < params.len()).map(|i| i as u32),
+    })
 }
 
 /// The byte offset of a position, or `None` if its line is past the end of

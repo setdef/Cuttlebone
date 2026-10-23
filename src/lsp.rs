@@ -246,6 +246,11 @@ impl Server {
                 type_definition_provider: Some(lsp::TypeDefinitionProviderCapability::Simple(true)),
                 references_provider: Some(lsp::OneOf::Left(true)),
                 document_highlight_provider: Some(lsp::OneOf::Left(true)),
+                signature_help_provider: Some(lsp::SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+                    retrigger_characters: None,
+                    work_done_progress_options: Default::default(),
+                }),
                 ..Default::default()
             },
             server_info: Some(lsp::ServerInfo {
@@ -339,6 +344,7 @@ impl Server {
             "textDocument/completion" => ("textDocument/completion", Query::Complete),
             "textDocument/definition" => ("textDocument/definition", Query::Definition),
             "textDocument/typeDefinition" => ("textDocument/typeDefinition", Query::TypeDefinition),
+            "textDocument/signatureHelp" => ("textDocument/signatureHelp", Query::SignatureHelp),
             "textDocument/documentHighlight" => {
                 ("textDocument/documentHighlight", Query::Highlight)
             }
@@ -965,6 +971,33 @@ impl Server {
                             })
                             .collect::<Vec<_>>(),
                     )
+                    .unwrap(),
+                    _ => Value::Null,
+                };
+
+                (result, status)
+            }
+            Outcome::Signature(answer) => {
+                let status = status_of(&answer);
+                let result = match answer.result {
+                    Ok(Some(s)) => serde_json::to_value(lsp::SignatureHelp {
+                        signatures: vec![lsp::SignatureInformation {
+                            label: s.label,
+                            documentation: None,
+                            parameters: Some(
+                                s.parameters
+                                    .into_iter()
+                                    .map(|(_, [start, end])| lsp::ParameterInformation {
+                                        label: lsp::ParameterLabel::LabelOffsets([start, end]),
+                                        documentation: None,
+                                    })
+                                    .collect(),
+                            ),
+                            active_parameter: s.active,
+                        }],
+                        active_signature: Some(0),
+                        active_parameter: s.active,
+                    })
                     .unwrap(),
                     _ => Value::Null,
                 };
