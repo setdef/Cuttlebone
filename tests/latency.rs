@@ -341,8 +341,9 @@ fn references_across_std_are_fast_enough() {
 /// Queries don't wait for diagnostics, and stay under hover's limit while a
 /// diagnostics check of the same std-sized project runs in another worker.
 /// Each round edits the document, which starts a full check at once
-/// (`diagnosticsDebounceMs: 0`), then sends a query. The check must still
-/// be running when the query's answer arrives, so the two overlapped.
+/// (`diagnosticsDebounceMs: 0`), then sends a query, which starts at once
+/// too (`debounceMs: 0`). The check must still be running when the query's
+/// answer arrives, so the two overlapped.
 #[test]
 fn queries_stay_fast_while_diagnostics_are_checked() {
     let _exclusive = EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner());
@@ -350,7 +351,7 @@ fn queries_stay_fast_while_diagnostics_are_checked() {
     let file = root.join("src/main.inko");
     let mut client = Client::initialized(
         &root,
-        json!({ "diagnosticsDebounceMs": 0, "statusNotifications": true }),
+        json!({ "diagnosticsDebounceMs": 0, "debounceMs": 0, "statusNotifications": true }),
     );
     let (line, character) = at(&text, "[1, 2].size", 7, false);
     let mut queries = vec![

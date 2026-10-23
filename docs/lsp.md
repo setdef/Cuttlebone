@@ -613,8 +613,9 @@ imports.
 ### Scheduling
 
 A full check costs more than a query's: it lowers to MIR, and checks the
-whole project. On an Apple M1 Max, about 0.25 s for a project that imports
-all of std, and 0.5 s for std itself. So diagnostics never hold up queries:
+whole project. On an Apple M1 Max, in a release build, about 0.2 s for a
+project that imports all of std, and 0.42 s for std itself (`inko check`
+takes about as long). So diagnostics never hold up queries:
 
 - **A worker of their own.** One diagnostics check runs at a time, in a
   separate worker process from the queries', with the same `checkTimeoutMs`
@@ -624,8 +625,9 @@ all of std, and 0.5 s for std itself. So diagnostics never hold up queries:
 - **Queries first.** A diagnostics check only *starts* when no query is
   queued or running, so a burst of hovers doesn't compete with a check
   starting. A query that arrives while a diagnostics check runs starts at
-  once, in parallel (tests/latency.rs measures a hover on a std-sized
-  project during a check of it: about 190 ms, debounce included).
+  once, in parallel. A hover on a std-sized project takes about 104 ms
+  during a check of the project, and 102 ms without one (tests/latency.rs
+  holds every query to 500 ms during a check).
 - **A longer debounce.** `diagnosticsDebounceMs` (300 by default) is longer
   than queries' `debounceMs` (50): diagnostics only need to be ready when
   typing pauses, and each check costs more.
@@ -765,7 +767,7 @@ The server's own subprocesses (`inko --version`, `inko print std`) have a
   open documents' text. Nothing is cached, so an answer is never older than
   the request. Queries don't lower to MIR, which types never depend on.
 - **Cost.** A query on a file that imports all of the standard library (116
-  modules) takes about 120 ms on an Apple M1 Max. One on a typical std
+  modules) takes about 100 to 120 ms on an Apple M1 Max. One on a typical std
   module takes 30 to 100 ms. References check the whole project instead of
   one file and its imports: about 270 ms for all of std's own `src/` and
   `test/` as the project.
