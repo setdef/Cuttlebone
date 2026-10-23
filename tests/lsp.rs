@@ -107,6 +107,7 @@ fn initialize_advertises_only_what_works() {
         [
             "completionProvider",
             "definitionProvider",
+            "documentHighlightProvider",
             "experimental",
             "hoverProvider",
             "positionEncoding",
@@ -119,6 +120,7 @@ fn initialize_advertises_only_what_works() {
     assert_eq!(capabilities["definitionProvider"], true);
     assert_eq!(capabilities["typeDefinitionProvider"], true);
     assert_eq!(capabilities["referencesProvider"], true);
+    assert_eq!(capabilities["documentHighlightProvider"], true);
     assert_eq!(
         capabilities["completionProvider"],
         json!({ "triggerCharacters": ["."], "resolveProvider": false })
@@ -134,6 +136,7 @@ fn initialize_advertises_only_what_works() {
             "inko": "0.21.1",
             "std": cuttlebone::dump::upstream_std(),
             "statusNotifications": false,
+            "diagnostics": true,
         })
     );
     assert_eq!(

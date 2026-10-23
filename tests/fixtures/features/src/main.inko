@@ -1,0 +1,56 @@
+# Highlights, signature help and inlay hints. "日本" 👩‍👩‍👦
+import std.stdio (Stdout)
+
+type Counter {
+  let mut @count: Int
+  let @label: String
+
+  fn static new(label: String) -> Counter {
+    Counter(count: 0, label: label)
+  }
+
+  fn mut add(amount: Int, times: Int) {
+    @count += amount * times
+  }
+
+  fn mut reset {
+    @count = 0
+  }
+}
+
+fn describe(name: String, count: Int, verbose: Bool) -> String {
+  if verbose { "${name}: ${count}" } else { name }
+}
+
+fn pair -> (Int, String) {
+  (1, "x")
+}
+
+type async Main {
+  fn async main {
+    let out = Stdout.new
+    let mut counter = Counter.new("日本")
+    let mut total = 0
+    let label = "👩‍👩‍👦"
+    let count = 3
+    let numbers = [1, 2, 3]
+    let doubled = numbers.iter.map(fn (n) { n * 2 }).to_array
+    let typed = numbers.iter.map(fn (n: Int) { n + 1 }).to_array
+    let tuple = pair
+    let size: Int = numbers.size
+
+    total = total + 1
+    total += doubled.size + typed.size + size + tuple.0
+    counter.add(total, 2)
+    counter.add(amount: 1, times: count)
+    counter.count = 5
+    counter.reset
+    let _ = out.print(describe(label, count, true))
+    let _ = out.print(describe("日本", total, verbose: false))
+
+    match Option.Some(count) {
+      case Some(first) -> total = first
+      case _ -> {}
+    }
+  }
+}

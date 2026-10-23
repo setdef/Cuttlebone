@@ -15,7 +15,7 @@
 use crate::check::{VERSION, upstream_version};
 use crate::position::{Encoding, Position};
 use crate::query::{
-    self, Answer, Diagnostics, MemberKind, MembersAt, Place, Session, TypeAt, Unavailable,
+    self, Access, Answer, Diagnostics, MemberKind, MembersAt, Place, Session, TypeAt, Unavailable,
 };
 use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query};
 use crossbeam_channel::{Receiver, Sender, select};
@@ -245,6 +245,7 @@ impl Server {
                 definition_provider: Some(lsp::OneOf::Left(true)),
                 type_definition_provider: Some(lsp::TypeDefinitionProviderCapability::Simple(true)),
                 references_provider: Some(lsp::OneOf::Left(true)),
+                document_highlight_provider: Some(lsp::OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(lsp::ServerInfo {
@@ -261,6 +262,7 @@ impl Server {
                 "inko": upstream_version(),
                 "std": self.session.std,
                 "statusNotifications": self.options.status,
+                "diagnostics": self.options.diagnostics,
             }
         });
         value
@@ -337,6 +339,9 @@ impl Server {
             "textDocument/completion" => ("textDocument/completion", Query::Complete),
             "textDocument/definition" => ("textDocument/definition", Query::Definition),
             "textDocument/typeDefinition" => ("textDocument/typeDefinition", Query::TypeDefinition),
+            "textDocument/documentHighlight" => {
+                ("textDocument/documentHighlight", Query::Highlight)
+            }
             "textDocument/references" => (
                 "textDocument/references",
                 Query::References {
@@ -940,6 +945,27 @@ impl Server {
                 let status = status_of(&answer);
                 let result = match answer.result {
                     Ok(Some(places)) => Value::Array(places.into_iter().map(location).collect()),
+                    _ => Value::Null,
+                };
+
+                (result, status)
+            }
+            Outcome::Highlights(answer) => {
+                let status = status_of(&answer);
+                let result = match answer.result {
+                    Ok(Some(list)) => serde_json::to_value(
+                        list.into_iter()
+                            .map(|h| lsp::DocumentHighlight {
+                                range: range(h.range),
+                                kind: Some(match h.access {
+                                    Access::Declaration => lsp::DocumentHighlightKind::TEXT,
+                                    Access::Read => lsp::DocumentHighlightKind::READ,
+                                    Access::Write => lsp::DocumentHighlightKind::WRITE,
+                                }),
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
                     _ => Value::Null,
                 };
 

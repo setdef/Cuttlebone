@@ -31,7 +31,7 @@ All of these are optional.
 | `inko` | string | `inko` on `PATH` | The `inko` executable to check the version of and take the standard library from. |
 | `checkTimeoutMs` | number | 5000 | How long one check may run before it's killed (see [Robustness](#robustness)). |
 | `debounceMs` | number | 50 | How long a document must go without edits before a query on it starts (see [Debouncing and cancellation](#debouncing-and-cancellation)). |
-| `statusNotifications` | boolean | false | Send a [`cuttlebone/status`](#status) notification before each query's response (hover, completion, definition, type definition, references), and after each [diagnostics](#diagnostics) check. |
+| `statusNotifications` | boolean | false | Send a [`cuttlebone/status`](#status) notification before each query's response, and after each [diagnostics](#diagnostics) check. |
 | `diagnostics` | boolean | true | Check projects and publish [diagnostics](#diagnostics). |
 | `diagnosticsDebounceMs` | number | 300 | How long a project must go without edits before its diagnostics are checked again. |
 
@@ -95,7 +95,8 @@ Only what works:
     "definitionProvider": true,
     "typeDefinitionProvider": true,
     "referencesProvider": true,
-    "experimental": {"cuttlebone": {"inko": "0.21.1", "std": "/path/to/std", "statusNotifications": false}}
+    "documentHighlightProvider": true,
+    "experimental": {"cuttlebone": {"inko": "0.21.1", "std": "/path/to/std", "statusNotifications": false, "diagnostics": true}}
   },
   "serverInfo": {"name": "cuttlebone", "version": "0.1.0"}
 }
@@ -103,7 +104,8 @@ Only what works:
 
 `experimental.cuttlebone` isn't a capability. It tells a client which Inko
 and standard library the session checks with, and whether status
-notifications are on.
+notifications and [diagnostics](#diagnostics) are on. Diagnostics need no
+capability: the server publishes them unless `diagnostics` is `false`.
 
 ## Documents
 
@@ -361,6 +363,38 @@ error that stops type checking anywhere in it (a syntax error, or an error
 in a declaration) makes references unavailable, even if the file itself is
 fine.
 
+## `textDocument/documentHighlight`
+
+Every name in the document that refers to or declares the symbol at the
+position, as an array of `DocumentHighlight`s sorted by position:
+
+```json
+→ {"jsonrpc": "2.0", "id": 6, "method": "textDocument/documentHighlight", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/main.inko"},
+    "position": {"line": 41, "character": 4}}}
+← {"jsonrpc": "2.0", "id": 6, "result": [
+    {"range": {"start": {"line": 32, "character": 12}, "end": {"line": 32, "character": 17}}, "kind": 3},
+    {"range": {"start": {"line": 41, "character": 4}, "end": {"line": 41, "character": 9}}, "kind": 3},
+    {"range": {"start": {"line": 41, "character": 12}, "end": {"line": 41, "character": 17}}, "kind": 2},
+    {"range": {"start": {"line": 48, "character": 36}, "end": {"line": 48, "character": 41}}, "kind": 2}
+]}
+```
+
+The symbol, and which names refer to it, are found as for
+[references](#textdocumentreferences), by the compiler's ids, but only in
+this document, which is type checked with what it imports (not the whole
+project). Two symbols with the same name, such as a field `count`, an
+argument `count` and a variable `count`, are never highlighted together.
+
+| `kind` | For |
+|---|---|
+| Write (3) | A variable's binding: `let x`, a pattern's `x` (`case Some(x)`, a `for` loop's), a method's or closure's argument. An assignment's target: `x = 1`, `x := 1`, `x += 1`, `@x = 1`, `a.x = 1`. |
+| Read (2) | Every other reference: a variable or field read, a call, a type or module name, a named argument, a field set by name in `Point(x: 1)`. |
+| Text (1) | The declaration of anything but a variable: a method's, type's, field's or constant's name. |
+
+The result is `null` when there's nothing at the position, and `null` with
+a [status](#status) reason (the same as hover's) when there's no answer.
+
 ## Diagnostics
 
 Cuttlebone publishes the errors and warnings `inko check` reports, with
@@ -488,7 +522,8 @@ a custom notification if the client opts in with
 ```
 
 - **When it's sent:** for every query (hover, completion, definition, type
-  definition and references) that gets a result, just before the
+  definition, references, document highlight, signature help and inlay
+  hints) that gets a result, just before the
   response, with the request's `id`. Requests
   answered with an error (cancelled, superseded, invalid) get none.
 - **For diagnostics:** after each diagnostics check, with

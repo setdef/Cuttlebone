@@ -7,7 +7,7 @@
 //! stdout and exits. Anything on its stderr (such as a panic's message) is
 //! passed on to the server's stderr.
 use crate::query::{
-    self, Answer, Diagnostics, MembersAt, Place, Request, Session, TypeAt, Unavailable,
+    self, Answer, Diagnostics, Highlight, MembersAt, Place, Request, Session, TypeAt, Unavailable,
 };
 use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,8 @@ pub enum Query {
     TypeDefinition,
     /// `query::references`.
     References { include_declaration: bool },
+    /// `query::highlights`.
+    Highlight,
     /// `query::diagnostics`, for the target in the request's `file`.
     Diagnostics,
 }
@@ -65,6 +67,7 @@ pub enum Outcome {
     Members(Answer<MembersAt>),
     Place(Answer<Place>),
     Places(Answer<Vec<Place>>),
+    Highlights(Answer<Vec<Highlight>>),
     Diagnostics(Answer<Diagnostics>),
     /// The worker didn't produce an answer: it timed out, crashed or
     /// couldn't be started.
@@ -88,6 +91,9 @@ impl Job {
                 &self.request,
                 include_declaration,
             )),
+            Query::Highlight => {
+                Outcome::Highlights(query::highlights(&self.session, &self.request))
+            }
             Query::Diagnostics => {
                 Outcome::Diagnostics(query::diagnostics(&self.session, &self.request))
             }

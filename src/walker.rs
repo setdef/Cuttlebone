@@ -446,6 +446,9 @@ pub struct Walker<'a> {
     /// The module's `declarations`, then the variables its patterns and
     /// closures define.
     pub declarations: Vec<Reference>,
+    /// Where a reference assigns a new value: `x = 1`, `x := 1`, `x += 1`,
+    /// `@x = 1`, `a.x = 1` and so on.
+    pub writes: Vec<Location>,
 }
 
 impl<'a> Walker<'a> {
@@ -459,6 +462,7 @@ impl<'a> Walker<'a> {
             checks: Vec::new(),
             references: Vec::new(),
             declarations: Vec::new(),
+            writes: Vec::new(),
         }
     }
 
@@ -1050,11 +1054,13 @@ impl<'a> Walker<'a> {
             E::AssignField(n) => {
                 self.stored(n.location, "AssignField", Some(n.resolved_type), synthetic);
                 self.refer(n.field.location, n.field_id.map(SymbolId::Field));
+                self.writes.push(n.field.location);
                 self.expression(&n.value);
             }
             E::ReplaceField(n) => {
                 self.stored(n.location, "ReplaceField", Some(n.resolved_type), synthetic);
                 self.refer(n.field.location, n.field_id.map(SymbolId::Field));
+                self.writes.push(n.field.location);
                 self.expression(&n.value);
             }
             E::AssignSetter(n) => {
@@ -1064,6 +1070,7 @@ impl<'a> Walker<'a> {
 
                 self.stored(n.location, "AssignSetter", typ, synthetic);
                 self.refer(n.name.location, call_symbol(&n.kind));
+                self.writes.push(n.name.location);
 
                 let receiver = self.receiver(&n.receiver, false);
 
@@ -1078,6 +1085,7 @@ impl<'a> Walker<'a> {
                     synthetic,
                 );
                 self.refer(n.name.location, n.field_id.map(SymbolId::Field));
+                self.writes.push(n.name.location);
                 self.receiver(&n.receiver, false);
                 self.expression(&n.value);
             }
@@ -1091,6 +1099,7 @@ impl<'a> Walker<'a> {
 
                 if !generated(&n.variable.name) {
                     self.refer(n.variable.location, n.variable_id.map(SymbolId::Variable));
+                    self.writes.push(n.variable.location);
                 }
 
                 self.expression(&n.value);
@@ -1105,6 +1114,7 @@ impl<'a> Walker<'a> {
 
                 if !generated(&n.variable.name) {
                     self.refer(n.variable.location, n.variable_id.map(SymbolId::Variable));
+                    self.writes.push(n.variable.location);
                 }
 
                 self.expression(&n.value);

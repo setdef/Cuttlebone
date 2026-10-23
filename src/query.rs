@@ -443,6 +443,72 @@ pub fn diagnostics(session: &Session, request: &Request) -> Answer<Diagnostics> 
     }
 }
 
+/// How a highlighted name uses its symbol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Access {
+    /// The declaration of something other than a variable: a method, type,
+    /// field, constant and so on.
+    Declaration,
+    /// A use that reads the symbol (or calls it, or names it as a type).
+    Read,
+    /// A variable's binding (`let`, a pattern, an argument), or an
+    /// assignment to a variable or field.
+    Write,
+}
+
+/// A name in a file that refers to or declares a symbol.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Highlight {
+    pub range: Range,
+    pub access: Access,
+}
+
+/// Every name in the requested file that refers to or declares the symbol
+/// at a position, by the compiler's ids as for `references`, sorted by
+/// position.
+pub fn highlights(session: &Session, request: &Request) -> Answer<Vec<Highlight>> {
+    answer(session, request, false, |scope| {
+        let walker = scope.walker;
+        let Some(reference) = symbol_at(&walker.references, &walker.declarations, scope.at) else {
+            return Ok(None);
+        };
+        let symbol = reference.symbol;
+        let mut found: Vec<(Location, Access)> = Vec::new();
+
+        for r in walker.references.iter().filter(|r| r.symbol == symbol) {
+            let access = if walker.writes.contains(&r.location) {
+                Access::Write
+            } else {
+                Access::Read
+            };
+
+            found.push((r.location, access));
+        }
+
+        for d in walker.declarations.iter().filter(|d| d.symbol == symbol) {
+            let access = match d.symbol {
+                SymbolId::Variable(_) => Access::Write,
+                _ => Access::Declaration,
+            };
+
+            found.push((d.location, access));
+        }
+
+        found.sort_by_key(|(l, _)| (l.line_start, l.column_start, l.line_end, l.column_end));
+        found.dedup_by_key(|(l, _)| *l);
+
+        Ok(Some(
+            found
+                .into_iter()
+                .map(|(location, access)| Highlight {
+                    range: range(scope.lines, &location),
+                    access,
+                })
+                .collect(),
+        ))
+    })
+}
+
 /// The name at a position that refers to or declares a symbol: the
 /// innermost one containing it.
 pub fn symbol_at<'a>(
