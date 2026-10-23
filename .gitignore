@@ -1,2 +1,3 @@
 /target
 /.upstream
+/editors/vscode/node_modules

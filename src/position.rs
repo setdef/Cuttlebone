@@ -1,4 +1,4 @@
-//! Converts between the compiler's positions and the protocol's.
+//! Converts between the compiler's positions and editors'.
 //!
 //! The compiler's lines and columns start at 1, and a column counts extended
 //! grapheme clusters: the lexer advances the column by
@@ -30,7 +30,7 @@ pub struct Position {
 /// What a `Position`'s `character` counts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Encoding {
-    /// UTF-16 code units, as in LSP's default, VS Code and IntelliJ.
+    /// UTF-16 code units, LSP's default.
     #[default]
     Utf16,
     /// Bytes, as in Neovim.

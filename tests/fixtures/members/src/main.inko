@@ -1,5 +1,5 @@
-# Receivers for membersAt. The tests replace a member name with a completion
-# placeholder, as Parakeet does, and send the result as unsaved contents.
+# Receivers for completion. The tests replace a member name with a
+# placeholder, and send the result as unsaved contents.
 import shapes
 import shapes (Circle)
 import std.stdio (Stdout)

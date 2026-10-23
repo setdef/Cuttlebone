@@ -6,9 +6,9 @@ use cuttlebone::upstream_std;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// A completion placeholder, as IntelliJ inserts at the caret. `members_at`
-/// works with any name; `query::complete` inserts its own.
-pub const PLACEHOLDER: &str = "IntellijIdeaRulezzz";
+/// A completion placeholder that isn't `query::PLACEHOLDER`: `members_at`
+/// works with any name, and `query::complete` inserts its own.
+pub const PLACEHOLDER: &str = "someMemberName";
 
 pub fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -83,7 +83,7 @@ impl Project {
     }
 
     /// Replaces `member` in `receiver.member` (the first occurrence of
-    /// `before`) with a placeholder, as IntelliJ does, and asks for the
+    /// `before`) with a placeholder, and asks for the
     /// members at the placeholder.
     pub fn members_at(
         &self,

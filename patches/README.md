@@ -13,7 +13,7 @@ text), and makes the typed HIR readable.
 |---|---|---|
 | compiler/src/lib.rs | 1 changed | `mod hir` becomes `pub mod hir`, so Cuttlebone can read the typed HIR. |
 | compiler/src/hir.rs | 469 changed | Every `pub(crate)` becomes `pub`, except `struct LowerToHir`. Mechanical. |
-| compiler/src/compiler.rs | +17, 1 changed | The `check_with` hook. |
+| compiler/src/compiler.rs | +16, 1 changed | The `check_with` hook, which doesn't sync `dep/`. |
 | compiler/src/config.rs | +4 | The overlay field. |
 | compiler/src/modules_parser.rs | +5, 1 changed | Reading the overlay. |
 
@@ -41,24 +41,49 @@ hand-picked diff of about the same size that's harder to redo on a rebase.
 
 ```diff
      pub fn check(&mut self, file: Option<PathBuf>) -> Result<(), CompileError> {
+         self.prepare()?;
 +        self.check_with(file, |_, _| true)
 +    }
-+
-+    /// Type checks like `check`, passing the typed HIR to `inspect` before
-+    /// it's lowered to MIR. `inspect` also runs if type checking fails, and
-+    /// returning `false` from it skips lowering to MIR.
+ 
++    /// Type checks like `check` but without `prepare` (which syncs `dep/`),
++    /// and passes the typed HIR to `inspect` before MIR, even if type checking
++    /// fails. Returning `false` from `inspect` skips lowering to MIR.
 +    pub fn check_with<F: FnOnce(&types::Database, &[hir::Module]) -> bool>(
 +        &mut self,
 +        file: Option<PathBuf>,
 +        inspect: F,
 +    ) -> Result<(), CompileError> {
-         self.prepare()?;
+         let start = Instant::now();
 ```
 
-`check` keeps its behaviour (`inko check` is unchanged) by calling
-`check_with` with an `inspect` that does nothing and continues to MIR. The
-signature and doc comment are the hook's interface. `check_with` is
-`check`'s old body, so it does the same parsing, lowering and passes.
+`check` keeps its behaviour (`inko check` is unchanged): it calls `prepare`
+as before, then `check_with` with an `inspect` that does nothing and
+continues to MIR. The signature and doc comment are the hook's interface.
+`check_with` is the rest of `check`'s old body, so it does the same parsing,
+lowering and passes.
+
+The hook starts *after* `self.prepare()?`, which stays in `check`. This costs
+no added line (milestone 1's hook started before it, and had one more
+line), and it's what keeps queries free of side effects. `prepare` does two
+things:
+
+- It refuses a project whose manifests require a newer Inko. Cuttlebone
+  repeats this check itself (`check_required_version` in src/lib.rs), with
+  absolute paths, because `prepare` reads `inko.pkg` relative to the working
+  directory.
+- It calls `sync_if_needed`. That function first creates
+  `<data directory>/inko/packages` and takes a file lock in it, even when
+  nothing needs syncing. It then downloads packages into `dep/` if
+  `inko.pkg` changed since the last sync. A hover must not write to the
+  user's data directory, wait on a lock that `inko pkg sync` may be
+  holding, or touch the network. Dependencies are whatever the last
+  `inko pkg sync` (or `inko build`) put in `dep/`.
+
+Because of this, checks no longer depend on the working directory, so
+Cuttlebone no longer changes it or serializes checks behind a lock.
+`tests/lsp.rs` (`queries_never_sync_dependencies_or_touch_the_data_directory`)
+runs the server in a project whose `dep/` was never synced, with a fresh
+home directory, and fails if anything is created.
 
 ```diff
          let mut hir = self.compile_hir(ast)?;
@@ -123,8 +148,8 @@ it parses that text instead. The error handling after it is unchanged.
 Module resolution still checks that the file exists on disk, so the overlay
 replaces files' contents but can't add files.
 
-The alternative is to mirror the project into a temporary directory, as
-Parakeet does for `inko check`. For a std-sized project (222 files) creating
+The alternative is to mirror the project into a temporary directory, as an
+editor plugin might for `inko check`. For a std-sized project (222 files) creating
 and deleting a mirror of symlinks takes about 33 ms, roughly 30% of a check,
 and every path in every answer would need mapping back. The overlay costs a
 hash lookup per module.

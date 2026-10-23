@@ -1,0 +1,46 @@
+{
+  "name": "cuttlebone",
+  "displayName": "Cuttlebone (smoke test)",
+  "description": "A minimal VS Code extension that starts the cuttlebone language server for .inko files.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "local",
+  "license": "MPL-2.0",
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "languages": [
+      {
+        "id": "inko",
+        "extensions": [".inko"]
+      }
+    ],
+    "configuration": {
+      "title": "Cuttlebone",
+      "properties": {
+        "cuttlebone.path": {
+          "type": "string",
+          "default": "cuttlebone",
+          "description": "The cuttlebone executable."
+        },
+        "cuttlebone.inko": {
+          "type": "string",
+          "default": "",
+          "description": "The inko executable. Empty means inko on PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node test/run.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^11.0.0"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^3.1.0"
+  }
+}

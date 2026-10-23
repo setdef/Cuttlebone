@@ -1,4 +1,5 @@
-//! typeAt: which expression a position means, and the type it reports.
+//! `query::type_at` (hover): which expression a position means, and the type
+//! it reports.
 mod common;
 
 use common::{Project, position_of};
@@ -241,7 +242,7 @@ fn every_synthetic_node_shares_its_range_with_a_real_one() {
 }
 
 // Positions. The compiler's columns count grapheme clusters (see
-// src/position.rs); the protocol's count UTF-16 code units.
+// src/position.rs); LSP's count UTF-16 code units by default.
 
 fn unicode() -> Project {
     Project::new("unicode")

@@ -28,7 +28,7 @@ pub struct Expr {
     pub typ: Option<String>,
     pub origin: Origin,
     /// Whether desugaring introduced this node, rather than it standing for
-    /// source code at its location (see docs/protocol.md, "Which expression
+    /// source code at its location (see docs/lsp.md, "Which expression
     /// a position means").
     pub synthetic: bool,
     /// The unformatted type. It refers into the type database, so it's only

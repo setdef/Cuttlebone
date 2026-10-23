@@ -1,5 +1,5 @@
 diff --git a/compiler/src/compiler.rs b/compiler/src/compiler.rs
-index 42fad9f..f9789f2 100644
+index 42fad9f..8ea4d39 100644
 --- a/compiler/src/compiler.rs
 +++ b/compiler/src/compiler.rs
 @@ -257,7 +257,17 @@ impl Compiler {
@@ -9,9 +9,9 @@ index 42fad9f..f9789f2 100644
 +        self.check_with(file, |_, _| true)
 +    }
  
-+    /// Type checks like `check`, passing the typed HIR to `inspect` before
-+    /// it's lowered to MIR. `inspect` also runs if type checking fails, and
-+    /// returning `false` from it skips lowering to MIR.
++    /// Type checks like `check` but without `prepare` (which syncs `dep/`),
++    /// and passes the typed HIR to `inspect` before MIR, even if type checking
++    /// fails. Returning `false` from `inspect` skips lowering to MIR.
 +    pub fn check_with<F: FnOnce(&types::Database, &[hir::Module]) -> bool>(
 +        &mut self,
 +        file: Option<PathBuf>,

@@ -1,5 +1,6 @@
-//! membersAt, driven the way Parakeet completes `receiver.|`: a copy of the
+//! `query::members_at`, the members of `receiver.name`: a copy of the
 //! buffer with a placeholder name at the caret, sent as unsaved contents.
+//! (`query::complete` inserts its own placeholder; see tests/complete.rs.)
 mod common;
 
 use common::{PLACEHOLDER, Project, position_of};
