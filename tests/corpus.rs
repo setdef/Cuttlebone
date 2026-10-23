@@ -37,14 +37,12 @@ fn every_std_expression_has_a_type() {
             continue;
         }
 
-        match ALLOWED.iter().position(|(k, s, _)| *k == e.kind && *s == status)
+        match ALLOWED
+            .iter()
+            .position(|(k, s, _)| *k == e.kind && *s == status)
         {
             Some(i) => used[i] += 1,
-            None => untyped.push(format!(
-                "{:?}: {}",
-                status,
-                format_expr(e, &target.root)
-            )),
+            None => untyped.push(format!("{:?}: {}", status, format_expr(e, &target.root))),
         }
     }
 
@@ -52,7 +50,12 @@ fn every_std_expression_has_a_type() {
         untyped.is_empty(),
         "{} expressions without a type:\n{}",
         untyped.len(),
-        untyped.iter().take(50).cloned().collect::<Vec<_>>().join("\n")
+        untyped
+            .iter()
+            .take(50)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
     for ((kind, _, why), n) in ALLOWED.iter().zip(&used) {

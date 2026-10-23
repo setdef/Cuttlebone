@@ -83,13 +83,23 @@ impl Project {
     /// Replaces `member` in `receiver.member` (the first occurrence of
     /// `before`) with the placeholder, as Parakeet does, and asks for the
     /// members at the placeholder.
-    pub fn members_at(&self, file: &str, before: &str, after: &str) -> Result<Option<MembersAt>, Unavailable> {
+    pub fn members_at(
+        &self,
+        file: &str,
+        before: &str,
+        after: &str,
+    ) -> Result<Option<MembersAt>, Unavailable> {
         let text = self.read(file);
 
         assert!(text.contains(before), "{:?} isn't in {}", before, file);
 
         let text = text.replacen(before, after, 1);
-        let request = self.request(file, Some(&text), after, after.find(PLACEHOLDER).unwrap() as u32);
+        let request = self.request(
+            file,
+            Some(&text),
+            after,
+            after.find(PLACEHOLDER).unwrap() as u32,
+        );
 
         query::members_at(&self.session, &request).result
     }

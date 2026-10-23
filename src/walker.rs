@@ -3,9 +3,9 @@
 //! Most types are stored in the HIR by the type checker. The rest (see
 //! `Origin`) are reconstructed here by reapplying the type checker's rules.
 //! Each such rule cites the upstream lines it mirrors (paths relative to
-//! `.upstream/inko/compiler/src/`), so a rebase can diff them, and where the
-//! compiler stores something to compare with, the walker records a
-//! `CrossCheck` that tests/crosscheck.rs asserts on.
+//! `.upstream/inko/`; tests/citations.rs fails if they move), so a rebase can
+//! diff them. Where the compiler stores something to compare with, the walker
+//! records a `CrossCheck` that tests/crosscheck.rs asserts on.
 use compiler::hir;
 use location::Location;
 use std::collections::HashMap;
@@ -59,7 +59,7 @@ pub struct CallSite {
     /// The receiver's index in `Walker::out`.
     pub receiver: usize,
     /// Whether the receiver is `self`, which may call type-private methods
-    /// (type_check/expressions.rs:4499).
+    /// (compiler/src/type_check/expressions.rs:4499).
     pub receiver_is_self: bool,
 }
 
@@ -210,11 +210,19 @@ impl<'a> Walker<'a> {
             // In `module.Type.method`, `module` is the receiver of
             // `module.Type`, and must be the module defining the type.
             if let (hir::Expression::Call(_), TypeRef::Owned(TypeEnum::Type(id))) = (node, typ)
-                && self.out.get(index + 1).is_some_and(|e| e.origin == Origin::Symbol)
+                && self
+                    .out
+                    .get(index + 1)
+                    .is_some_and(|e| e.origin == Origin::Symbol)
             {
                 let module = self.out[index + 1].raw.unwrap();
 
-                self.check(index + 1, "receiver", module, TypeRef::module(id.module(self.db)));
+                self.check(
+                    index + 1,
+                    "receiver",
+                    module,
+                    TypeRef::module(id.module(self.db)),
+                );
             }
         }
 
@@ -223,12 +231,15 @@ impl<'a> Walker<'a> {
 
     /// The type the type checker gives a type or module used as a receiver.
     ///
-    /// Mirrors type_check/expressions.rs: `constant` with `receiver` set
-    /// returns `Owned(Type(id))` for a type (:2579, `Some(Symbol::Type(id))
-    /// if receiver`), `identifier` returns `TypeRef::module(id)` for a module
-    /// (:2714), and `call_with_receiver` returns `Owned(Type(id))` for
-    /// `module.Type` used as a receiver (:3812, `Some(Symbol::Type(id)) if
-    /// as_receiver`). None of these are stored in the HIR.
+    /// Mirrors three places in the type checker, none of which store the
+    /// type in the HIR:
+    ///
+    /// - `constant` with `receiver` set returns `Owned(Type(id))` for a type
+    ///   (compiler/src/type_check/expressions.rs:2579).
+    /// - `identifier` returns `TypeRef::module(id)` for a module
+    ///   (compiler/src/type_check/expressions.rs:2714).
+    /// - `call_with_receiver` returns `Owned(Type(id))` for `module.Type`
+    ///   used as a receiver (compiler/src/type_check/expressions.rs:3826).
     fn static_receiver(&self, node: &hir::Expression) -> Option<TypeRef> {
         let symbol = match node {
             hir::Expression::ConstantRef(n) if matches!(n.kind, ConstantKind::Unknown) => {
@@ -366,14 +377,10 @@ impl<'a> Walker<'a> {
             // its receiver is the type itself; a module method's receiver is
             // the module (types/src/lib.rs, `Receiver::with_module`).
             CallKind::Call(info) => match info.receiver {
-                Receiver::Type | Receiver::Explicit | Receiver::Implicit => {
-                    match ours {
-                        TypeRef::Owned(TypeEnum::Module(_)) => {
-                            TypeRef::module(info.id.module(self.db))
-                        }
-                        _ => info.id.receiver(self.db),
-                    }
-                }
+                Receiver::Type | Receiver::Explicit | Receiver::Implicit => match ours {
+                    TypeRef::Owned(TypeEnum::Module(_)) => TypeRef::module(info.id.module(self.db)),
+                    _ => info.id.receiver(self.db),
+                },
                 Receiver::Extern => TypeRef::module(info.id.module(self.db)),
             },
             // `module.CONSTANT`
@@ -442,25 +449,52 @@ impl<'a> Walker<'a> {
                 self.expression(&n.value);
             }
             E::ReplaceSetter(n) => {
-                self.stored(n.location, "ReplaceSetter", Some(n.resolved_type), synthetic);
+                self.stored(
+                    n.location,
+                    "ReplaceSetter",
+                    Some(n.resolved_type),
+                    synthetic,
+                );
                 self.receiver(&n.receiver, false);
                 self.expression(&n.value);
             }
             E::AssignVariable(n) => {
-                self.stored(n.location, "AssignVariable", Some(n.resolved_type), synthetic);
+                self.stored(
+                    n.location,
+                    "AssignVariable",
+                    Some(n.resolved_type),
+                    synthetic,
+                );
                 self.expression(&n.value);
             }
             E::ReplaceVariable(n) => {
-                self.stored(n.location, "ReplaceVariable", Some(n.resolved_type), synthetic);
+                self.stored(
+                    n.location,
+                    "ReplaceVariable",
+                    Some(n.resolved_type),
+                    synthetic,
+                );
                 self.expression(&n.value);
             }
             // Not stored: `break_expression` and `next_expression` always
-            // return Never (type_check/expressions.rs:2940-2985).
+            // return Never (compiler/src/type_check/expressions.rs:2940-2985).
             E::Break(n) => {
-                self.push(n.location, "Break", Some(TypeRef::Never), Origin::Derived, synthetic);
+                self.push(
+                    n.location,
+                    "Break",
+                    Some(TypeRef::Never),
+                    Origin::Derived,
+                    synthetic,
+                );
             }
             E::Next(n) => {
-                self.push(n.location, "Next", Some(TypeRef::Never), Origin::Derived, synthetic);
+                self.push(
+                    n.location,
+                    "Next",
+                    Some(TypeRef::Never),
+                    Origin::Derived,
+                    synthetic,
+                );
             }
             E::BuiltinCall(n) => {
                 let typ = n.info.as_ref().map(|i| i.returns);
@@ -476,7 +510,10 @@ impl<'a> Walker<'a> {
                 // `iterator.into_iter` in a `for` loop and `value.to_string`
                 // in string interpolation reuse the receiver's location. A
                 // call written in the source always also spans its name.
-                let same_as_receiver = n.receiver.as_ref().is_some_and(|r| r.location() == n.location);
+                let same_as_receiver = n
+                    .receiver
+                    .as_ref()
+                    .is_some_and(|r| r.location() == n.location);
                 self.stored(
                     n.location,
                     "Call",
@@ -519,8 +556,11 @@ impl<'a> Walker<'a> {
                 self.stored(n.location, "Closure", Some(n.resolved_type), synthetic);
 
                 // The type checker records a closure's arguments in its
-                // ClosureId, not the HIR (type_check/expressions.rs:2424-2451).
-                let args = n.closure_id.map(|id| id.arguments(self.db)).unwrap_or_default();
+                // ClosureId, not the HIR (compiler/src/type_check/expressions.rs:2424-2451).
+                let args = n
+                    .closure_id
+                    .map(|id| id.arguments(self.db))
+                    .unwrap_or_default();
 
                 for (i, arg) in n.arguments.iter().enumerate() {
                     let typ = args
@@ -541,7 +581,12 @@ impl<'a> Walker<'a> {
                     _ => Some(n.resolved_type),
                 };
 
-                self.stored(n.location, "ConstantRef", typ, synthetic || generated(&n.name));
+                self.stored(
+                    n.location,
+                    "ConstantRef",
+                    typ,
+                    synthetic || generated(&n.name),
+                );
             }
             E::DefineVariable(n) => {
                 let generated_var =
@@ -560,7 +605,7 @@ impl<'a> Walker<'a> {
                 self.expression(&n.value);
 
                 // `let x = <derived>` gives `x` the value's type
-                // (type_check/expressions.rs:1618-1622, then `pattern` binds
+                // (compiler/src/type_check/expressions.rs:1618-1622, then `pattern` binds
                 // an identifier to `input_type` when it has no annotation).
                 if let hir::Pattern::Identifier(p) = &n.pattern
                     && p.value_type.is_none()
@@ -591,12 +636,17 @@ impl<'a> Walker<'a> {
                     IdentifierKind::Method(info) => Some(info.returns),
                 };
 
-                self.stored(n.location, "IdentifierRef", typ, synthetic || generated(&n.name));
+                self.stored(
+                    n.location,
+                    "IdentifierRef",
+                    typ,
+                    synthetic || generated(&n.name),
+                );
             }
             E::Loop(n) => {
                 // Not stored: `loop_expression` returns Nil if a `break`
                 // targets this loop, and Never otherwise
-                // (type_check/expressions.rs:2918-2938).
+                // (compiler/src/type_check/expressions.rs:2918-2938).
                 let typ = if breaks(&n.body) {
                     TypeRef::nil()
                 } else {
@@ -663,10 +713,17 @@ impl<'a> Walker<'a> {
             E::Recover(n) => {
                 // The type checker wraps a returned value in a `recover` at
                 // the value's own location when the return type is unique
-                // (type_check/expressions.rs:1335-1342 and :3025-3027).
+                // (compiler/src/type_check/expressions.rs:1335-1342 for a
+                // body's last value, compiler/src/type_check/expressions.rs:3025-3027
+                // for `return`).
                 let inferred = n.body.len() == 1 && n.body[0].location() == n.location;
 
-                self.stored(n.location, "Recover", Some(n.resolved_type), synthetic || inferred);
+                self.stored(
+                    n.location,
+                    "Recover",
+                    Some(n.resolved_type),
+                    synthetic || inferred,
+                );
                 self.body(&n.body);
             }
             E::Return(n) => {
@@ -688,8 +745,9 @@ impl<'a> Walker<'a> {
                     self.expr(e, desugared);
 
                     // A scope's type is its last expression's type, as an
-                    // owned value (type_check/expressions.rs:1371-1380 and
-                    // :1594-1605).
+                    // owned value (`last_expression_type`,
+                    // compiler/src/type_check/expressions.rs:1371-1380, and
+                    // `scope`, compiler/src/type_check/expressions.rs:1594-1605).
                     if i + 1 == n.body.len()
                         && let Some(ours) = self.out[index].raw
                         && self.out[index].origin == Origin::Derived
@@ -723,13 +781,11 @@ impl<'a> Walker<'a> {
                 self.push(n.location, "Try", typ, Origin::Derived, synthetic);
                 self.expression(&n.expression);
             }
-            E::SizeOf(n) => {
-                _ = self.stored(n.location, "SizeOf", Some(n.resolved_type), synthetic)
-            }
+            E::SizeOf(n) => _ = self.stored(n.location, "SizeOf", Some(n.resolved_type), synthetic),
         }
     }
 
-    /// Not stored: `try_expression` (type_check/expressions.rs:4337-4430)
+    /// Not stored: `try_expression` (compiler/src/type_check/expressions.rs:4337-4426)
     /// stores the operand's `ThrowKind` in `kind` and the surrounding
     /// method's return type in `return_type`, then returns the Option's or
     /// Result's inner value for the combinations it accepts and an error for
@@ -753,7 +809,7 @@ impl<'a> Walker<'a> {
 }
 
 /// Whether a name was generated by desugaring. Generated names start with
-/// `$` (hir.rs:21-29, and `ARRAY_INTERNAL_NAME` and friends in
+/// `$` (compiler/src/hir.rs:21-29, and `ARRAY_INTERNAL_NAME` and friends in
 /// types/src/lib.rs), which isn't valid in source code.
 fn generated(name: &str) -> bool {
     name.starts_with('$')
@@ -770,9 +826,10 @@ fn names_generated(node: &hir::Expression) -> bool {
 
 /// Whether a `break` in this loop body targets the loop itself.
 ///
-/// `break_expression` (type_check/expressions.rs:2940-2956) marks the nearest
-/// enclosing loop scope. Closures don't stop that search: a closure's scope
-/// has the enclosing scope as its parent (:2484-2491), so a `break` inside a
+/// `break_expression` (compiler/src/type_check/expressions.rs:2940-2968)
+/// marks the nearest enclosing loop scope. Closures don't stop that search:
+/// a closure's scope has the enclosing scope as its parent
+/// (compiler/src/type_check/expressions.rs:2484-2491), so a `break` inside a
 /// closure inside a loop makes the loop Nil. Only a nested loop stops it.
 fn breaks(body: &[hir::Expression]) -> bool {
     body.iter().any(breaks_in)
@@ -837,7 +894,7 @@ fn breaks_in(node: &hir::Expression) -> bool {
 /// pass with errors (compiler.rs, `check_types`), so after an error in a
 /// declaration no method body is typed.
 ///
-/// The pass types every module (type_check/expressions.rs:727-736), and every
+/// The pass types every module (compiler/src/type_check/expressions.rs:727-736), and every
 /// check includes the standard library's prelude, so if it ran, some literal
 /// in some method body has a type.
 pub fn expressions_pass_ran(modules: &[hir::Module]) -> bool {

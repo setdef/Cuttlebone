@@ -23,13 +23,19 @@ fn an_array_literal_is_the_array_not_its_scaffolding() {
     let p = desugar();
 
     // On `[`: the literal's scope, not `$array`, `with_capacity` or a push.
-    assert_eq!(kind_and_type(&p, "[10, 20]", 0), ("Scope", "Array[Int]".into()));
+    assert_eq!(
+        kind_and_type(&p, "[10, 20]", 0),
+        ("Scope", "Array[Int]".into())
+    );
     // On an element: the element, not the `$array.push(element)` call that
     // has the same range.
     assert_eq!(kind_and_type(&p, "[10, 20]", 1), ("Int", "Int".into()));
     assert_eq!(kind_and_type(&p, "[10, 20]", 5), ("Int", "Int".into()));
     // On the `,` between elements: the literal again.
-    assert_eq!(kind_and_type(&p, "[10, 20]", 3), ("Scope", "Array[Int]".into()));
+    assert_eq!(
+        kind_and_type(&p, "[10, 20]", 3),
+        ("Scope", "Array[Int]".into())
+    );
 }
 
 #[test]
@@ -43,7 +49,10 @@ fn an_interpolated_string_is_a_string_and_its_parts_are_themselves() {
     // An interpolated value: the value, not `$buf.push(value.to_string)`
     // or the generated `to_string` call, which share its range.
     assert_eq!(kind_and_type(&p, s, 6), ("IdentifierRef", "String".into()));
-    assert_eq!(kind_and_type(&p, s, 15), ("IdentifierRef", "Array[Int]".into()));
+    assert_eq!(
+        kind_and_type(&p, s, 15),
+        ("IdentifierRef", "Array[Int]".into())
+    );
     assert_eq!(kind_and_type(&p, s, 23), ("Call", "Int".into()));
 }
 
@@ -52,7 +61,10 @@ fn a_string_with_only_an_interpolated_value_is_that_value() {
     let p = desugar();
 
     // `"${name}"` lowers to just `name.to_string`, at `name`'s range.
-    assert_eq!(kind_and_type(&p, "\"${name}\"", 3), ("IdentifierRef", "String".into()));
+    assert_eq!(
+        kind_and_type(&p, "\"${name}\"", 3),
+        ("IdentifierRef", "String".into())
+    );
 }
 
 #[test]
@@ -65,39 +77,60 @@ fn a_for_loop_is_nil_and_its_iterator_and_binding_are_themselves() {
     assert_eq!(kind_and_type(&p, f, 4), ("Binding", "Int".into()));
     // `numbers.iter`, not `$iter`, `into_iter` or `$iter.next`.
     assert_eq!(kind_and_type(&p, f, 22), ("Call", "Iter[Int]".into()));
-    assert_eq!(kind_and_type(&p, f, 14), ("IdentifierRef", "Array[Int]".into()));
+    assert_eq!(
+        kind_and_type(&p, f, 14),
+        ("IdentifierRef", "Array[Int]".into())
+    );
 }
 
 #[test]
 fn a_while_loop_condition_is_the_condition_not_the_generated_break() {
     let p = desugar();
 
-    assert_eq!(kind_and_type(&p, "while total > 0", 0), ("Loop", "Nil".into()));
-    assert_eq!(kind_and_type(&p, "while total > 0", 12), ("Call", "Bool".into()));
+    assert_eq!(
+        kind_and_type(&p, "while total > 0", 0),
+        ("Loop", "Nil".into())
+    );
+    assert_eq!(
+        kind_and_type(&p, "while total > 0", 12),
+        ("Call", "Bool".into())
+    );
 }
 
 #[test]
 fn an_if_without_else_is_the_if_not_its_generated_nil() {
     let p = desugar();
 
-    assert_eq!(kind_and_type(&p, "if total == 0", 0), ("Match", "Nil".into()));
+    assert_eq!(
+        kind_and_type(&p, "if total == 0", 0),
+        ("Match", "Nil".into())
+    );
 }
 
 #[test]
 fn a_negation_is_the_comparison_not_the_generated_false() {
     let p = desugar();
 
-    assert_eq!(kind_and_type(&p, "!(total == 1)", 0), ("Call", "Bool".into()));
+    assert_eq!(
+        kind_and_type(&p, "!(total == 1)", 0),
+        ("Call", "Bool".into())
+    );
 }
 
 #[test]
 fn await_is_the_awaited_value() {
     let p = desugar();
 
-    assert_eq!(kind_and_type(&p, "await answer", 0), ("Match", "Int".into()));
+    assert_eq!(
+        kind_and_type(&p, "await answer", 0),
+        ("Match", "Int".into())
+    );
     // The method itself, not the generated promise argument or future.
     assert_eq!(kind_and_type(&p, "await answer", 6), ("Call", "Nil".into()));
-    assert_eq!(kind_and_type(&p, "async answer", 0), ("Match", "uni Future[Int]".into()));
+    assert_eq!(
+        kind_and_type(&p, "async answer", 0),
+        ("Match", "uni Future[Int]".into())
+    );
 }
 
 #[test]
@@ -106,7 +139,10 @@ fn an_inferred_recover_is_the_value_as_written() {
 
     // The type checker wraps `[7, 8]` in a `recover` because the method
     // returns `uni Array[Int]`.
-    assert_eq!(kind_and_type(&p, "[7, 8]", 0), ("Scope", "Array[Int]".into()));
+    assert_eq!(
+        kind_and_type(&p, "[7, 8]", 0),
+        ("Scope", "Array[Int]".into())
+    );
 }
 
 #[test]
@@ -115,15 +151,24 @@ fn equal_ranges_resolve_to_the_outermost_node() {
 
     // `total += number` is an assignment containing a `+` call with the same
     // range.
-    assert_eq!(kind_and_type(&p, "total += number", 6), ("AssignVariable", "Nil".into()));
+    assert_eq!(
+        kind_and_type(&p, "total += number", 6),
+        ("AssignVariable", "Nil".into())
+    );
 }
 
 #[test]
 fn a_binding_is_the_variable() {
     let p = desugar();
 
-    assert_eq!(kind_and_type(&p, "let numbers", 4), ("Binding", "Array[Int]".into()));
-    assert_eq!(kind_and_type(&p, "let mut total", 8), ("Binding", "Int".into()));
+    assert_eq!(
+        kind_and_type(&p, "let numbers", 4),
+        ("Binding", "Array[Int]".into())
+    );
+    assert_eq!(
+        kind_and_type(&p, "let mut total", 8),
+        ("Binding", "Int".into())
+    );
 }
 
 #[test]
@@ -131,7 +176,10 @@ fn closure_arguments_are_bindings() {
     let p = Project::new("crosscheck");
 
     assert_eq!(
-        p.type_at(MAIN, None, "fn (value) { value + 1 }", 4).unwrap().unwrap().typ,
+        p.type_at(MAIN, None, "fn (value) { value + 1 }", 4)
+            .unwrap()
+            .unwrap()
+            .typ,
         "Int"
     );
 }
@@ -167,7 +215,11 @@ fn every_synthetic_node_shares_its_range_with_a_real_one() {
     // or be contained in one.
     let file = common::fixture("desugar").join(MAIN);
     let checked = check(&Target::new(&file, upstream_std()).unwrap()).unwrap();
-    let real: Vec<_> = checked.expressions.iter().filter(|e| !e.synthetic).collect();
+    let real: Vec<_> = checked
+        .expressions
+        .iter()
+        .filter(|e| !e.synthetic)
+        .collect();
 
     assert!(checked.expressions.iter().any(|e| e.synthetic));
 
@@ -180,7 +232,11 @@ fn every_synthetic_node_shares_its_range_with_a_real_one() {
                 && (l.line_end, l.column_end) <= (o.line_end, o.column_end)
         });
 
-        assert!(covered, "{:?} at {:?} isn't covered by a real node", e.kind, l);
+        assert!(
+            covered,
+            "{:?} at {:?} isn't covered by a real node",
+            e.kind, l
+        );
     }
 }
 
@@ -200,14 +256,22 @@ fn compiler_columns_count_grapheme_clusters() {
         .iter()
         .find(|e| e.kind == "Float")
         .unwrap();
-    let line = std::fs::read_to_string(&file).unwrap().lines().nth(10).unwrap().to_string();
+    let line = std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .nth(10)
+        .unwrap()
+        .to_string();
     let before = &line[..line.find("4.5").unwrap()];
 
     // `    let d = '👩‍👩‍👦' + 4.5`: the family emoji is 1 grapheme cluster, 5
     // code points, 8 UTF-16 units and 18 bytes.
     assert_eq!(float.location.line_start, 11);
     assert_eq!(float.location.column_start, 19);
-    assert_eq!(unicode_segmentation::UnicodeSegmentation::graphemes(before, true).count() + 1, 19);
+    assert_eq!(
+        unicode_segmentation::UnicodeSegmentation::graphemes(before, true).count() + 1,
+        19
+    );
     assert_eq!(before.chars().count() + 1, 23);
     assert_eq!(before.len() + 1, 36);
 }
@@ -270,14 +334,25 @@ fn lexer_and_cuttlebone_segment_with_the_same_crate_version() {
 #[test]
 fn a_try_the_type_checker_rejects_is_untyped() {
     // `try` on an Option in a method returning a Result is an error, and the
-    // type checker types it as one (type_check/expressions.rs:4415-4422).
+    // type checker types it as one (compiler/src/type_check/expressions.rs:4407-4414).
     let p = Project::new("crosscheck");
     let text = p
         .read(MAIN)
-        .replacen("fn first(values: ref Array[Int]) -> Option[Int] {", "fn first(values: ref Array[Int]) -> Result[Int, String] {", 1)
-        .replacen("  Option.Some(value)\n}\n\nfn inferred", "  Result.Ok(value)\n}\n\nfn inferred", 1);
+        .replacen(
+            "fn first(values: ref Array[Int]) -> Option[Int] {",
+            "fn first(values: ref Array[Int]) -> Result[Int, String] {",
+            1,
+        )
+        .replacen(
+            "  Option.Some(value)\n}\n\nfn inferred",
+            "  Result.Ok(value)\n}\n\nfn inferred",
+            1,
+        );
     let needle = "try values.get(0).ok";
 
-    assert_eq!(p.type_at(MAIN, Some(&text), needle, 0).unwrap_err().code, "untyped");
+    assert_eq!(
+        p.type_at(MAIN, Some(&text), needle, 0).unwrap_err().code,
+        "untyped"
+    );
     assert_eq!(p.type_of(MAIN, needle, 0), "Int");
 }

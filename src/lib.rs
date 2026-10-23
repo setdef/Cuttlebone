@@ -23,7 +23,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The upstream release this build links, without the leading `v`.
 pub fn upstream_version() -> &'static str {
-    include_str!("../UPSTREAM_VERSION").trim().trim_start_matches('v')
+    include_str!("../UPSTREAM_VERSION")
+        .trim()
+        .trim_start_matches('v')
 }
 
 impl Expr {

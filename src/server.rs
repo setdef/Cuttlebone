@@ -63,8 +63,18 @@ impl Server {
     pub fn handle(&mut self, line: &str) -> (Value, Next) {
         let request: Value = match serde_json::from_str(line) {
             Ok(v @ Value::Object(_)) => v,
-            Ok(_) => return (invalid(Value::Null, "a request must be a JSON object"), Next::Continue),
-            Err(e) => return (invalid(Value::Null, &format!("invalid JSON: {}", e)), Next::Continue),
+            Ok(_) => {
+                return (
+                    invalid(Value::Null, "a request must be a JSON object"),
+                    Next::Continue,
+                );
+            }
+            Err(e) => {
+                return (
+                    invalid(Value::Null, &format!("invalid JSON: {}", e)),
+                    Next::Continue,
+                );
+            }
         };
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let params = request.get("params").cloned().unwrap_or(Value::Null);
@@ -95,9 +105,11 @@ impl Server {
                 };
 
                 let reply = if method == "typeAt" {
-                    query_reply(id, query::type_at(session, &request), |t| {
-                        json!({ "type": t.typ, "range": range(t.range), "kind": t.kind })
-                    })
+                    query_reply(
+                        id,
+                        query::type_at(session, &request),
+                        |t| json!({ "type": t.typ, "range": range(t.range), "kind": t.kind }),
+                    )
                 } else {
                     query_reply(id, query::members_at(session, &request), |m| {
                         let members: Vec<_> = m
@@ -195,7 +207,11 @@ impl Server {
             return unavailable(
                 id,
                 "inkoNotFound",
-                &format!("{} prints {} as its standard library, which isn't a directory", inko, std.display()),
+                &format!(
+                    "{} prints {} as its standard library, which isn't a directory",
+                    inko,
+                    std.display()
+                ),
                 extra,
             );
         }

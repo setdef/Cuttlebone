@@ -33,7 +33,10 @@ fn placeholder(receiver: &str) -> String {
 fn the_receiver_keeps_its_type_when_followed_by_the_placeholder() {
     let p = Project::new("members");
     let text = p.read(MAIN).replacen("name.size", &placeholder("name"), 1);
-    let t = p.type_at(MAIN, Some(&text), &placeholder("name"), 0).unwrap().unwrap();
+    let t = p
+        .type_at(MAIN, Some(&text), &placeholder("name"), 0)
+        .unwrap()
+        .unwrap();
 
     assert_eq!(t.typ, "String");
 }
@@ -73,10 +76,16 @@ fn type_arguments_are_filled_in() {
     let m = members("numbers.get(0)", &format!("{}(0)", placeholder("numbers")));
 
     assert_eq!(m.receiver, "Array[Int]");
-    assert_eq!(member(&m, "get").signature, "fn pub inline get(index: Int) -> Result[ref Int, OutOfBounds]");
+    assert_eq!(
+        member(&m, "get").signature,
+        "fn pub inline get(index: Int) -> Result[ref Int, OutOfBounds]"
+    );
     // Including in methods from `impl Array if T: Equal`, which use a copy of
     // `T` with that bound.
-    assert_eq!(member(&m, "contains?").signature, "fn pub contains?(value: ref Int) -> Bool");
+    assert_eq!(
+        member(&m, "contains?").signature,
+        "fn pub contains?(value: ref Int) -> Bool"
+    );
 }
 
 #[test]
@@ -86,7 +95,12 @@ fn an_owned_receiver_of_a_type_in_the_same_module_sees_private_and_mutating_meth
     assert_eq!(m.receiver, "Counter");
 
     for name in ["count", "bump", "helper", "label"] {
-        assert!(names(&m).contains(&name), "{} missing: {:?}", name, names(&m));
+        assert!(
+            names(&m).contains(&name),
+            "{} missing: {:?}",
+            name,
+            names(&m)
+        );
     }
 
     let label = member(&m, "label");
@@ -110,11 +124,17 @@ fn a_ref_receiver_doesnt_see_methods_that_need_a_mutable_receiver() {
 
 #[test]
 fn a_type_as_receiver_lists_its_static_methods() {
-    let m = members("Counter.new(name)", &format!("{}(name)", placeholder("Counter")));
+    let m = members(
+        "Counter.new(name)",
+        &format!("{}(name)", placeholder("Counter")),
+    );
 
     assert_eq!(m.receiver, "Counter");
     assert_eq!(names(&m), vec!["new"]);
-    assert_eq!(member(&m, "new").signature, "fn static new(label: String) -> Counter");
+    assert_eq!(
+        member(&m, "new").signature,
+        "fn static new(label: String) -> Counter"
+    );
 }
 
 #[test]
@@ -174,7 +194,14 @@ fn the_position_right_after_the_name_also_finds_the_call() {
     let end = placeholder("Counter").len() as u32;
     let mut request = p.request(MAIN, Some(&text), &after, end);
 
-    assert_eq!(query::members_at(&p.session, &request).result.unwrap().unwrap().receiver, "Counter");
+    assert_eq!(
+        query::members_at(&p.session, &request)
+            .result
+            .unwrap()
+            .unwrap()
+            .receiver,
+        "Counter"
+    );
 
     // But not one further, inside the argument list.
     request.position.character += 1;
@@ -184,7 +211,9 @@ fn the_position_right_after_the_name_also_finds_the_call() {
 #[test]
 fn an_untyped_receiver_is_unavailable() {
     let p = Project::new("members");
-    let err = p.members_at(MAIN, "name.size", &placeholder("missing")).unwrap_err();
+    let err = p
+        .members_at(MAIN, "name.size", &placeholder("missing"))
+        .unwrap_err();
 
     assert_eq!(err.code, "untyped");
 }

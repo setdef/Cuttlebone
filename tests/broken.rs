@@ -57,13 +57,27 @@ fn an_unknown_method_in_a_body_only_loses_that_call() {
 
     let p = Project::new("broken");
 
-    assert_eq!(p.type_at(MAIN, Some(&text), "values.length", 7).unwrap_err().code, "untyped");
+    assert_eq!(
+        p.type_at(MAIN, Some(&text), "values.length", 7)
+            .unwrap_err()
+            .code,
+        "untyped"
+    );
     // Its receiver, and the rest of the file, still have types.
     assert_eq!(
-        p.type_at(MAIN, Some(&text), "values.length", 0).unwrap().unwrap().typ,
+        p.type_at(MAIN, Some(&text), "values.length", 0)
+            .unwrap()
+            .unwrap()
+            .typ,
         "ref Array[Int]"
     );
-    assert_eq!(p.type_at(MAIN, Some(&text), "sum += ", 4).unwrap().unwrap().kind, "AssignVariable");
+    assert_eq!(
+        p.type_at(MAIN, Some(&text), "sum += ", 4)
+            .unwrap()
+            .unwrap()
+            .kind,
+        "AssignVariable"
+    );
 }
 
 #[test]
@@ -74,8 +88,15 @@ fn an_undefined_type_in_a_signature_leaves_no_body_typed() {
     // The pass chain stops before method bodies, so the only "types" left
     // are the ones Cuttlebone would reconstruct itself, which is why
     // queries refuse to answer in this state.
-    assert!(all.iter().filter(|(_, o, _)| *o == Origin::Stored).all(|(_, _, typed)| !typed));
-    assert!(all.iter().any(|(_, o, typed)| *o != Origin::Stored && *typed));
+    assert!(
+        all.iter()
+            .filter(|(_, o, _)| *o == Origin::Stored)
+            .all(|(_, _, typed)| !typed)
+    );
+    assert!(
+        all.iter()
+            .any(|(_, o, typed)| *o != Origin::Stored && *typed)
+    );
 
     let p = Project::new("broken");
 
@@ -103,9 +124,13 @@ fn a_syntax_error_in_an_imported_module_leaves_nothing_typed() {
     let p = Project::new("members");
     let mut request = p.request("src/main.inko", None, "name.size", 0);
 
-    request.contents.insert(p.path("src/shapes.inko"), "fn pub broken(".to_string());
+    request
+        .contents
+        .insert(p.path("src/shapes.inko"), "fn pub broken(".to_string());
 
-    let err = cuttlebone::query::type_at(&p.session, &request).result.unwrap_err();
+    let err = cuttlebone::query::type_at(&p.session, &request)
+        .result
+        .unwrap_err();
 
     assert_eq!(err.code, "noHir");
 }
@@ -119,7 +144,10 @@ fn the_completion_placeholder_only_loses_its_own_call() {
     assert_eq!(all.iter().filter(|(_, _, typed)| !typed).count(), 2);
 
     let p = Project::new("broken");
-    let m = p.members_at(MAIN, "${values.size}", &format!("${{{}}}", placeholder)).unwrap().unwrap();
+    let m = p
+        .members_at(MAIN, "${values.size}", &format!("${{{}}}", placeholder))
+        .unwrap()
+        .unwrap();
 
     assert_eq!(m.receiver, "ref Array[Int]");
     assert!(m.members.iter().any(|m| m.name == "size"));

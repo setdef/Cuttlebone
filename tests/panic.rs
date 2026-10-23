@@ -12,21 +12,31 @@ fn a_panic_in_the_type_checker_is_reported_as_unavailable() {
     let err = p.type_at(MAIN, None, "let value", 4).unwrap_err();
 
     assert_eq!(err.code, "compilerPanic");
-    assert!(err.message.contains("The type std.map.Map isn't defined"), "{}", err.message);
+    assert!(
+        err.message.contains("The type std.map.Map isn't defined"),
+        "{}",
+        err.message
+    );
     // With where it happened.
     assert!(err.message.contains("types/src/lib.rs"), "{}", err.message);
 
     // And the next request works.
-    assert_eq!(Project::new("members").type_of(MAIN, "let name", 4), "String");
+    assert_eq!(
+        Project::new("members").type_of(MAIN, "let name", 4),
+        "String"
+    );
 
     // Including another one that panics.
-    assert_eq!(p.type_at(MAIN, None, "let value", 4).unwrap_err().code, "compilerPanic");
+    assert_eq!(
+        p.type_at(MAIN, None, "let value", 4).unwrap_err().code,
+        "compilerPanic"
+    );
 }
 
 #[test]
 fn a_panic_lowering_to_mir_cant_happen_because_queries_dont_lower_to_mir() {
     // `inko check` panics on this project in MIR lowering (a `break` inside
-    // a closure; mir/passes.rs:1836). Types never need MIR, so queries stop
+    // a closure; compiler/src/mir/passes.rs:1836). Types never need MIR, so queries stop
     // before it.
     let p = Project::new("crosscheck");
     let t = p.type_at(MAIN, None, "let a = loop", 8).unwrap().unwrap();
@@ -50,7 +60,11 @@ fn guarded_survives_deep_recursion_that_would_overflow_a_default_thread() {
     fn depth(n: u64) -> u64 {
         let pad = [n; 64];
 
-        if n == 0 { 0 } else { std::hint::black_box(pad)[0] + depth(n - 1) - n + 1 }
+        if n == 0 {
+            0
+        } else {
+            std::hint::black_box(pad)[0] + depth(n - 1) - n + 1
+        }
     }
 
     assert_eq!(guarded(|| depth(30_000)), Ok(30_000));

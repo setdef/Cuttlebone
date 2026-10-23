@@ -2,9 +2,9 @@
 //!
 //! The compiler's lines and columns start at 1, and a column counts extended
 //! grapheme clusters: the lexer advances the column by
-//! `value.graphemes(true).count()` for each token (ast/src/lexer.rs:518-520
-//! and :1150), using the same `unicode-segmentation` crate as this module. An
-//! end column is inclusive.
+//! `value.graphemes(true).count()` for each token (ast/src/lexer.rs:518-520,
+//! and ast/src/lexer.rs:1150 for string text), using the same
+//! `unicode-segmentation` crate as this module. An end column is inclusive.
 //!
 //! The protocol's lines and columns start at 0, a column counts UTF-16 code
 //! units (as in LSP and IntelliJ), and an end is exclusive.
@@ -41,7 +41,7 @@ pub struct Lines<'a> {
 
 impl<'a> Lines<'a> {
     pub fn new(text: &'a str) -> Self {
-        // The lexer starts a new line after each \n (ast/src/lexer.rs:510-515).
+        // The lexer starts a new line after each \n (ast/src/lexer.rs:512-516).
         Lines {
             lines: text.split('\n').collect(),
         }

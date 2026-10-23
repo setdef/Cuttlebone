@@ -89,7 +89,8 @@ impl Server {
 
         self.next_id += 1;
 
-        let reply = self.send_line(&json!({ "id": id, "method": method, "params": params }).to_string());
+        let reply =
+            self.send_line(&json!({ "id": id, "method": method, "params": params }).to_string());
 
         assert_eq!(reply["id"], id, "{}", reply);
         assert!(
@@ -100,7 +101,15 @@ impl Server {
         reply
     }
 
-    fn at(&mut self, method: &str, file: &Path, text: &str, needle: &str, offset: u32, contents: Option<&str>) -> Value {
+    fn at(
+        &mut self,
+        method: &str,
+        file: &Path,
+        text: &str,
+        needle: &str,
+        offset: u32,
+        contents: Option<&str>,
+    ) -> Value {
         let p = position_of(text, needle, offset);
         let mut params = json!({
             "file": file,
@@ -197,7 +206,10 @@ fn the_handshake_refuses_a_different_inko_version() {
 
     // Nothing else works until a handshake succeeds.
     let file = fixture("members").join("src/main.inko");
-    let reply = server.request("typeAt", json!({ "file": file, "position": { "line": 0, "character": 0 } }));
+    let reply = server.request(
+        "typeAt",
+        json!({ "file": file, "position": { "line": 0, "character": 0 } }),
+    );
 
     assert_eq!(reply["reason"]["code"], "notInitialized");
 }
@@ -213,7 +225,10 @@ fn the_handshake_reports_a_missing_inko() {
 #[test]
 fn the_handshake_refuses_another_protocol_version() {
     let mut server = Server::start();
-    let reply = server.request("initialize", json!({ "protocol": 2, "inko": fake_inko(upstream_version()) }));
+    let reply = server.request(
+        "initialize",
+        json!({ "protocol": 2, "inko": fake_inko(upstream_version()) }),
+    );
 
     assert_eq!(reply["reason"]["code"], "protocolMismatch");
     assert_eq!(reply["reason"]["protocol"], 1);
@@ -334,7 +349,10 @@ fn malformed_requests_get_a_reply_and_the_server_keeps_going() {
 
     assert_eq!(reply["reason"]["code"], "invalidRequest");
 
-    let reply = server.request("typeAt", json!({ "file": "/x.inko", "position": { "line": 0 } }));
+    let reply = server.request(
+        "typeAt",
+        json!({ "file": "/x.inko", "position": { "line": 0 } }),
+    );
 
     assert_eq!(reply["reason"]["code"], "invalidRequest");
 
@@ -416,8 +434,17 @@ fn type_at_on_a_std_sized_project_is_fast_enough() {
     // protocol's overhead.
     let median = times[times.len() / 2];
 
-    eprintln!("typeAt on a std-sized project: {:?} (all: {:?})", median, times);
-    assert!(median < LIMIT, "median {:?} exceeds {:?}: {:?}", median, LIMIT, times);
+    eprintln!(
+        "typeAt on a std-sized project: {:?} (all: {:?})",
+        median, times
+    );
+    assert!(
+        median < LIMIT,
+        "median {:?} exceeds {:?}: {:?}",
+        median,
+        LIMIT,
+        times
+    );
 }
 
 #[test]
@@ -441,7 +468,10 @@ fn type_at_in_the_largest_std_module_is_fast_enough() {
 
     let median = times[times.len() / 2];
 
-    eprintln!("typeAt in std.net.http.server: {:?} (all: {:?})", median, times);
+    eprintln!(
+        "typeAt in std.net.http.server: {:?} (all: {:?})",
+        median, times
+    );
     assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
 }
 
@@ -452,10 +482,17 @@ fn the_installed_inko_works_when_its_version_matches() {
         eprintln!("skipped: no inko on PATH");
         return;
     };
-    let version = String::from_utf8_lossy(&out.stdout).trim().trim_start_matches("inko ").to_string();
+    let version = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .trim_start_matches("inko ")
+        .to_string();
 
     if version != upstream_version() {
-        eprintln!("skipped: inko on PATH is {}, not {}", version, upstream_version());
+        eprintln!(
+            "skipped: inko on PATH is {}, not {}",
+            version,
+            upstream_version()
+        );
         return;
     }
 

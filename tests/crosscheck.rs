@@ -61,17 +61,33 @@ fn the_fixture_cross_checks_every_kind_of_reconstructed_type() {
 
     // Symbol: types and modules as receivers of static methods, module
     // methods, constants and type literals.
-    let receivers: Vec<_> = checks.iter().filter(|c| c.rule == "receiver").map(|c| c.ours.as_str()).collect();
+    let receivers: Vec<_> = checks
+        .iter()
+        .filter(|c| c.rule == "receiver")
+        .map(|c| c.ours.as_str())
+        .collect();
 
-    for expected in ["Point", "geometry", "std.fmt", "Option[T]", "Result[T, E]", "Stdout"] {
-        assert!(receivers.contains(&expected), "no receiver {}: {:?}", expected, receivers);
+    for expected in [
+        "Point",
+        "geometry",
+        "std.fmt",
+        "Option[T]",
+        "Result[T, E]",
+        "Stdout",
+    ] {
+        assert!(
+            receivers.contains(&expected),
+            "no receiver {}: {:?}",
+            expected,
+            receivers
+        );
     }
 }
 
 #[test]
 fn a_break_inside_a_closure_makes_the_enclosing_loop_nil() {
     // The type checker looks for the loop through closure scopes
-    // (type_check/expressions.rs:2940-2956), so this loop is Nil, not Never.
+    // (compiler/src/type_check/expressions.rs:2940-2956), so this loop is Nil, not Never.
     let checks = checks(&common::fixture("crosscheck"));
     let line = std::fs::read_to_string(common::fixture("crosscheck").join("src/main.inko"))
         .unwrap()
@@ -84,7 +100,10 @@ fn a_break_inside_a_closure_makes_the_enclosing_loop_nil() {
         .find(|c| c.kind == "Loop" && c.location.line_start == line)
         .unwrap();
 
-    assert_eq!((check.ours.as_str(), check.compiler.as_str()), ("Nil", "Nil"));
+    assert_eq!(
+        (check.ours.as_str(), check.compiler.as_str()),
+        ("Nil", "Nil")
+    );
 }
 
 #[test]
@@ -100,7 +119,9 @@ fn the_standard_library_agrees_with_the_compiler() {
     // Every type or module used as a receiver is cross-checked. Derived
     // types are where the compiler stores them for a variable or scope too;
     // the rest rely on the rules citing type_check lines in src/walker.rs.
-    let key = |l: location::Location, k: &'static str| (l.line_start, l.column_start, l.line_end, l.column_end, k);
+    let key = |l: location::Location, k: &'static str| {
+        (l.line_start, l.column_start, l.line_end, l.column_end, k)
+    };
     let checked_at: HashSet<_> = checks.iter().map(|c| key(c.location, c.kind)).collect();
     let unchecked: Vec<_> = checked
         .expressions
@@ -109,7 +130,11 @@ fn the_standard_library_agrees_with_the_compiler() {
         .map(|e| format_expr(e, &target.root))
         .collect();
 
-    assert!(unchecked.is_empty(), "receivers without a cross-check:\n{}", unchecked.join("\n"));
+    assert!(
+        unchecked.is_empty(),
+        "receivers without a cross-check:\n{}",
+        unchecked.join("\n")
+    );
 
     let counts = counts(checks);
 

@@ -26,9 +26,8 @@ fn golden(name: &str, file: PathBuf) {
         return;
     }
 
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("{}: {} (run with UPDATE_GOLDEN=1)", path.display(), e)
-    });
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {} (run with UPDATE_GOLDEN=1)", path.display(), e));
 
     if actual != expected {
         let diff: Vec<_> = expected
@@ -75,8 +74,7 @@ fn std_fs_path() {
 
 #[test]
 fn fixture_edges() {
-    let file = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/edges/src/main.inko");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/edges/src/main.inko");
 
     golden("fixture-edges", file);
 }

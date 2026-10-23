@@ -208,13 +208,7 @@ fn range(lines: &Lines, location: &Location) -> Range {
     Range { start, end }
 }
 
-type Inspect<'a, T> = dyn FnOnce(
-        &Database,
-        ModuleId,
-        &Walker,
-        &Lines,
-        HirPosition,
-    ) -> Result<Option<T>, Unavailable>
+type Inspect<'a, T> = dyn FnOnce(&Database, ModuleId, &Walker, &Lines, HirPosition) -> Result<Option<T>, Unavailable>
     + Send
     + 'a;
 
@@ -255,15 +249,12 @@ fn prepare(session: &Session, request: &Request) -> Result<(Target, String), Una
 
     let text = match overlay.get(&file) {
         Some(text) => text.clone(),
-        None => std::fs::read_to_string(&file).map_err(|e| {
-            Unavailable::new("fileNotFound", format!("{}: {}", file.display(), e))
-        })?,
+        None => std::fs::read_to_string(&file)
+            .map_err(|e| Unavailable::new("fileNotFound", format!("{}: {}", file.display(), e)))?,
     };
 
     let root = match &session.project {
-        Some(p) if file.starts_with(p.join("src")) || file.starts_with(p.join("test")) => {
-            p.clone()
-        }
+        Some(p) if file.starts_with(p.join("src")) || file.starts_with(p.join("test")) => p.clone(),
         _ => project_root(&file),
     };
 
@@ -371,11 +362,11 @@ pub fn guarded<R: Send>(f: impl FnOnce() -> R + Send) -> Result<R, String> {
 /// The members `receiver.name` could call or read: each candidate name is
 /// kept only if the compiler's own `TypeEnum::lookup_method` accepts it
 /// (types/src/lib.rs:6075-6105, called the same way as
-/// type_check/expressions.rs:3771-3776), so visibility and static/instance
+/// compiler/src/type_check/expressions.rs:3771-3776), so visibility and static/instance
 /// rules come from upstream. Methods that need an owned or mutable receiver
 /// are left out when the receiver isn't one, as `check_mutability` reports
-/// (type_check/expressions.rs:458-499). Fields follow
-/// `lookup_field_with_receiver` (type_check/expressions.rs:4888-4920):
+/// (compiler/src/type_check/expressions.rs:458-499). Fields follow
+/// `lookup_field_with_receiver` (compiler/src/type_check/expressions.rs:4888-4922):
 /// instance fields of a type that's not async, visible from the calling
 /// module.
 fn members(
@@ -424,8 +415,9 @@ fn members(
             }
         }
 
-        let format =
-            |typ: &dyn Fn(TypeFormatter) -> String| typ(TypeFormatter::new(db, Some(receiver), arguments.as_ref()));
+        let format = |typ: &dyn Fn(TypeFormatter) -> String| {
+            typ(TypeFormatter::new(db, Some(receiver), arguments.as_ref()))
+        };
 
         out.push(Member {
             name,
@@ -468,7 +460,7 @@ fn members(
 }
 
 /// `module.CONSTANT` and `module.Type`, as `call_with_receiver` resolves them
-/// (type_check/expressions.rs:3796-3812). Only symbols the module defines,
+/// (compiler/src/type_check/expressions.rs:3819-3830). Only symbols the module defines,
 /// and that the calling module can see, are listed.
 fn module_symbols(
     db: &Database,
@@ -549,7 +541,7 @@ fn candidate_methods(db: &Database, receiver: TypeEnum, out: &mut Vec<String>) {
 }
 
 /// A trait's default and required methods, then those of the traits it
-/// requires (`TraitId::method`, types/src/lib.rs:1025-1040).
+/// requires (`TraitId::method`, types/src/lib.rs:1025-1043).
 fn trait_methods(
     db: &Database,
     id: types::TraitId,
