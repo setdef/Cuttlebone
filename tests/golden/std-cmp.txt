@@ -7,6 +7,7 @@ src/std/cmp.inko:16:30-16:33	True	Bool
 src/std/cmp.inko:17:34-17:37	True	Bool
 src/std/cmp.inko:18:17-18:21	False	Bool
 src/std/cmp.inko:25:5-29:5	DefineVariable	Nil
+src/std/cmp.inko:25:9-25:12	Binding	String
 src/std/cmp.inko:25:16-29:5	Match	String
 src/std/cmp.inko:25:22-25:25	SelfObject	Ordering
 src/std/cmp.inko:26:20-26:25	String	String
@@ -37,7 +38,7 @@ src/std/cmp.inko:72:15-72:19	IdentifierRef	ref Self
 src/std/cmp.inko:73:32-73:35	True	Bool
 src/std/cmp.inko:74:17-74:21	False	Bool
 src/std/cmp.inko:92:5-92:20	Call	Bool
-src/std/cmp.inko:92:5-92:20	False	Bool
+src/std/cmp.inko:92:5-92:20	False	Bool	synthetic
 src/std/cmp.inko:92:7-92:19	Call	Bool
 src/std/cmp.inko:92:7-92:10	SelfObject	ref Self
 src/std/cmp.inko:92:15-92:19	IdentifierRef	ref Self

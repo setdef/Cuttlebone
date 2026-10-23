@@ -1,0 +1,29 @@
+# A module with a different root namespace than main, so its private
+# members aren't visible there.
+let pub PI = 3.14159
+let SECRET = 42
+
+type pub Circle {
+  let pub @radius: Float
+  let @cache: Int
+
+  fn pub static new(radius: Float) -> Circle {
+    Circle(radius: radius, cache: 0)
+  }
+
+  fn pub area -> Float {
+    PI * @radius * @radius
+  }
+
+  fn hidden -> Int {
+    @cache
+  }
+}
+
+fn pub unit -> Circle {
+  Circle.new(1.0)
+}
+
+fn private_helper -> Int {
+  SECRET
+}

@@ -1,9 +1,9 @@
 [package]
 name = "cuttlebone"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 publish = false
-default-run = "dump-types"
+default-run = "cuttlebone"
 
 [dependencies]
 # The pinned upstream release with patches/upstream.patch applied, prepared by
@@ -11,6 +11,12 @@ default-run = "dump-types"
 compiler = { path = ".upstream/inko/compiler" }
 types = { path = ".upstream/inko/types" }
 location = { path = ".upstream/inko/location" }
+serde_json = "1"
+unicode-segmentation = "1"
+
+[[bin]]
+name = "cuttlebone"
+path = "src/bin/cuttlebone.rs"
 
 [[bin]]
 name = "dump-types"

@@ -1,0 +1,59 @@
+# Receivers for membersAt. The tests replace a member name with a completion
+# placeholder, as Parakeet does, and send the result as unsaved contents.
+import shapes
+import shapes (Circle)
+import std.stdio (Stdout)
+import std.string (ToString)
+
+type pub Counter {
+  let mut @count: Int
+  let pub @label: String
+
+  fn static new(label: String) -> Counter {
+    Counter(count: 0, label: label)
+  }
+
+  fn pub count -> Int {
+    @count
+  }
+
+  fn mut bump {
+    @count += 1
+  }
+
+  fn helper -> Int {
+    self.count
+  }
+}
+
+type async Worker {
+  fn work -> Int {
+    1
+  }
+
+  fn pub async go {
+    let _ = self.work
+  }
+}
+
+fn describe[T: ToString](value: ref T) -> String {
+  value.to_string
+}
+
+type async Main {
+  fn async main {
+    let name = 'héllo'
+    let size = name.size
+    let counter = Counter.new(name)
+    let total = counter.count + size
+    let numbers = [1, 2, 3]
+    let first = numbers.get(0).or(0)
+    let circle = Circle.new(2.0)
+    let area = circle.area
+    let pi = shapes.PI
+    let worker = Worker()
+
+    worker.go
+    Stdout.new.print(describe(total + first) + area.to_string + pi.to_string)
+  }
+}

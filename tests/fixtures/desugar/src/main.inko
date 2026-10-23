@@ -1,0 +1,41 @@
+# One example of each construct the compiler desugars into several nodes
+# that share source ranges (see "Which expression a position means" in
+# docs/protocol.md).
+import std.stdio (Stdout)
+import std.sync (Promise)
+
+fn unique -> uni Array[Int] {
+  [7, 8]
+}
+
+fn answer(promise: Promise[Int]) {
+  promise.set(42)
+}
+
+type async Main {
+  fn async main {
+    let out = Stdout.new
+    let numbers = [10, 20]
+    let name = 'Alice'
+    let greeting = "hi ${name}, ${numbers.size} items"
+    let only = "${name}"
+    let mut total = 0
+
+    for number in numbers.iter {
+      total += number
+    }
+
+    while total > 0 {
+      total -= 1
+    }
+
+    if total == 0 { out.print('zero') }
+
+    let negated = !(total == 1)
+    let waited = await answer
+    let pending = async answer
+
+    out.print(greeting + only + negated.to_string + waited.to_string)
+    out.print(pending.get.to_string + unique.size.to_string)
+  }
+}

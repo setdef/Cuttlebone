@@ -1,0 +1,14 @@
+let pub ORIGIN = 0
+
+type pub Point {
+  let pub @x: Int
+  let pub @y: Int
+
+  fn pub static new(x: Int, y: Int) -> Point {
+    Point(x: x, y: y)
+  }
+}
+
+fn pub distance(a: ref Point, b: ref Point) -> Int {
+  (a.x - b.x).absolute + (a.y - b.y).absolute
+}

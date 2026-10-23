@@ -1,0 +1,87 @@
+# Every kind of type Cuttlebone reconstructs instead of reading it from the
+# HIR, in places where the compiler stores the same type somewhere else, so
+# tests/crosscheck.rs can compare the two.
+#
+# `closure_break` makes the compiler panic when lowering to MIR, so this
+# project is only ever type checked.
+import geometry
+import std.fmt
+import std.stdio (Stdout)
+
+fn half(value: Int) -> Result[Int, String] {
+  if value % 2 == 0 { Result.Ok(value / 2) } else { Result.Error('odd') }
+}
+
+fn quarter(value: Int) -> Result[Int, String] {
+  let half = try half(value)
+
+  half(half)
+}
+
+fn first(values: ref Array[Int]) -> Option[Int] {
+  let value = try values.get(0).ok
+
+  Option.Some(value)
+}
+
+fn inferred(values: ref Array[Int]) -> Option[Int] {
+  let get = fn {
+    let value = try values.get(1).ok
+
+    Option.Some(value)
+  }
+
+  get.call
+}
+
+fn loops(limit: Int) -> Int {
+  let mut i = 0
+  let broken = loop {
+    if i == limit { { break } }
+
+    i += 1
+  }
+  let scoped = { loop { break } }
+
+  while i > 0 {
+    i -= 1
+
+    if i == 3 { { next } }
+  }
+
+  for _ in [1, 2].iter {
+    i += 1
+  }
+
+  broken
+  scoped
+  i
+}
+
+fn closure_break -> Nil {
+  let a = loop {
+    let f = fn { break }
+
+    f.call
+  }
+
+  a
+}
+
+fn receivers -> Int {
+  let point = geometry.Point.new(1, 2)
+  let other = geometry.Point(x: geometry.ORIGIN, y: 3)
+  let local = Option.Some(Stdout.new)
+  let mapped = [1, 2].iter.map(fn (value) { value + 1 }).to_array
+
+  let _ = local.get.print(fmt.fmt(mapped))
+  geometry.distance(point, other)
+}
+
+type async Main {
+  fn async main {
+    let _ = Stdout.new.print(fmt.fmt((quarter(8), first([1]), inferred([1, 2]), loops(5))))
+    closure_break
+    receivers
+  }
+}

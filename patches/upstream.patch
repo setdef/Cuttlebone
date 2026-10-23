@@ -1,17 +1,18 @@
 diff --git a/compiler/src/compiler.rs b/compiler/src/compiler.rs
-index 42fad9f..f8f9598 100644
+index 42fad9f..9c739f9 100644
 --- a/compiler/src/compiler.rs
 +++ b/compiler/src/compiler.rs
-@@ -256,6 +256,16 @@ impl Compiler {
+@@ -256,6 +256,17 @@ impl Compiler {
      /// Unlike a regular build we _do_ allow concurrent checks as `inko check`
      /// doesn't modify anything on disk.
      pub fn check(&mut self, file: Option<PathBuf>) -> Result<(), CompileError> {
-+        self.check_with(file, |_, _| {})
++        self.check_with(file, |_, _| true)
 +    }
 +
 +    /// Type checks like `check`, passing the typed HIR to `inspect` before
-+    /// it's lowered to MIR. `inspect` also runs if type checking fails.
-+    pub fn check_with<F: FnOnce(&types::Database, &[hir::Module])>(
++    /// it's lowered to MIR. `inspect` also runs if type checking fails, and
++    /// returning `false` from it skips lowering to MIR.
++    pub fn check_with<F: FnOnce(&types::Database, &[hir::Module]) -> bool>(
 +        &mut self,
 +        file: Option<PathBuf>,
 +        inspect: F,
@@ -19,17 +20,42 @@ index 42fad9f..f8f9598 100644
          self.prepare()?;
  
          let start = Instant::now();
-@@ -276,8 +286,10 @@ impl Compiler {
+@@ -276,8 +287,13 @@ impl Compiler {
  
          let ast = self.parse(input);
          let mut hir = self.compile_hir(ast)?;
 +        let typed = self.check_types(&mut hir);
  
 -        self.check_types(&mut hir)?;
-+        inspect(&self.state.db, &hir);
++        if !inspect(&self.state.db, &hir) {
++            return typed;
++        }
++
 +        typed?;
  
          let res = self.compile_mir(hir).map(|_| ());
+ 
+diff --git a/compiler/src/config.rs b/compiler/src/config.rs
+index 0b0d735..7730a39 100644
+--- a/compiler/src/config.rs
++++ b/compiler/src/config.rs
+@@ -343,6 +343,9 @@ pub struct Config {
+ 
+     /// If code generation is enabled.
+     pub generate_code: bool,
++
++    /// Source code to parse instead of these files' contents on disk.
++    pub overlay: IndexMap<PathBuf, Vec<u8>>,
+ }
+ 
+ impl Config {
+@@ -381,6 +384,7 @@ impl Config {
+             escape_stats: false,
+             escapes: None,
+             generate_code: true,
++            overlay: IndexMap::new(),
+         })
+     }
  
 diff --git a/compiler/src/hir.rs b/compiler/src/hir.rs
 index e9c45b3..97bbea5 100644
@@ -1436,3 +1462,20 @@ index 5280c88..cb2a94c 100644
  mod incremental;
  mod json;
  mod linker;
+diff --git a/compiler/src/modules_parser.rs b/compiler/src/modules_parser.rs
+index c190a9f..2ddc365 100644
+--- a/compiler/src/modules_parser.rs
++++ b/compiler/src/modules_parser.rs
+@@ -152,7 +152,11 @@ impl<'a> ModulesParser<'a> {
+     }
+ 
+     fn parse(&mut self, file: &PathBuf) -> Option<Module> {
+-        let input = match read(file) {
++        let input = match self.state.config.overlay.get(file) {
++            Some(source) => Ok(source.clone()),
++            None => read(file),
++        };
++        let input = match input {
+             Ok(result) => result,
+             Err(e) => {
+                 self.state.diagnostics.error(

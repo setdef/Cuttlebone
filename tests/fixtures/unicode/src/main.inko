@@ -1,0 +1,16 @@
+# Non-ASCII source before expressions on the same line. The compiler counts
+# columns in grapheme clusters, the protocol in UTF-16 code units.
+import std.stdio (Stdout)
+
+type async Main {
+  fn async main {
+    let out = Stdout.new
+    let a = 'é' + 1.to_string
+    let b = '😀😀' + 2.to_string
+    let c = 'é' + true.to_string
+    let d = '👩‍👩‍👦' + 4.5.to_string
+    let e = '中文' + [3].size.to_string
+
+    out.print(a + b + c + d + e)
+  }
+}
