@@ -2,12 +2,15 @@
 //! (docs/lsp.md).
 //!
 //! Usage: cuttlebone [--stdio | --version]
+#![forbid(unsafe_code)]
 use cuttlebone::check::{VERSION, upstream_version};
 use cuttlebone::lsp;
 use cuttlebone::worker::{self, WORKER_FLAG};
 use lsp_server::Connection;
 use std::process::ExitCode;
 
+// `--version` and usage errors print before any LSP session starts, and a
+// worker's own failure goes to stderr, which the server logs.
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {

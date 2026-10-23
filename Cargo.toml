@@ -34,3 +34,16 @@ debug = "line-tables-only"
 # tests/e2e.rs, so dependencies are optimized even in debug builds.
 [profile.dev.package."*"]
 opt-level = 3
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# Every default clippy lint is an error, so `cargo clippy` fails instead of
+# warning.
+all = { level = "deny", priority = -1 }
+# stdout is the LSP channel (and a worker's answer), so nothing may print to
+# it by accident. stderr is the server's log, written only through
+# lsp::log. Binaries allow these where printing is their job.
+print_stdout = "deny"
+print_stderr = "deny"

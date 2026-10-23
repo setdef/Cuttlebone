@@ -4,6 +4,8 @@
 //! `initialize` runs `inko --version` and `inko print std`, so most tests use
 //! a fake `inko` script that reports the pinned version and the pinned std,
 //! and so don't depend on what's installed.
+// Tests report why a test was skipped on stderr, which `cargo test` shows.
+#![allow(clippy::print_stderr)]
 mod common;
 
 use common::client::{Client, Launch, at, fake_inko, uri};

@@ -2,6 +2,8 @@
 //! through Neovim's own LSP client. Skipped (passing) without `nvim` on
 //! PATH. The VS Code check opens a window, so it only runs from
 //! editors/check.sh.
+// Tests report why the check was skipped on stderr, which `cargo test` shows.
+#![allow(clippy::print_stderr)]
 mod common;
 
 use common::client::fake_inko;

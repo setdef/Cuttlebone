@@ -1,6 +1,10 @@
 //! Prints every expression of an Inko project or file with its type.
 //!
 //! Usage: dump-types [--std DIR] [--no-tests] [--summary] PATH
+#![forbid(unsafe_code)]
+// Printing the expressions (stdout) and errors (stderr) is its job, and it
+// isn't a language server, so stdout isn't a protocol channel here.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 use cuttlebone::check::Target;
 use cuttlebone::dump::{Status, check, format_expr, upstream_std};
 use std::collections::BTreeMap;

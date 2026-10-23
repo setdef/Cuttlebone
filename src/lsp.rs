@@ -720,6 +720,8 @@ fn choose_encoding(params: &lsp::InitializeParams) -> Encoding {
 }
 
 fn project_roots(params: &lsp::InitializeParams) -> Vec<PathBuf> {
+    // `rootUri` and `rootPath` are deprecated, but older clients send only
+    // them.
     #[allow(deprecated)]
     let uris: Vec<Url> = match (
         &params.workspace_folders,
@@ -858,6 +860,7 @@ fn reply_error(connection: &Connection, id: RequestId, code: ErrorCode, message:
     );
 }
 
+// stderr is the server's log (docs/lsp.md), and this is its one writer.
 #[allow(clippy::print_stderr)]
 fn log(message: &str) {
     eprintln!("cuttlebone: {}", message);

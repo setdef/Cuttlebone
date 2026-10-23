@@ -1,6 +1,8 @@
 //! Latency limits, measured from an LSP client's side, and the cost of
 //! running each check in a worker process instead of in the server's own
 //! thread.
+// Tests report the measurements on stderr, which `cargo test` shows.
+#![allow(clippy::print_stderr)]
 mod common;
 
 use common::client::{Client, at};
