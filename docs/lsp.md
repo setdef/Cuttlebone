@@ -312,6 +312,9 @@ Each query runs in a fresh worker process (`cuttlebone --worker`):
   it (`compilerPanic` or `checkCrashed`) and goes on.
 - Every check builds its own compiler state, so nothing carries over from
   one to the next.
+- Each worker also exits by itself (with status 124) once it has run for
+  `checkTimeoutMs` plus 1 s. If the server is killed outright, its workers
+  don't outlive it for longer than that.
 
 On an Apple M1 Max, a worker adds 1 to 10 ms to a 110 to 130 ms check
 (MILESTONE-2.md has the numbers).

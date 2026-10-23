@@ -45,6 +45,7 @@ M = [
  ("completion kinds swapped", "src/lsp.rs", "MemberKind::Field => lsp::CompletionItemKind::FIELD,", "MemberKind::Field => lsp::CompletionItemKind::PROPERTY,", "--test lsp a_session"),
  ("no capability for completion trigger", "src/lsp.rs", 'trigger_characters: Some(vec![".".to_string()]),', "trigger_characters: None,", "--test lsp initialize_advertises"),
  ("full sync advertised", "src/lsp.rs", "change: Some(lsp::TextDocumentSyncKind::INCREMENTAL),", "change: Some(lsp::TextDocumentSyncKind::FULL),", "--test lsp initialize_advertises"),
+ ("no worker deadline", "src/worker.rs", "            std::process::exit(DEADLINE_STATUS);", "            let _ = DEADLINE_STATUS;", "--test lsp a_hung_worker"),
  ("byte_offset ignores CR", "src/query.rs", "    let line = line.strip_suffix('\\r').unwrap_or(line);\n", "", "--test complete byte_offsets"),
 ]
 only = sys.argv[1:]

@@ -8,7 +8,7 @@
 //! starts.
 use crate::position::{Encoding, Position};
 use crate::query::{self, Answer, MemberKind, MembersAt, Session, TypeAt, Unavailable};
-use crate::worker::{Check, Finished, Job, Outcome, Query};
+use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query};
 use crate::{VERSION, upstream_version};
 use crossbeam_channel::{Receiver, Sender, select};
 use lsp_server::{
@@ -507,6 +507,7 @@ impl Server {
                 encoding: self.encoding,
                 contents,
             },
+            deadline: Some(self.options.timeout + DEADLINE_MARGIN),
         })
     }
 

@@ -803,6 +803,51 @@ fn a_hung_check_times_out_is_killed_and_the_server_keeps_going() {
 }
 
 #[test]
+fn a_hung_worker_exits_by_itself_if_the_server_dies() {
+    let root = copy_fixture("members", "fault-orphan");
+    let shapes = root.join("src/shapes.inko");
+    let launch = Launch {
+        env: vec![(
+            FAULT_VARIABLE,
+            "hang:fault-orphan/src/shapes.inko".to_string(),
+        )],
+        cwd: None,
+    };
+    let mut client =
+        Client::initialized_with(launch, &root, json!({ "checkTimeoutMs": 500 }), json!({}));
+
+    client.send_at("textDocument/hover", &shapes, 0, 0);
+    wait_for_a_worker(&client);
+
+    let worker = client.workers()[0];
+
+    // SIGKILL: the server gets no chance to kill its worker.
+    client.child.kill().unwrap();
+    client.child.wait().unwrap();
+
+    // The worker's own deadline is the timeout plus a second.
+    let start = Instant::now();
+
+    while alive(worker) {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the orphaned worker {} is still running",
+            worker
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+#[test]
 fn an_aborting_check_is_unavailable_and_the_server_keeps_going() {
     let root = copy_fixture("members", "fault-abort");
     let main = root.join("src/main.inko");

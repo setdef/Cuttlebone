@@ -16,6 +16,12 @@ use std::time::{Duration, Instant};
 /// The argument that makes `cuttlebone` a worker.
 pub const WORKER_FLAG: &str = "--worker";
 
+/// The exit status of a worker that outlived its job's deadline.
+pub const DEADLINE_STATUS: i32 = 124;
+
+/// How much longer than the server's timeout a worker may live.
+pub const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
+
 /// For testing robustness only: makes a worker hang (`hang`) or abort
 /// (`abort`) instead of checking, when the checked file's path ends with
 /// the text after the `:`, e.g. `hang:src/slow.inko`. No real input is
@@ -35,6 +41,10 @@ pub struct Job {
     pub query: Query,
     pub session: Session,
     pub request: Request,
+    /// How long the worker may live before it exits by itself. The server
+    /// kills a worker that takes too long, but if the server dies first
+    /// (say from SIGKILL), nothing would stop a hung worker.
+    pub deadline: Option<Duration>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,6 +76,13 @@ pub fn serve() -> Result<(), String> {
         .map_err(|e| format!("couldn't read the job: {}", e))?;
 
     let job: Job = serde_json::from_str(&input).map_err(|e| format!("invalid job: {}", e))?;
+
+    if let Some(deadline) = job.deadline {
+        std::thread::spawn(move || {
+            std::thread::sleep(deadline);
+            std::process::exit(DEADLINE_STATUS);
+        });
+    }
 
     inject_fault(&job);
 
