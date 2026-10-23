@@ -189,9 +189,14 @@ pub struct Reference {
 
 /// The type, trait or type parameter a type is declared by, without its
 /// ownership or type arguments: `ref Option[String]` is `Option`. A module
-/// used as a value is the module. Closures, C types and `Never` have no
-/// declaration.
+/// used as a value is the module. Closures, C types, pointers and `Never`
+/// have no declaration: `Pointer[T]` is built into the compiler, and isn't
+/// `T`.
 pub fn type_symbol(db: &Database, typ: TypeRef) -> Option<SymbolId> {
+    if let TypeRef::Pointer(_) = typ {
+        return None;
+    }
+
     let symbol = match typ.as_type_enum(db).ok()? {
         TypeEnum::Type(id) => SymbolId::Type(id),
         TypeEnum::TypeInstance(ins) => SymbolId::Type(ins.instance_of()),
@@ -900,8 +905,10 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// Records the variables a pattern introduces.
-    fn pattern(&mut self, node: &hir::Pattern) {
+    /// Records the variables a pattern introduces, and what it matches
+    /// against. In a `synthetic` pattern (a `for` loop's `Some(value)`),
+    /// only the variables are written in the source.
+    fn pattern(&mut self, node: &hir::Pattern, synthetic: bool) {
         use hir::Pattern as P;
 
         match node {
@@ -921,17 +928,24 @@ impl<'a> Walker<'a> {
                     self.type_node(t);
                 }
             }
-            P::Tuple(n) => n.values.iter().for_each(|p| self.pattern(p)),
+            P::Tuple(n) => n.values.iter().for_each(|p| self.pattern(p, synthetic)),
             P::Constructor(n) => {
-                self.refer(n.name.location, n.constructor_id.map(SymbolId::Constructor));
-                n.values.iter().for_each(|p| self.pattern(p))
+                if !synthetic {
+                    self.refer(n.name.location, n.constructor_id.map(SymbolId::Constructor));
+                }
+
+                n.values.iter().for_each(|p| self.pattern(p, synthetic))
             }
             P::Type(n) => n.values.iter().for_each(|f| {
-                self.refer(f.field.location, f.field_id.map(SymbolId::Field));
-                self.pattern(&f.pattern)
+                if !synthetic {
+                    self.refer(f.field.location, f.field_id.map(SymbolId::Field));
+                }
+
+                self.pattern(&f.pattern, synthetic)
             }),
-            P::Or(n) => n.patterns.iter().for_each(|p| self.pattern(p)),
-            P::Array(n) => n.values.iter().for_each(|p| self.pattern(p)),
+            P::Or(n) => n.patterns.iter().for_each(|p| self.pattern(p, synthetic)),
+            P::Array(n) => n.values.iter().for_each(|p| self.pattern(p, synthetic)),
+            P::Constant(_) if synthetic => {}
             P::Constant(n) => {
                 let symbol = match n.kind {
                     ConstantPatternKind::Constructor(id) => Some(SymbolId::Constructor(id)),
@@ -1133,11 +1147,16 @@ impl<'a> Walker<'a> {
                     .receiver
                     .as_ref()
                     .is_some_and(|r| r.location() == n.location);
+                // `!x` becomes `x == false`, with the `false` at the location
+                // of the whole expression, and so is the `==`'s name.
+                let negation = n.arguments.iter().any(|a| {
+                    matches!(a, hir::Argument::Positional(p) if matches!(&p.value, E::False(f) if f.location == n.location))
+                });
                 let synthetic = synthetic || generated_receiver || same_as_receiver;
 
                 self.stored(n.location, "Call", typ, synthetic);
 
-                if !synthetic {
+                if !synthetic && !negation {
                     let symbol = match n.kind {
                         CallKind::Unknown => self.static_symbol(node),
                         _ => call_symbol(&n.kind),
@@ -1257,7 +1276,7 @@ impl<'a> Walker<'a> {
                     Some(n.resolved_type),
                     synthetic || generated_var,
                 );
-                self.pattern(&n.pattern);
+                self.pattern(&n.pattern, synthetic);
 
                 let value = self.out.len();
 
@@ -1334,7 +1353,7 @@ impl<'a> Walker<'a> {
                 self.expression(&n.expression);
 
                 for case in &n.cases {
-                    self.pattern(&case.pattern);
+                    self.pattern(&case.pattern, synthetic);
 
                     if let Some(g) = &case.guard {
                         self.expression(g);
