@@ -426,9 +426,7 @@ impl Server {
             _ => "cancelled",
         };
 
-        if self.running.as_ref().is_some_and(|(p, _)| matches(p)) {
-            let (pending, check) = self.running.take().unwrap();
-
+        if let Some((pending, check)) = self.running.take_if(|(p, _)| matches(p)) {
             check.kill();
             reply_error(connection, pending.id, code, message);
         }
@@ -512,12 +510,10 @@ impl Server {
     }
 
     fn finish(&mut self, connection: &Connection, done: Finished) {
-        if !self.running.as_ref().is_some_and(|(_, c)| c.id == done.id) {
-            // A check that was killed.
+        // A check that was killed isn't running any more.
+        let Some((pending, check)) = self.running.take_if(|(_, c)| c.id == done.id) else {
             return;
-        }
-
-        let (pending, check) = self.running.take().unwrap();
+        };
 
         if !done.stderr.trim().is_empty() {
             log(&format!(
@@ -533,15 +529,12 @@ impl Server {
     }
 
     fn time_out(&mut self, connection: &Connection) {
-        let Some((_, check)) = &self.running else {
+        let Some((pending, check)) = self
+            .running
+            .take_if(|(_, c)| c.started.elapsed() >= self.options.timeout)
+        else {
             return;
         };
-
-        if check.started.elapsed() < self.options.timeout {
-            return;
-        }
-
-        let (pending, check) = self.running.take().unwrap();
         let elapsed = check.started.elapsed();
 
         check.kill();
