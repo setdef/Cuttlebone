@@ -11,6 +11,7 @@ use cuttlebone::position::{Encoding, Position};
 use cuttlebone::query::{self, Request, Session};
 use cuttlebone::worker::NO_CACHE_VARIABLE;
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -603,4 +604,418 @@ fn a_burst_of_definitions_costs_one_check() {
         elapsed,
         BURST_LIMIT
     );
+}
+
+/// How long a person typing at about 7 characters a second takes between
+/// keystrokes.
+const KEYSTROKE: Duration = Duration::from_millis(143);
+
+/// Text typed into a file, one character per keystroke: `typed` inserted
+/// after `after`, or, with `retype`, the line containing `after` deleted
+/// and typed again.
+struct Typing {
+    name: &'static str,
+    root: PathBuf,
+    file: PathBuf,
+    after: &'static str,
+    typed: &'static str,
+    retype: bool,
+}
+
+fn typings() -> Vec<Typing> {
+    let std = upstream_std();
+    let features = common::fixture("features");
+
+    vec![
+        Typing {
+            name: "std json: a new method",
+            root: std.parent().unwrap().to_path_buf(),
+            file: std.join("std/json.inko"),
+            after: "    Query(Option.Some(self))\n  }\n",
+            typed: "\n  fn pub size_hint -> Int {\n    let text = to_string\n    \
+                    let words = text.split(',').to_array\n    words.size + text.size\n  }\n",
+            retype: false,
+        },
+        Typing {
+            name: "std json: a line in a method",
+            root: std.parent().unwrap().to_path_buf(),
+            file: std.join("std/json.inko"),
+            after: "Generator.new(DEFAULT_PRETTY_INDENT).generate(self)",
+            typed: "",
+            retype: true,
+        },
+        Typing {
+            name: "features: a line in a method",
+            root: features.clone(),
+            file: features.join("src/main.inko"),
+            after: "counter.add(amount: 1, times: count)",
+            typed: "",
+            retype: true,
+        },
+    ]
+}
+
+/// One request of a typing replay, as the client saw it.
+struct Asked {
+    method: &'static str,
+    sent: Instant,
+    /// The time to its response, and whether it was an error (cancelled).
+    answered: Option<(Duration, bool)>,
+}
+
+/// What a typing replay measured.
+#[derive(Default, Debug)]
+struct Typed {
+    requests: usize,
+    cancelled: usize,
+    /// Answers with a result or `null`, and of those, the ones from a check
+    /// run for them (not `cached`), and their time in the worker.
+    answered: usize,
+    checks: usize,
+    check_ms: Vec<f64>,
+    /// Answers whose reason is `noHir`, and of those, the `cached` ones.
+    no_hir: usize,
+    no_hir_cached: usize,
+    /// Every answer's time in the worker.
+    worker_ms: f64,
+    /// The client's time from request to response, for answered requests.
+    latency: Vec<Duration>,
+    /// Query worker processes started.
+    workers: usize,
+    /// How many answers had each method, status, reason and source.
+    kinds: std::collections::BTreeMap<String, usize>,
+    elapsed: Duration,
+}
+
+/// Opens the file, then types into it at `KEYSTROKE`s, as an editor would
+/// ask: after each keystroke, document highlights and the definition at the
+/// cursor, the inlay hints of the 50 lines around it, and completion after
+/// a `.`.
+/// Each edit first cancels the requests the client hasn't had an answer to,
+/// as a client that cancels what an edit made outdated does.
+fn replay_typing(client: &mut Client, typing: &Typing) -> Typed {
+    let text = std::fs::read_to_string(&typing.file).unwrap();
+    let at = text.find(typing.after).unwrap();
+    let (mut offset, typed) = if typing.retype {
+        let start = at + (typing.after.len() - typing.after.trim_start().len());
+
+        (start, typing.after.trim_start().to_string())
+    } else {
+        (at + typing.after.len(), typing.typed.to_string())
+    };
+    let mut now = text.clone();
+    let file = &typing.file;
+    let mut asked: HashMap<i64, Asked> = HashMap::new();
+    let mut statuses: HashMap<i64, serde_json::Value> = HashMap::new();
+    let mut pids: HashSet<u32> = HashSet::new();
+    let mut version = 1;
+    let position = |text: &str, offset: usize| {
+        let before = &text[..offset];
+        let line = before.matches('\n').count() as u32;
+        let character = (offset - before.rfind('\n').map_or(0, |i| i + 1)) as u32;
+
+        (line, character)
+    };
+
+    client.open(file, &text);
+
+    // The last good check, as after opening the file in an editor.
+    let (line, character) = position(&text, offset);
+    let (id, _) = client.hover(file, line, character);
+
+    statuses.extend(client.status(id).map(|s| (id, s.clone())));
+    pids.extend(client.workers());
+
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+
+    if typing.retype {
+        edits.push((offset, offset + typed.len(), String::new()));
+    }
+
+    for (i, c) in typed.char_indices() {
+        edits.push((offset + i, offset + i, c.to_string()));
+    }
+
+    let start = Instant::now();
+    let mut next = start;
+    let receive = |client: &mut Client,
+                   asked: &mut HashMap<i64, Asked>,
+                   statuses: &mut HashMap<i64, serde_json::Value>,
+                   until: Instant| {
+        loop {
+            let left = until.saturating_duration_since(Instant::now());
+            let Ok(message) = client.receive(left) else {
+                return;
+            };
+
+            if message["method"] == "cuttlebone/status" {
+                if let Some(id) = message["params"]["id"].as_i64() {
+                    statuses.insert(id, message["params"].clone());
+                }
+            } else if let Some(id) = message["id"].as_i64()
+                && let Some(a) = asked.get_mut(&id)
+            {
+                a.answered = Some((a.sent.elapsed(), message.get("error").is_some()));
+            }
+
+            if left.is_zero() {
+                return;
+            }
+        }
+    };
+
+    for (from, to, insert) in edits {
+        next += KEYSTROKE;
+        receive(client, &mut asked, &mut statuses, next);
+
+        // Before the cancels, which may stop it.
+        pids.extend(client.workers());
+
+        // The edit makes every request not answered yet outdated.
+        let outdated: Vec<i64> = asked
+            .iter()
+            .filter(|(_, a)| a.answered.is_none())
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in outdated {
+            client.notify("$/cancelRequest", json!({ "id": id }));
+        }
+
+        let (start_line, start_character) = position(&now, from);
+        let (end_line, end_character) = position(&now, to);
+
+        now.replace_range(from..to, &insert);
+        version += 1;
+        client.change(
+            file,
+            version,
+            json!([{
+                "range": {
+                    "start": { "line": start_line, "character": start_character },
+                    "end": { "line": end_line, "character": end_character },
+                },
+                "text": insert,
+            }]),
+        );
+        offset = from + insert.len();
+
+        let (line, character) = position(&now, offset);
+        let mut send = |client: &mut Client, method: &'static str, params: serde_json::Value| {
+            let id = client.send_request(method, params);
+
+            asked.insert(
+                id,
+                Asked {
+                    method,
+                    sent: Instant::now(),
+                    answered: None,
+                },
+            );
+        };
+
+        send(
+            client,
+            "textDocument/documentHighlight",
+            json!({
+                "textDocument": { "uri": common::client::uri(file) },
+                "position": { "line": line, "character": character.saturating_sub(1) },
+            }),
+        );
+        // As a client that looks up the definition where it highlights,
+        // to have it ready.
+        send(
+            client,
+            "textDocument/definition",
+            json!({
+                "textDocument": { "uri": common::client::uri(file) },
+                "position": { "line": line, "character": character.saturating_sub(1) },
+            }),
+        );
+        send(
+            client,
+            "textDocument/inlayHint",
+            json!({
+                "textDocument": { "uri": common::client::uri(file) },
+                "range": {
+                    "start": { "line": line.saturating_sub(25), "character": 0 },
+                    "end": { "line": line + 25, "character": 0 },
+                },
+            }),
+        );
+
+        if insert == "." {
+            send(
+                client,
+                "textDocument/completion",
+                json!({
+                    "textDocument": { "uri": common::client::uri(file) },
+                    "position": { "line": line, "character": character },
+                }),
+            );
+        }
+    }
+
+    // Everything sent gets its answer.
+    let end = Instant::now() + common::client::TIMEOUT;
+
+    while asked.values().any(|a| a.answered.is_none()) && Instant::now() < end {
+        receive(
+            client,
+            &mut asked,
+            &mut statuses,
+            Instant::now() + Duration::from_millis(100),
+        );
+    }
+
+    let elapsed = start.elapsed();
+
+    if std::env::var_os("CUTTLEBONE_TYPING_TIMELINE").is_some() {
+        let mut ids: Vec<&i64> = asked.keys().collect();
+
+        ids.sort();
+
+        for id in ids.iter().take(60) {
+            let a = &asked[id];
+
+            eprintln!(
+                "{} {} sent {:?} answer {:?} {}",
+                id,
+                a.method,
+                a.sent.duration_since(start),
+                a.answered,
+                statuses.get(id).map(|s| s.to_string()).unwrap_or_default()
+            );
+        }
+    }
+
+    pids.extend(client.workers());
+    // It ends with code that type checks.
+    let (line, character) = position(&now, offset.saturating_sub(2));
+    let (id, _) = client.hover(file, line, character);
+
+    assert_eq!(
+        client.status(id).unwrap()["status"],
+        "fresh",
+        "{}: {}",
+        typing.name,
+        client.status(id).unwrap()
+    );
+
+    if typing.retype {
+        assert_eq!(now, text, "{}", typing.name);
+    }
+
+    client.close(file);
+
+    let mut out = Typed {
+        requests: asked.len(),
+        workers: pids.len(),
+        elapsed,
+        ..Typed::default()
+    };
+
+    for (id, a) in &asked {
+        let Some((time, error)) = a.answered else {
+            panic!("{}: no answer to {} {}", typing.name, a.method, id);
+        };
+
+        if error {
+            out.cancelled += 1;
+            continue;
+        }
+
+        let status = statuses.get(id).unwrap();
+        let ms = status["elapsedMs"].as_f64().unwrap();
+
+        *out.kinds
+            .entry(format!(
+                "{} {} {}{}{}",
+                a.method.trim_start_matches("textDocument/"),
+                status["status"].as_str().unwrap(),
+                status["reason"]["code"].as_str().unwrap_or(""),
+                if status.get("repaired").is_some() {
+                    " repaired"
+                } else {
+                    ""
+                },
+                if status.get("cached").is_some() {
+                    " cached"
+                } else {
+                    ""
+                },
+            ))
+            .or_default() += 1;
+
+        out.answered += 1;
+        out.latency.push(time);
+        out.worker_ms += ms;
+
+        if status.get("cached").is_none() && ms > 0.0 {
+            out.checks += 1;
+            out.check_ms.push(ms);
+        }
+
+        if status["reason"]["code"] == "noHir" {
+            out.no_hir += 1;
+            out.no_hir_cached += usize::from(status.get("cached").is_some());
+        }
+    }
+
+    out
+}
+
+fn median_ms(mut values: Vec<f64>) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+
+    values.sort_by(f64::total_cmp);
+    values[values.len() / 2]
+}
+
+/// Measures typing (`replay_typing`) in every `typings`, and prints it.
+/// Set `CUTTLEBONE_TYPING_REPLAY` to run it (it takes about a minute).
+#[test]
+fn typing_replay() {
+    if std::env::var_os("CUTTLEBONE_TYPING_REPLAY").is_none() {
+        return;
+    }
+
+    let _alone = alone();
+
+    for typing in typings() {
+        let mut client = Client::initialized_with(
+            Launch {
+                env: vec![],
+                unset: vec![NO_CACHE_VARIABLE],
+                cwd: None,
+            },
+            &typing.root,
+            json!({ "diagnostics": false, "statusNotifications": true }),
+            json!({}),
+        );
+        let t = replay_typing(&mut client, &typing);
+        let mut latency = t.latency.clone();
+
+        latency.sort();
+        eprintln!(
+            "{}: {} requests in {:.1} s, {} cancelled, {} answered; {} checks (median {:.1} ms), \
+             {:.2} s in the worker; noHir {} ({} cached); latency median {:?}, p90 {:?}; {} workers",
+            typing.name,
+            t.requests,
+            t.elapsed.as_secs_f64(),
+            t.cancelled,
+            t.answered,
+            t.checks,
+            median_ms(t.check_ms.clone()),
+            t.worker_ms / 1000.0,
+            t.no_hir,
+            t.no_hir_cached,
+            median(latency.clone()),
+            latency[latency.len() * 9 / 10],
+            t.workers,
+        );
+        eprintln!("  {:?}", t.kinds);
+    }
 }

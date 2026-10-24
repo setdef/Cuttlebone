@@ -155,7 +155,8 @@ pub struct Answer<T> {
     pub typed: bool,
     /// Whether the check the answer came from (the one `source` names)
     /// was kept from an earlier request (`Cache`), rather than run for
-    /// this one.
+    /// this one. For an answer with no result, whether every check it took
+    /// was.
     #[serde(default)]
     pub cached: bool,
 }
@@ -1406,7 +1407,8 @@ fn pipeline(
             _ => Source::Fresh,
         })
         .collect();
-    // Whether the check each answer came from was kept from before.
+    // Whether the check each answer came from was kept from before, or for
+    // one with none, every check it took.
     let mut cached = vec![kept; questions.len()];
     let wanted: Vec<usize> = (0..questions.len())
         .filter(|i| {
@@ -1430,6 +1432,9 @@ fn pipeline(
                 results[*i] = result;
                 sources[*i] = Source::Repaired;
                 cached[*i] = kept;
+            } else {
+                // Still no answer: a lookup only if this check was one too.
+                cached[*i] &= kept;
             }
         }
     }
@@ -1451,6 +1456,8 @@ fn pipeline(
                     results[*i] = result;
                     sources[*i] = Source::Stale;
                     cached[*i] = kept;
+                } else {
+                    cached[*i] &= kept;
                 }
             }
         }
@@ -1758,6 +1765,13 @@ fn walker_module(checked: &Checked, file: &Path) -> ModuleId {
 /// state: about 33 MB for a file that imports all of std.
 pub const KEPT_CHECKS: usize = 4;
 
+/// How many checks with nothing to answer from a `Cache` keeps, besides
+/// its checks. Each holds only the text it checked and the fingerprint of
+/// what it could have read. Typing in code that doesn't parse makes one for
+/// the documents as they are at each edit, and maybe one for a repaired
+/// copy.
+pub const KEPT_FAILURES: usize = 8;
+
 /// Checks kept to answer later questions about the same text, without
 /// checking again (docs/lsp.md, "Freshness, cost and side effects").
 ///
@@ -1771,6 +1785,10 @@ pub struct Cache {
     capacity: usize,
     /// The least recently used first.
     kept: RefCell<Vec<Kept>>,
+    /// Checks with nothing to answer from (`Kept::state` is `Err`), the
+    /// least recently used first. They hold no compiler state, so they
+    /// don't count against `capacity`, and don't push out checks that do.
+    failed: RefCell<Vec<Kept>>,
     /// For testing only (`stopping_at_errors`): checks of files whose path
     /// ends with this (and of whole projects) stop at the first pass with
     /// an error, as they do after a panic in a later pass.
@@ -1780,8 +1798,10 @@ pub struct Cache {
 struct Kept {
     target: Target,
     fingerprint: Fingerprint,
-    /// Sends questions to the check's thread, or the error in a
-    /// declaration that kept it from typing method bodies.
+    /// Sends questions to the check's thread, or why it has nothing to
+    /// answer from: an error in a declaration that kept it from typing
+    /// method bodies (`declarationErrors`), code that doesn't parse
+    /// (`noHir`), or the compiler's own error (`compilerError`).
     state: Result<Sender<Task>, Unavailable>,
 }
 
@@ -1801,6 +1821,7 @@ impl Cache {
         Cache {
             capacity,
             kept: RefCell::new(Vec::new()),
+            failed: RefCell::new(Vec::new()),
             stopping: None,
         }
     }
@@ -1815,13 +1836,18 @@ impl Cache {
         self
     }
 
-    /// How many checks it holds.
+    /// How many checks it holds that have something to answer from.
     pub fn len(&self) -> usize {
         self.kept.borrow().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.kept.borrow().is_empty()
+        self.kept.borrow().is_empty() && self.failed.borrow().is_empty()
+    }
+
+    /// How many checks it holds with nothing to answer from.
+    pub fn failures(&self) -> usize {
+        self.failed.borrow().len()
     }
 
     /// Runs `f` with a check of `target`: a kept one, if its fingerprint
@@ -1838,18 +1864,21 @@ impl Cache {
         f: impl for<'a> FnOnce(&Checked<'a>) -> R + Send + 'static,
     ) -> (Result<R, Unavailable>, bool) {
         let mut kept = self.kept.borrow_mut();
+        let mut failed = self.failed.borrow_mut();
 
-        if let Some(i) = kept.iter().position(|k| k.target == *target) {
-            let entry = kept.remove(i);
+        for list in [&mut *kept, &mut *failed] {
+            if let Some(i) = list.iter().position(|k| k.target == *target) {
+                let entry = list.remove(i);
 
-            if entry.fingerprint.current() {
-                let result = match &entry.state {
-                    Ok(tasks) => run_task(tasks, f),
-                    Err(reason) => Err(reason.clone()),
-                };
+                if entry.fingerprint.current() {
+                    let result = match &entry.state {
+                        Ok(tasks) => run_task(tasks, f),
+                        Err(reason) => Err(reason.clone()),
+                    };
 
-                kept.push(entry);
-                return (result, true);
+                    list.push(entry);
+                    return (result, true);
+                }
             }
         }
 
@@ -1869,14 +1898,19 @@ impl Cache {
         };
 
         if keep && self.capacity > 0 && fingerprint.settled() {
-            kept.push(Kept {
+            let (list, capacity) = match state {
+                Ok(_) => (&mut *kept, self.capacity),
+                Err(_) => (&mut *failed, KEPT_FAILURES),
+            };
+
+            list.push(Kept {
                 target: target.clone(),
                 fingerprint,
                 state,
             });
 
-            if kept.len() > self.capacity {
-                kept.remove(0);
+            if list.len() > capacity {
+                list.remove(0);
             }
         }
 
@@ -1886,9 +1920,10 @@ impl Cache {
 
 /// Starts a check of `target` on a thread of its own, and waits until it
 /// has typed the HIR. Returns the channel to send it tasks on (or the
-/// declaration error that kept it from typing method bodies), and the
-/// fingerprint of what it read. The thread ends when the channel is
-/// dropped.
+/// reason it has nothing to answer from: a declaration's error kept it from
+/// typing method bodies, nothing parsed, or the compiler's own error), and
+/// the fingerprint of what it read. `Err` if the compiler panicked. The
+/// thread ends when the channel is dropped.
 fn start_check(
     target: Target,
     stop: bool,
@@ -1944,18 +1979,23 @@ fn start_check(
                     other => other,
                 }
             };
+            // A failure that's the same for the same text and files is
+            // kept like a check, with what it could have read, since the
+            // compiler doesn't say which modules it got to. A panic isn't.
             let failure = match checking {
                 Ok(Ok(run)) if run.inspected.is_some() => return,
-                Ok(Ok(_)) => Unavailable::new(
+                Ok(Ok(_)) => Ok(Unavailable::new(
                     "noHir",
                     "the file or a module it imports couldn't be parsed or found, \
                      so nothing was type checked",
-                ),
-                Ok(Err(e)) => Unavailable::new("compilerError", e),
-                Err(_) => Unavailable::new("compilerPanic", panic_message()),
+                )),
+                Ok(Err(e)) => Ok(Unavailable::new("compilerError", e)),
+                Err(_) => Err(Unavailable::new("compilerPanic", panic_message())),
             };
 
-            let _ = ready.send(Err(failure));
+            let _ = ready.send(Err(
+                failure.map(|reason| (reason, Fingerprint::take_all(&target, started)))
+            ));
         });
 
     if let Err(e) = spawned {
@@ -1968,7 +2008,8 @@ fn start_check(
     match typed.recv() {
         Ok(Ok((true, fingerprint))) => Ok((Ok(tasks), fingerprint)),
         Ok(Ok((false, fingerprint))) => Ok((Err(declaration_errors()), fingerprint)),
-        Ok(Err(reason)) => Err(reason),
+        Ok(Err(Ok((reason, fingerprint)))) => Ok((Err(reason), fingerprint)),
+        Ok(Err(Err(reason))) => Err(reason),
         Err(_) => Err(Unavailable::new("compilerPanic", "the compiler panicked")),
     }
 }

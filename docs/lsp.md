@@ -734,7 +734,9 @@ A `fresh` answer from a [repaired copy](#answers-in-code-being-edited)
 has `"repaired": true` too. An answer from a check kept from an earlier
 query about the same text (rather than one run for it) has
 `"cached": true` ([Kept checks](#kept-checks)); its status is otherwise
-the one a new check would give.
+the one a new check would give. So does an `unavailable` answer that took
+no check: every check it took (of the documents as they are, and of a
+repaired copy or the last good version tried after it) was kept.
 
 A client that doesn't know `stale` must treat it, like any status other
 than `fresh`, as having no usable answer. One that does may show a stale
@@ -929,9 +931,10 @@ they are:
 Everywhere else the answer is `null`, with the fresh check's reason.
 
 **Cost.** A repaired copy or an older version is checked like the
-documents as they are, and kept like them ([Kept checks](#kept-checks)), so
-an answer in broken code can take up to three checks the first time, and
-none for the next questions about the same text: on an Apple M1 Max, under `cargo test` (dependencies
+documents as they are, and kept like them ([Kept checks](#kept-checks)),
+and so is a check of the documents that doesn't parse. So an answer in
+broken code can take up to three checks the first time, and none for the
+next questions about the same text, whether they have an answer or not: on an Apple M1 Max, under `cargo test` (dependencies
 optimized), a hover in a std-sized project takes about 135 ms from a
 repaired copy, and 240 ms when neither may answer (tests/latency.rs holds both to 500 ms). A document
 that doesn't parse is found in about a millisecond, before any type
@@ -1055,7 +1058,15 @@ without checking again when everything the query would check is the same:
 
 This covers all three kinds of answer: the documents as they are, a
 repaired copy, and the last good check's version, each of which is a
-check of its own text. Typing in broken code checks a new repaired copy
+check of its own text. It covers checks with nothing to answer from too:
+code that doesn't parse (`noHir`), an error in a declaration that stopped
+the type checker (`declarationErrors`), or the compiler's own error
+(`compilerError`). The same question then gets the same `unavailable`
+answer without checking again. Since a check that doesn't parse doesn't
+say which modules it got to, what it read counts as every source file
+under std, `src/`, `test/` and `dep/` as well as the directories. These
+hold no compiler state, so up to 8 are kept besides the 4 checks, and
+never push one out. A check the compiler panicked in isn't kept. Typing in broken code checks a new repaired copy
 on each edit, but reuses the older version's check. Completion's copy
 (with its placeholder) is used once, and not kept.
 

@@ -397,8 +397,23 @@ impl Fingerprint {
         files: impl IntoIterator<Item = PathBuf>,
         started: SystemTime,
     ) -> Fingerprint {
-        let mut paths: Vec<PathBuf> = files.into_iter().collect();
+        Fingerprint::of(target, files.into_iter().collect(), false, started)
+    }
 
+    /// The fingerprint of a check of `target` that started at `started`
+    /// and failed before it could say which modules it read (one that
+    /// doesn't parse, or the compiler's own error): every source file it
+    /// could have read, as well as what `take` covers.
+    pub fn take_all(target: &Target, started: SystemTime) -> Fingerprint {
+        Fingerprint::of(target, target.file.iter().cloned().collect(), true, started)
+    }
+
+    fn of(
+        target: &Target,
+        mut paths: Vec<PathBuf>,
+        sources: bool,
+        started: SystemTime,
+    ) -> Fingerprint {
         paths.push(target.root.clone());
         paths.push(target.root.join(MANIFEST_FILE));
 
@@ -408,7 +423,7 @@ impl Fingerprint {
             target.root.join("test"),
             target.root.join("dep"),
         ] {
-            directories(&dir, &mut paths);
+            directories(&dir, sources, &mut paths);
         }
 
         paths.sort();
@@ -467,8 +482,9 @@ fn before(changed: SystemTime, started: SystemTime) -> bool {
     changed + margin < started
 }
 
-/// `dir`, every directory under it, and the manifests in them.
-fn directories(dir: &Path, out: &mut Vec<PathBuf>) {
+/// `dir`, every directory under it, and the manifests in them, and with
+/// `sources`, the source files in them too.
+fn directories(dir: &Path, sources: bool, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -479,8 +495,10 @@ fn directories(dir: &Path, out: &mut Vec<PathBuf>) {
         let path = entry.path();
 
         if entry.file_type().is_ok_and(|t| t.is_dir()) {
-            directories(&path, out);
-        } else if path.file_name().is_some_and(|n| n == MANIFEST_FILE) {
+            directories(&path, sources, out);
+        } else if path.file_name().is_some_and(|n| n == MANIFEST_FILE)
+            || (sources && path.extension().is_some_and(|e| e == "inko"))
+        {
             out.push(path);
         }
     }

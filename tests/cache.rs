@@ -535,6 +535,145 @@ fn a_check_that_panicked_is_not_kept() {
     assert!(cache.is_empty());
 }
 
+/// `MAIN` with a call in `other` left open, so it doesn't parse. Neither
+/// a repaired copy nor `MAIN`'s check answers on that line.
+fn unparsed() -> String {
+    MAIN.replace("    lib.size\n", "    lib.size(\n")
+}
+
+/// `ask`, without a repaired copy: only the documents as they are.
+fn ask_as_they_are(cache: &Cache, session: &Session, file: &Path, text: &str) -> Answer<Reply> {
+    ask_with(
+        cache,
+        session,
+        file,
+        text,
+        None,
+        false,
+        Question::Type,
+        "first",
+        0,
+    )
+}
+
+/// Code that doesn't parse has nothing to answer from, and a second
+/// question about the same text is a lookup too, with the same answer as
+/// a new check.
+#[test]
+fn a_check_with_nothing_to_answer_from_is_kept() {
+    let (root, session) = lib_project("unparsed");
+    let main = root.join("src/main.inko");
+    let text = unparsed();
+    let cache = Cache::new(4);
+    let new = ask_as_they_are(&Cache::new(0), &session, &main, &text);
+
+    assert_eq!(new.result.as_ref().unwrap_err().code, "noHir");
+
+    for cached in [false, true] {
+        let answer = ask_as_they_are(&cache, &session, &main, &text);
+
+        assert_eq!(answer.result, new.result);
+        assert_eq!(answer.cached, cached);
+    }
+
+    assert_eq!((cache.len(), cache.failures()), (0, 1));
+}
+
+/// A check that didn't parse doesn't say which modules it read, so every
+/// source file it could have read counts: a module fixed on disk is
+/// checked again.
+#[test]
+fn a_module_fixed_on_disk_is_never_answered_from_a_kept_failure() {
+    let (root, session) = project(
+        "fixed-on-disk",
+        &[
+            ("src/main.inko", MAIN),
+            ("src/lib.inko", "fn pub size -> Int {\n"),
+        ],
+    );
+    let main = root.join("src/main.inko");
+    let cache = Cache::new(4);
+    let answer = ask(&cache, &session, &main, MAIN, Question::Type, "first", 0);
+
+    assert_eq!(answer.result.unwrap_err().code, "noHir");
+    assert!(ask(&cache, &session, &main, MAIN, Question::Type, "first", 0).cached);
+
+    // Rewritten in place, which leaves its directory as it was.
+    std::fs::write(root.join("src/lib.inko"), LIB).unwrap();
+
+    let answer = ask(&cache, &session, &main, MAIN, Question::Type, "first", 0);
+
+    assert_eq!(hover_type(&answer), "Int");
+    assert!(!answer.cached);
+}
+
+/// Failures hold no compiler state, so they're kept apart, up to
+/// `KEPT_FAILURES`, and never push out a check that has some.
+#[test]
+fn failures_dont_push_out_checks() {
+    let (root, session) = lib_project("failures");
+    let main = root.join("src/main.inko");
+    let cache = Cache::new(1);
+
+    ask(&cache, &session, &main, MAIN, Question::Type, "first", 0);
+
+    for i in 0..query::KEPT_FAILURES + 2 {
+        let text = unparsed().replace("+ 1", &format!("+ {}", i));
+
+        ask_as_they_are(&cache, &session, &main, &text);
+    }
+
+    assert_eq!(cache.failures(), query::KEPT_FAILURES);
+    assert!(ask(&cache, &session, &main, MAIN, Question::Type, "first", 0).cached);
+}
+
+/// An answer with no result is `cached` only if every check it took was
+/// kept: the documents as they are, and then a repaired copy, or the last
+/// good check. Here a check of other text pushes out the second between
+/// the questions, so it's checked again.
+#[test]
+fn an_answer_with_no_result_is_cached_only_if_no_check_ran_for_it() {
+    let (root, session) = lib_project("no-result");
+    let main = root.join("src/main.inko");
+    let text = unparsed();
+    let fallback = Fallback {
+        contents: HashMap::from([(main.clone(), MAIN.to_string())]),
+        changes: HashMap::from([(main.clone(), Changes::between(MAIN, &text))]),
+    };
+
+    // A repaired copy (the open call's line blank), or the last good check.
+    for (fallback, repair) in [(None, true), (Some(&fallback), false)] {
+        let cache = Cache::new(1);
+        let asked = || {
+            ask_with(
+                &cache,
+                &session,
+                &main,
+                &text,
+                fallback,
+                repair,
+                Question::Type,
+                "lib.size(",
+                4,
+            )
+        };
+        let first = asked();
+
+        assert_eq!(first.result.unwrap_err().code, "noHir");
+        assert!(!first.cached);
+        assert!(asked().cached);
+
+        let other = MAIN.replace("+ 1", "+ 2");
+
+        ask(&cache, &session, &main, &other, Question::Type, "first", 0);
+
+        let again = asked();
+
+        assert_eq!(again.result.unwrap_err().code, "noHir");
+        assert!(!again.cached, "repair: {}", repair);
+    }
+}
+
 // Over LSP.
 
 /// A server whose worker keeps checks, even when every test runs without
