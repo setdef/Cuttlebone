@@ -787,6 +787,7 @@ fn a_hung_check_times_out_is_killed_and_the_server_keeps_going() {
             FAULT_VARIABLE,
             "hang:fault-hang/src/shapes.inko".to_string(),
         )],
+        unset: vec![],
         cwd: None,
     };
     let mut client = Client::initialized_with(
@@ -831,6 +832,7 @@ fn a_hung_worker_exits_by_itself_if_the_server_dies() {
             FAULT_VARIABLE,
             "hang:fault-orphan/src/shapes.inko".to_string(),
         )],
+        unset: vec![],
         cwd: None,
     };
     let mut client = Client::initialized_with(
@@ -885,6 +887,7 @@ fn an_aborting_check_is_unavailable_and_the_server_keeps_going() {
             FAULT_VARIABLE,
             "abort:fault-abort/src/shapes.inko".to_string(),
         )],
+        unset: vec![],
         cwd: None,
     };
     let mut client = Client::initialized_with(launch, &root, status_options(), json!({}));
@@ -925,6 +928,7 @@ fn cancelling_a_running_check_kills_it() {
             FAULT_VARIABLE,
             "hang:fault-cancel/src/shapes.inko".to_string(),
         )],
+        unset: vec![],
         cwd: None,
     };
     let mut client =
@@ -955,6 +959,7 @@ fn cancelling_a_queued_request_answers_it_without_a_check() {
             FAULT_VARIABLE,
             "hang:fault-cancel-queued/src/shapes.inko".to_string(),
         )],
+        unset: vec![],
         cwd: None,
     };
     let mut client = Client::initialized_with(
@@ -992,6 +997,7 @@ fn an_edit_cancels_a_running_check_on_that_document() {
             FAULT_VARIABLE,
             "hang:fault-edit/src/shapes.inko".to_string(),
         )],
+        unset: vec![],
         cwd: None,
     };
     let mut client =
@@ -1117,6 +1123,7 @@ fn queries_never_sync_dependencies_or_touch_the_data_directory() {
             ("HOME", home.display().to_string()),
             ("XDG_DATA_HOME", home.join("data").display().to_string()),
         ],
+        unset: vec![],
         cwd: Some(root.clone()),
     };
     let mut client = Client::initialized_with(launch, &root, status_options(), json!({}));
@@ -1198,6 +1205,7 @@ fn shutdown_kills_a_running_check() {
             FAULT_VARIABLE,
             "hang:fault-shutdown/src/shapes.inko".to_string(),
         )],
+        unset: vec![],
         cwd: None,
     };
     let mut client =

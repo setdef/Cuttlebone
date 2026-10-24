@@ -537,14 +537,26 @@ fn a_check_that_panicked_is_not_kept() {
 
 // Over LSP.
 
+/// A server whose worker keeps checks, even when every test runs without
+/// them (`CUTTLEBONE_NO_CACHE`): these tests are about kept checks.
+fn with_kept_checks(root: &Path) -> Client {
+    Client::initialized_with(
+        Launch {
+            env: vec![],
+            unset: vec![NO_CACHE_VARIABLE],
+            cwd: None,
+        },
+        root,
+        json!({ "statusNotifications": true, "diagnostics": false }),
+        json!({}),
+    )
+}
+
 #[test]
 fn kept_answers_are_marked_cached_over_lsp() {
     let (root, _) = lib_project("lsp");
     let main = root.join("src/main.inko");
-    let mut client = Client::initialized(
-        &root,
-        json!({ "statusNotifications": true, "diagnostics": false }),
-    );
+    let mut client = with_kept_checks(&root);
     let (line, character) = at(MAIN, "first", 0, false);
 
     client.open(&main, MAIN);
@@ -568,10 +580,7 @@ fn kept_answers_are_marked_cached_over_lsp() {
 fn a_file_changed_outside_the_editor_is_never_answered_from_a_kept_check_over_lsp() {
     let (root, _) = lib_project("lsp-disk");
     let main = root.join("src/main.inko");
-    let mut client = Client::initialized(
-        &root,
-        json!({ "statusNotifications": true, "diagnostics": false }),
-    );
+    let mut client = with_kept_checks(&root);
     let (line, character) = at(MAIN, "first", 0, false);
 
     client.open(&main, MAIN);
@@ -604,6 +613,7 @@ fn the_tests_can_turn_kept_checks_off() {
     let mut client = Client::initialized_with(
         Launch {
             env: vec![(NO_CACHE_VARIABLE, "1".to_string())],
+            unset: vec![],
             cwd: None,
         },
         &root,
@@ -643,10 +653,7 @@ fn shutdown_stops_the_waiting_worker() {
 fn a_waiting_worker_that_died_is_replaced() {
     let (root, _) = lib_project("lsp-died");
     let main = root.join("src/main.inko");
-    let mut client = Client::initialized(
-        &root,
-        json!({ "statusNotifications": true, "diagnostics": false }),
-    );
+    let mut client = with_kept_checks(&root);
     let (line, character) = at(MAIN, "first", 0, false);
 
     client.open(&main, MAIN);

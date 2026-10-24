@@ -27,6 +27,8 @@ pub struct Client {
 #[derive(Default)]
 pub struct Launch<'a> {
     pub env: Vec<(&'a str, String)>,
+    /// Variables the server mustn't inherit from the tests' environment.
+    pub unset: Vec<&'a str>,
     pub cwd: Option<PathBuf>,
 }
 
@@ -45,6 +47,10 @@ impl Client {
 
         for (k, v) in &launch.env {
             command.env(k, v);
+        }
+
+        for k in &launch.unset {
+            command.env_remove(k);
         }
 
         if let Some(dir) = &launch.cwd {

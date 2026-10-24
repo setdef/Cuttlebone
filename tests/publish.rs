@@ -306,6 +306,7 @@ fn diagnostics_wait_for_their_debounce() {
 fn fault(kind: &str, root: &Path) -> Launch<'static> {
     Launch {
         env: vec![("CUTTLEBONE_FAULT", format!("{}:{}", kind, root.display()))],
+        unset: vec![],
         cwd: None,
     }
 }
@@ -513,6 +514,7 @@ fn diagnostics_wait_for_running_queries() {
     let text = std::fs::read_to_string(&helper).unwrap();
     let launch = Launch {
         env: vec![("CUTTLEBONE_FAULT", "hang:bodies/src/main.inko".to_string())],
+        unset: vec![],
         cwd: None,
     };
     let mut client = Client::initialized_with(

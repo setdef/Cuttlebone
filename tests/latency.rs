@@ -52,6 +52,7 @@ fn uncached(root: &Path, options: serde_json::Value) -> Client {
     Client::initialized_with(
         Launch {
             env: vec![(NO_CACHE_VARIABLE, "1".to_string())],
+            unset: vec![],
             cwd: None,
         },
         root,
@@ -541,9 +542,16 @@ fn a_burst_of_definitions_costs_one_check() {
     let _alone = alone();
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
-    let mut client = Client::initialized(
+    // Kept checks, even when every test runs without them.
+    let mut client = Client::initialized_with(
+        Launch {
+            env: vec![],
+            unset: vec![NO_CACHE_VARIABLE],
+            cwd: None,
+        },
         &root,
         json!({ "diagnostics": false, "statusNotifications": true }),
+        json!({}),
     );
     let positions = name_starts(&text);
 
