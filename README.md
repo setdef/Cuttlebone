@@ -61,7 +61,8 @@ code. `.cargo/config.toml` assumes Homebrew's `llvm@18`. Set
   which nodes desugaring introduced, cross-checks of the types it
   reconstructs, and every name that refers to or declares a symbol, by the
   compiler's ids.
-- `src/query.rs`: the type at a position, the members after a `.`
+- `src/query.rs`: the checks kept for later questions about the same text,
+  the type at a position, the members after a `.`
   (inserting a placeholder for completion), declarations and references,
   and catching compiler panics.
 - `src/position.rs`: converting between the compiler's positions (1-based,
@@ -73,7 +74,8 @@ code. `.cargo/config.toml` assumes Homebrew's `llvm@18`. Set
   of each file's last good check.
 - `src/units.rs`: which units (methods and other items) of a check of
   older text still mean what they did, for answers in code being edited.
-- `src/worker.rs`: running one query in a child process.
+- `src/worker.rs`: running queries in a child process, which keeps its
+  checks between them.
 - `src/lsp.rs`: the LSP front end: documents, the queue, timeouts,
   cancellation and debouncing, and diagnostics' own queue.
 - `src/dump.rs`: helpers for dump-types and the tests only.
@@ -111,13 +113,14 @@ also fast enough for the latency limits.
 | `tests/highlight.rs` | document highlights over LSP in both encodings: bindings and assignments as writes, fields, same-named symbols, methods, types, closure arguments, `null`, broken code |
 | `tests/signature.rs` | signature help over LSP in both encodings: positional and named arguments (in any order), nested calls, type arguments, unclosed argument lists while typing, `null` outside parentheses, for operators and unresolved methods |
 | `tests/inlay.rs` | inlay hints over LSP in both encodings: every rule for type and parameter hints, and the requested range |
-| `tests/latency.rs` | latency limits for every query, alone and while a diagnostics check of the same project runs, and the cost of a worker process |
+| `tests/latency.rs` | latency limits for every query (each a check of its own), alone and while a diagnostics check of the same project runs, a burst of 1,000 definitions (one check), and the cost of a worker process |
 | `tests/golden.rs` | `dump-types` output for a few std modules and fixtures, compared with `tests/golden/*.txt`. Run `UPDATE_GOLDEN=1 cargo test` to rewrite them. |
 | `tests/editors.rs` | the Neovim smoke check (below) under `cargo test`, if `nvim` is on `PATH` |
 | `tests/guardrails.rs` | the layering of src/, no editor named in code, nothing named after Inko, no machine-specific paths, and patches/README.md accounting for every patch line |
 | `tests/repaired.rs` | fresh answers in code that doesn't parse, from a repaired copy, over LSP: the rest of the file, completion, before the edit in the method being edited, a placeholder type the blank lines could fill in, a changed declaration, and references never |
 | `tests/stale.rs` | answers from the last good check over LSP (with repaired copies off, a fault only tests have): which requests give them (and which never do), positions and ranges mapped through edits in both encodings, a changed declaration, diagnostics checks and unsaved text when opened, hints in the method being edited |
 | `tests/replay.rs` | the edit-replay corpus, the oracle for code being edited: real files edited as people do, every query asked at many positions after each edit, and each answer compared with the fresh one at the end. Fails on any wrong answer, or less coverage than measured. `-- --nocapture` prints the tables |
+| `tests/cache.rs` | checks kept between questions: questions about the same text share one, with the same answers (fresh, repaired and stale); an edit, a file changed, created or deleted on disk (also outside the editor, over LSP) is never answered from one; what may have changed during a check isn't kept; the bound and least recently used order; completion's copies and panicked checks not kept; `cached` in the status; the worker replaced when it dies, stopped at `shutdown` |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |
 
 `scripts/mutate.py` breaks behaviours and rules on purpose, one at a time,

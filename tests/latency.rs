@@ -5,10 +5,11 @@
 #![allow(clippy::print_stderr)]
 mod common;
 
-use common::client::{Client, at};
+use common::client::{Client, Launch, at};
 use cuttlebone::dump::upstream_std;
 use cuttlebone::position::{Encoding, Position};
 use cuttlebone::query::{self, Request, Session};
+use cuttlebone::worker::NO_CACHE_VARIABLE;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -33,6 +34,22 @@ static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 static QUERIES_ONLY: std::sync::LazyLock<serde_json::Value> =
     std::sync::LazyLock::new(|| json!({ "diagnostics": false }));
+
+/// A server whose worker keeps no checks, so that asking the same question
+/// several times measures a check each time: after an edit, a query's
+/// text is always new. `a_burst_of_definitions_costs_one_check` measures
+/// what the kept checks save.
+fn uncached(root: &Path, options: serde_json::Value) -> Client {
+    Client::initialized_with(
+        Launch {
+            env: vec![(NO_CACHE_VARIABLE, "1".to_string())],
+            cwd: None,
+        },
+        root,
+        options,
+        json!({}),
+    )
+}
 
 fn median(mut times: Vec<Duration>) -> Duration {
     times.sort();
@@ -100,7 +117,7 @@ fn hover_times(client: &mut Client, file: &Path, line: u32, character: u32) -> V
 fn hover_on_a_std_sized_project_is_fast_enough() {
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
-    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
+    let mut client = uncached(&root, QUERIES_ONLY.clone());
     let (line, character) = at(&text, "[1, 2].size", 7, false);
     let times = hover_times(&mut client, &file, line, character);
     let median = median(times.clone());
@@ -118,7 +135,7 @@ fn hover_in_the_largest_std_module_is_fast_enough() {
     let std = upstream_std();
     let file = std.join("std/net/http/server.inko");
     let text = std::fs::read_to_string(&file).unwrap();
-    let mut client = Client::initialized(std.parent().unwrap(), QUERIES_ONLY.clone());
+    let mut client = uncached(std.parent().unwrap(), QUERIES_ONLY.clone());
     let (line, character) = at(&text, "LimitReader.new(file, limit: range.size)", 30, false);
     let times = hover_times(&mut client, &file, line, character);
     let median = median(times.clone());
@@ -134,7 +151,7 @@ fn hover_in_the_largest_std_module_is_fast_enough() {
 fn completion_on_a_std_sized_project_is_fast_enough() {
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
-    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
+    let mut client = uncached(&root, QUERIES_ONLY.clone());
     let (line, character) = at(&text, "[1, 2].size", 7, false);
     let times: Vec<_> = (0..RUNS)
         .map(|_| {
@@ -182,7 +199,7 @@ fn a_worker_process_costs_little_more_than_checking_in_the_servers_thread() {
         .collect();
 
     // Through the server, with a worker per check.
-    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
+    let mut client = uncached(&root, QUERIES_ONLY.clone());
     let lsp = hover_times(&mut client, &file, line, character);
 
     // A worker that does no type checking: what starting a process costs.
@@ -265,7 +282,7 @@ fn assists(file: &Path, text: &str) -> Vec<(&'static str, serde_json::Value)> {
 fn highlights_signatures_and_inlay_hints_on_a_std_sized_project_are_fast_enough() {
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
-    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
+    let mut client = uncached(&root, QUERIES_ONLY.clone());
 
     for (method, params) in assists(&file, &text) {
         let times = request_times(&mut client, method, params);
@@ -297,7 +314,7 @@ fn position(file: &Path, line: u32, character: u32) -> serde_json::Value {
 fn definition_and_type_definition_on_a_std_sized_project_are_fast_enough() {
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
-    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
+    let mut client = uncached(&root, QUERIES_ONLY.clone());
     let (line, character) = at(&text, "[1, 2].size", 7, false);
 
     for method in ["textDocument/definition", "textDocument/typeDefinition"] {
@@ -325,7 +342,7 @@ fn references_across_std_are_fast_enough() {
     let std = upstream_std();
     let file = std.join("std/net/http/server.inko");
     let text = std::fs::read_to_string(&file).unwrap();
-    let mut client = Client::initialized(std.parent().unwrap(), QUERIES_ONLY.clone());
+    let mut client = uncached(std.parent().unwrap(), QUERIES_ONLY.clone());
     let (line, character) = at(&text, "LimitReader.new(file, limit: range.size)", 0, false);
     let times = request_times(
         &mut client,
@@ -349,7 +366,7 @@ fn queries_stay_fast_while_diagnostics_are_checked() {
     let _exclusive = EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner());
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
-    let mut client = Client::initialized(
+    let mut client = uncached(
         &root,
         json!({ "diagnosticsDebounceMs": 0, "debounceMs": 0, "statusNotifications": true }),
     );
@@ -424,7 +441,7 @@ fn queries_stay_fast_while_diagnostics_are_checked() {
 fn answers_in_code_being_edited_are_fast_enough() {
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
-    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
+    let mut client = uncached(&root, QUERIES_ONLY.clone());
 
     client.open(&file, &text);
 
@@ -459,4 +476,95 @@ fn answers_in_code_being_edited_are_fast_enough() {
         );
         assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
     }
+}
+
+/// How long a burst of `BURST` definition requests about unchanged text
+/// may take, from the first request sent to the last answer, on the
+/// std-sized project: one check (about 0.1 s), and a lookup for each.
+const BURST_LIMIT: Duration = Duration::from_secs(3);
+
+const BURST: usize = 1000;
+
+/// Every position where a name starts in `text`.
+fn name_starts(text: &str) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+
+    for (line, l) in text.lines().enumerate() {
+        let mut previous = ' ';
+
+        for (character, c) in l.char_indices() {
+            if (c.is_alphanumeric() || c == '_') && !(previous.is_alphanumeric() || previous == '_')
+            {
+                out.push((line as u32, character as u32));
+            }
+
+            previous = c;
+        }
+    }
+
+    out
+}
+
+/// A client asking about every occurrence of a name in a search, as a
+/// client's find-usages may: many requests at once, about text that
+/// doesn't change. They cost one check, and a lookup each in what it
+/// kept.
+#[test]
+fn a_burst_of_definitions_costs_one_check() {
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let mut client = Client::initialized(
+        &root,
+        json!({ "diagnostics": false, "statusNotifications": true }),
+    );
+    let positions = name_starts(&text);
+
+    client.open(&file, &text);
+
+    let start = Instant::now();
+    let ids: Vec<i64> = positions
+        .iter()
+        .cycle()
+        .take(BURST)
+        .map(|(line, character)| {
+            client.send_request(
+                "textDocument/definition",
+                position(&file, *line, *character),
+            )
+        })
+        .collect();
+    let mut found = 0;
+
+    for id in &ids {
+        let response = client.response(*id);
+
+        assert!(response.get("error").is_none(), "{}", response);
+        found += usize::from(response["result"].is_object());
+    }
+
+    let elapsed = start.elapsed();
+    let checks = ids
+        .iter()
+        .filter(|id| {
+            let status = client.status(**id).unwrap();
+
+            assert_eq!(status["status"], "fresh", "{}", status);
+            status.get("cached").is_none()
+        })
+        .count();
+
+    eprintln!(
+        "{} definitions at once on a std-sized project: {:?}, {} with a check, {} with a location",
+        BURST, elapsed, checks, found
+    );
+    assert_eq!(checks, 1);
+    // The import's modules (`import` itself and the aliases' declarations
+    // have none), and the names in `main`.
+    assert!(found > BURST / 3, "{}", found);
+    assert!(
+        elapsed < BURST_LIMIT,
+        "{:?} exceeds {:?}",
+        elapsed,
+        BURST_LIMIT
+    );
 }

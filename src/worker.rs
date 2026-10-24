@@ -1,21 +1,26 @@
-//! Runs one query in a child process, so the server can time it out and
-//! kill it, and so an abort or a crash in the compiler can't take the server
-//! down.
+//! Runs queries in a child process, so the server can time them out and
+//! kill them, and so an abort or a crash in the compiler can't take the
+//! server down.
 //!
-//! The server starts `cuttlebone --worker` for each check, writes a `Job` as
-//! JSON to its stdin and closes it. The worker writes an `Outcome` as JSON to
-//! stdout and exits. Anything on its stderr (such as a panic's message) is
-//! passed on to the server's stderr.
+//! The server starts `cuttlebone --worker`, and writes each `Job` to its
+//! stdin as a line of JSON. The worker answers each with a line on stdout:
+//! the job's id, a space, and the `Outcome` as JSON. It keeps checks
+//! between jobs (`query::Cache`), so questions about the same text cost one
+//! check, and exits when its stdin closes. The server sends a worker one job
+//! at a time, and kills it to stop a job. Anything on its stderr (such as a
+//! panic's message) is passed on to the server's stderr.
 use crate::edits::Fallback;
 use crate::position::Position;
 use crate::query::{
-    self, Answer, Diagnostics, Highlight, Hint, MembersAt, Place, Question, Reply, Request,
+    self, Answer, Cache, Diagnostics, Highlight, Hint, MembersAt, Place, Question, Reply, Request,
     Session, Signature, TypeAt, Unavailable,
 };
-use crossbeam_channel::Sender;
+use crossbeam_channel::{RecvTimeoutError, Sender};
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The argument that makes `cuttlebone` a worker.
@@ -24,7 +29,7 @@ pub const WORKER_FLAG: &str = "--worker";
 /// The exit status of a worker that outlived its job's deadline.
 pub const DEADLINE_STATUS: i32 = 124;
 
-/// How much longer than the server's timeout a worker may live.
+/// How much longer than the server's timeout a worker may spend on a job.
 pub const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
 
 /// For testing robustness only: makes a worker hang (`hang`) or abort
@@ -36,6 +41,23 @@ pub const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
 /// the `fault-injection` feature, which only the tests enable.
 #[cfg(feature = "fault-injection")]
 pub const FAULT_VARIABLE: &str = "CUTTLEBONE_FAULT";
+
+/// For testing only: with this set (to anything), workers keep no checks
+/// between jobs, so every question costs a check of its own, as before
+/// `query::Cache`. The tests run in both modes to show that the answers
+/// are the same. Only in builds with the `fault-injection` feature.
+#[cfg(feature = "fault-injection")]
+pub const NO_CACHE_VARIABLE: &str = "CUTTLEBONE_NO_CACHE";
+
+/// How many checks a worker keeps.
+pub fn kept_checks() -> usize {
+    #[cfg(feature = "fault-injection")]
+    if std::env::var_os(NO_CACHE_VARIABLE).is_some() {
+        return 0;
+    }
+
+    query::KEPT_CHECKS
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Query {
@@ -68,9 +90,10 @@ pub struct Job {
     /// answers from older results.
     #[serde(default)]
     pub fallback: Option<Fallback>,
-    /// How long the worker may live before it exits by itself. The server
-    /// kills a worker that takes too long, but if the server dies first
-    /// (say from SIGKILL), nothing would stop a hung worker.
+    /// How long the worker may spend on the job before it exits by
+    /// itself. The server kills a worker that takes too long, but if the
+    /// server dies first (say from SIGKILL), nothing would stop a hung
+    /// worker.
     pub deadline: Option<Duration>,
 }
 
@@ -90,8 +113,8 @@ pub enum Outcome {
 }
 
 impl Job {
-    /// Runs the job in this process.
-    pub fn run(&self) -> Outcome {
+    /// Runs the job in this process, with the checks `cache` kept.
+    pub fn run(&self, cache: &Cache) -> Outcome {
         let question = match self.query {
             Query::Type => Question::Type,
             Query::Complete => Question::Complete,
@@ -114,6 +137,7 @@ impl Job {
         #[cfg(not(feature = "fault-injection"))]
         let repair = true;
         let answer = query::ask_with(
+            cache,
             &self.session,
             &self.request,
             self.fallback.as_ref(),
@@ -176,34 +200,65 @@ impl Outcome {
     }
 }
 
-/// The worker's `main`: reads a job from stdin, and writes its outcome to
-/// stdout.
+/// The worker's `main`: answers each job read from stdin, a line of JSON,
+/// with a line on stdout, until stdin closes.
 pub fn serve() -> Result<(), String> {
-    let mut input = String::new();
-
-    std::io::stdin()
-        .read_to_string(&mut input)
-        .map_err(|e| format!("couldn't read the job: {}", e))?;
-
-    let job: Job = serde_json::from_str(&input).map_err(|e| format!("invalid job: {}", e))?;
-
-    if let Some(deadline) = job.deadline {
-        std::thread::spawn(move || {
-            std::thread::sleep(deadline);
-            std::process::exit(DEADLINE_STATUS);
-        });
-    }
-
-    #[cfg(feature = "fault-injection")]
-    inject_fault(&job);
-
-    let outcome = serde_json::to_string(&job.run()).unwrap();
+    let cache = Cache::new(kept_checks());
+    let deadlines = watchdog();
     let mut stdout = std::io::stdout().lock();
 
-    stdout
-        .write_all(outcome.as_bytes())
-        .and_then(|_| stdout.flush())
-        .map_err(|e| format!("couldn't write the outcome: {}", e))
+    for line in std::io::stdin().lock().lines() {
+        let line = line.map_err(|e| format!("couldn't read a job: {}", e))?;
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let (id, job) = line
+            .split_once(' ')
+            .ok_or_else(|| "a job without an id".to_string())?;
+        let job: Job = serde_json::from_str(job).map_err(|e| format!("invalid job: {}", e))?;
+        let _ = deadlines.send(job.deadline.map(|d| Instant::now() + d));
+
+        #[cfg(feature = "fault-injection")]
+        inject_fault(&job);
+
+        let outcome = serde_json::to_string(&job.run(&cache)).unwrap();
+
+        stdout
+            .write_all(format!("{} {}\n", id, outcome).as_bytes())
+            .and_then(|_| stdout.flush())
+            .map_err(|e| format!("couldn't write the outcome: {}", e))?;
+
+        let _ = deadlines.send(None);
+    }
+
+    Ok(())
+}
+
+/// A thread that exits the process with `DEADLINE_STATUS` if a job is
+/// still running at the deadline last sent to it (`None` once it's done).
+fn watchdog() -> Sender<Option<Instant>> {
+    let (deadlines, receiver) = crossbeam_channel::unbounded::<Option<Instant>>();
+
+    std::thread::spawn(move || {
+        let mut deadline: Option<Instant> = None;
+
+        loop {
+            let next = match deadline {
+                Some(at) => receiver.recv_timeout(at.saturating_duration_since(Instant::now())),
+                None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+
+            match next {
+                Ok(at) => deadline = at,
+                Err(RecvTimeoutError::Timeout) => std::process::exit(DEADLINE_STATUS),
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    });
+
+    deadlines
 }
 
 /// The fault `CUTTLEBONE_FAULT` asks for, if its suffix matches the job's
@@ -235,26 +290,41 @@ fn inject_fault(job: &Job) {
     }
 }
 
-/// A check running in a worker process.
+/// A worker process, which answers jobs one at a time and keeps checks
+/// between them.
+pub struct Worker {
+    child: Child,
+    /// `None` once closed, for a worker that answers one job.
+    stdin: Option<ChildStdin>,
+    /// The id of the job it was last sent, for the `Finished` it sends.
+    current: Arc<AtomicU64>,
+    /// Whether its output is still open.
+    alive: Arc<AtomicBool>,
+    /// What it wrote to stderr since the last answer.
+    stderr: Arc<Mutex<String>>,
+}
+
+/// A job running in a worker.
 pub struct Check {
     /// Identifies the `Finished` message this check sends.
     pub id: u64,
     pub started: Instant,
-    child: Child,
+    worker: Worker,
 }
 
-/// What a worker printed, sent when its stdout closes.
+/// A line a worker printed, or the end of its output, with what it wrote
+/// to stderr since its last answer.
 pub struct Finished {
     pub id: u64,
     pub stdout: String,
     pub stderr: String,
 }
 
-impl Check {
-    /// Starts `job` in a new worker process. A thread writes the job and
-    /// reads the output, and sends `Finished` to `done` when the worker's
-    /// output ends (because it exited, or was killed).
-    pub fn start(id: u64, job: &Job, done: Sender<Finished>) -> Result<Check, Unavailable> {
+impl Worker {
+    /// Starts a worker process. A thread reads its answers, and sends each
+    /// to `done` as a `Finished`, and one more when its output ends
+    /// (because it exited, or was killed).
+    pub fn start(done: Sender<Finished>) -> Result<Worker, Unavailable> {
         let exe = std::env::current_exe().map_err(|e| {
             Unavailable::new("checkFailed", format!("couldn't find cuttlebone: {}", e))
         })?;
@@ -267,67 +337,166 @@ impl Check {
             .map_err(|e| {
                 Unavailable::new("checkFailed", format!("couldn't start a worker: {}", e))
             })?;
-        let input = serde_json::to_string(job).unwrap();
-        let mut stdin = child.stdin.take().unwrap();
-        let mut stdout = child.stdout.take().unwrap();
-        let mut stderr = child.stderr.take().unwrap();
+        let stdin = child.stdin.take();
+        let stdout = child.stdout.take().unwrap();
+        let mut errors = child.stderr.take().unwrap();
+        let current = Arc::new(AtomicU64::new(0));
+        let alive = Arc::new(AtomicBool::new(true));
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let (job, open, log) = (current.clone(), alive.clone(), stderr.clone());
 
         std::thread::spawn(move || {
+            let collected = log.clone();
             let errors = std::thread::spawn(move || {
-                let mut text = String::new();
-                let _ = stderr.read_to_string(&mut text);
-                text
+                let mut buffer = [0; 4096];
+
+                while let Ok(n) = errors.read(&mut buffer) {
+                    if n == 0 {
+                        break;
+                    }
+
+                    collected
+                        .lock()
+                        .unwrap()
+                        .push_str(&String::from_utf8_lossy(&buffer[..n]));
+                }
             });
+            let take = || std::mem::take(&mut *log.lock().unwrap());
 
-            // A worker that dies before reading everything closes the pipe;
-            // that shows up as missing output below.
-            let _ = stdin.write_all(input.as_bytes());
-            drop(stdin);
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                let Some((id, outcome)) = line.split_once(' ') else {
+                    continue;
+                };
+                let Ok(id) = id.parse() else {
+                    continue;
+                };
 
-            let mut text = String::new();
-            let _ = stdout.read_to_string(&mut text);
+                if done
+                    .send(Finished {
+                        id,
+                        stdout: outcome.to_string(),
+                        stderr: take(),
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
 
+            // In this order, so a job sent from now on either sees that the
+            // worker is gone, or gets this message.
+            open.store(false, Ordering::SeqCst);
+
+            let _ = errors.join();
             let _ = done.send(Finished {
-                id,
-                stdout: text,
-                stderr: errors.join().unwrap_or_default(),
+                id: job.load(Ordering::SeqCst),
+                stdout: String::new(),
+                stderr: take(),
             });
         });
+
+        Ok(Worker {
+            child,
+            stdin,
+            current,
+            alive,
+            stderr,
+        })
+    }
+
+    /// Sends the worker a job. `Err` gives the worker back if it's gone,
+    /// so the caller can start another.
+    pub fn run(mut self, id: u64, job: &Job) -> Result<Check, Unavailable> {
+        self.current.store(id, Ordering::SeqCst);
+
+        let line = format!("{} {}\n", id, serde_json::to_string(job).unwrap());
+        let sent = self.alive.load(Ordering::SeqCst)
+            && self.stdin.as_mut().is_some_and(|stdin| {
+                stdin
+                    .write_all(line.as_bytes())
+                    .and_then(|_| stdin.flush())
+                    .is_ok()
+            });
+
+        if !sent {
+            self.kill();
+            return Err(Unavailable::new(
+                "checkFailed",
+                "the worker exited before it was sent the job",
+            ));
+        }
 
         Ok(Check {
             id,
             started: Instant::now(),
-            child,
+            worker: self,
         })
-    }
-
-    /// The check's outcome, from what its worker printed. Waits for the
-    /// worker to exit, which it does right after closing its output.
-    pub fn finish(mut self, finished: &Finished) -> Outcome {
-        let status = self.child.wait();
-
-        match serde_json::from_str::<Outcome>(&finished.stdout) {
-            Ok(outcome) if status.as_ref().is_ok_and(ExitStatus::success) => outcome,
-            _ => Outcome::Failed(Unavailable::new(
-                "checkCrashed",
-                format!(
-                    "the check {}{}",
-                    match status {
-                        Ok(s) => describe(s),
-                        Err(e) => format!("couldn't be waited for: {}", e),
-                    },
-                    last_line(&finished.stderr)
-                        .map(|l| format!(": {}", l))
-                        .unwrap_or_default()
-                ),
-            )),
-        }
     }
 
     /// Kills the worker, and waits for it to exit.
     pub fn kill(mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    /// What the worker wrote to stderr that no answer took.
+    pub fn take_stderr(&self) -> String {
+        std::mem::take(&mut *self.stderr.lock().unwrap())
+    }
+}
+
+impl Check {
+    /// Starts `job` in a new worker process that answers only it, and
+    /// exits afterwards.
+    pub fn start(id: u64, job: &Job, done: Sender<Finished>) -> Result<Check, Unavailable> {
+        let worker = Worker::start(done)?;
+        let mut check = worker.run(id, job)?;
+
+        drop(check.worker.stdin.take());
+        Ok(check)
+    }
+
+    /// The check's outcome, from what its worker printed, and the worker,
+    /// if it can take another job. A worker that answers only one job is
+    /// waited for, and must exit successfully.
+    pub fn finish(mut self, finished: &Finished) -> (Outcome, Option<Worker>) {
+        let parsed = serde_json::from_str::<Outcome>(&finished.stdout);
+
+        if let Ok(outcome) = &parsed
+            && self.worker.stdin.is_some()
+        {
+            return (outcome.clone(), Some(self.worker));
+        }
+
+        let status = self.worker.child.wait();
+
+        match parsed {
+            Ok(outcome) if status.as_ref().is_ok_and(ExitStatus::success) => (outcome, None),
+            _ => (
+                Outcome::Failed(Unavailable::new(
+                    "checkCrashed",
+                    format!(
+                        "the check {}{}",
+                        match status {
+                            Ok(s) => describe(s),
+                            Err(e) => format!("couldn't be waited for: {}", e),
+                        },
+                        last_line(&finished.stderr)
+                            .map(|l| format!(": {}", l))
+                            .unwrap_or_default()
+                    ),
+                )),
+                None,
+            ),
+        }
+    }
+
+    /// Kills the worker, and waits for it to exit.
+    pub fn kill(self) {
+        self.worker.kill();
     }
 }
 

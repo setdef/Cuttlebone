@@ -9,7 +9,7 @@ use location::Location;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use types::Database;
 
 /// This build's version.
@@ -23,6 +23,7 @@ pub fn upstream_version() -> &'static str {
 }
 
 /// What to check.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
     /// The project directory, containing `src/`.
     pub root: PathBuf,
@@ -286,5 +287,181 @@ pub fn diagnose(
             diagnostics,
             panicked: true,
         }),
+    }
+}
+
+/// What a file or directory on disk looked like: enough to tell that it
+/// changed (`Fingerprint`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    /// When the inode last changed, which no tool can set back, and its
+    /// identity, which a rename over the file changes.
+    #[cfg(unix)]
+    changed: (i64, i64, u64, u64),
+}
+
+impl Stamp {
+    fn of(path: &Path) -> Option<Stamp> {
+        let meta = std::fs::metadata(path).ok()?;
+
+        Some(Stamp {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+            #[cfg(unix)]
+            changed: {
+                use std::os::unix::fs::MetadataExt;
+
+                (meta.ctime(), meta.ctime_nsec(), meta.ino(), meta.dev())
+            },
+        })
+    }
+
+    /// The latest time the stamp says the path changed.
+    fn latest(&self) -> Option<SystemTime> {
+        #[cfg(unix)]
+        let changed = {
+            let (secs, nanos, _, _) = self.changed;
+
+            u64::try_from(secs)
+                .ok()
+                .map(|s| SystemTime::UNIX_EPOCH + Duration::new(s, nanos as u32))
+        };
+        #[cfg(not(unix))]
+        let changed: Option<SystemTime> = None;
+
+        changed.into_iter().chain(self.modified).max()
+    }
+}
+
+/// How long before a check started a file must have last changed for the
+/// check to be sure it read that version, on a file system that records
+/// times in whole seconds (FAT's are two seconds apart).
+const COARSE: Duration = Duration::from_secs(2);
+
+/// The state on disk of everything a check of a target read, or could
+/// have read: each module's file, the manifests, and every directory
+/// module resolution could find a file in (std, `src/`, `test/` and
+/// `dep/`, and the project directory). A file created or removed changes
+/// its directory's stamp. A check's results hold for as long as its
+/// fingerprint is `current`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fingerprint {
+    stamps: Vec<(PathBuf, Option<Stamp>)>,
+    /// When the check started.
+    started: SystemTime,
+}
+
+impl Fingerprint {
+    /// The fingerprint of a check of `target` that started at `started`,
+    /// and read `files` (the checked modules' files).
+    pub fn take(
+        target: &Target,
+        files: impl IntoIterator<Item = PathBuf>,
+        started: SystemTime,
+    ) -> Fingerprint {
+        let mut paths: Vec<PathBuf> = files.into_iter().collect();
+
+        paths.push(target.root.clone());
+        paths.push(target.root.join(MANIFEST_FILE));
+
+        for dir in [
+            target.std.clone(),
+            target.root.join("src"),
+            target.root.join("test"),
+            target.root.join("dep"),
+        ] {
+            directories(&dir, &mut paths);
+        }
+
+        paths.sort();
+        paths.dedup();
+
+        Fingerprint {
+            stamps: paths
+                .into_iter()
+                .map(|p| {
+                    let stamp = Stamp::of(&p);
+
+                    (p, stamp)
+                })
+                .collect(),
+            started,
+        }
+    }
+
+    /// Whether nothing it covers changed since it was taken.
+    pub fn current(&self) -> bool {
+        self.stamps.iter().all(|(p, s)| Stamp::of(p) == *s)
+    }
+
+    /// Whether every path last changed before the check started, so the
+    /// check read what the stamps describe. A file written during the
+    /// check (or so shortly before it that the file system's clock can't
+    /// tell) may have been read before the write, and its stamp would
+    /// then describe text the check never saw.
+    pub fn settled(&self) -> bool {
+        self.stamps.iter().all(|(_, stamp)| {
+            stamp
+                .and_then(|s| s.latest())
+                .is_none_or(|latest| before(latest, self.started))
+        })
+    }
+
+    /// How many paths it covers.
+    pub fn len(&self) -> usize {
+        self.stamps.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.stamps.is_empty()
+    }
+}
+
+/// Whether a path that last changed at `changed` changed before `started`.
+/// A time in whole seconds may come from a file system that records only
+/// those, so it may be up to `COARSE` later than it says.
+fn before(changed: SystemTime, started: SystemTime) -> bool {
+    let fine = changed
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .is_ok_and(|d| d.subsec_nanos() != 0);
+    let margin = if fine { Duration::ZERO } else { COARSE };
+
+    changed + margin < started
+}
+
+/// `dir`, every directory under it, and the manifests in them.
+fn directories(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    out.push(dir.to_path_buf());
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            directories(&path, out);
+        } else if path.file_name().is_some_and(|n| n == MANIFEST_FILE) {
+            out.push(path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn times_in_whole_seconds_may_be_coarse() {
+        let second = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let fine = second + Duration::from_nanos(1);
+
+        assert!(before(fine, fine + Duration::from_millis(1)));
+        assert!(!before(fine, fine));
+        assert!(!before(second, second + Duration::from_millis(1500)));
+        assert!(before(second, second + Duration::from_millis(2001)));
     }
 }

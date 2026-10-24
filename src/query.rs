@@ -2,9 +2,10 @@
 //! available after a `.`, and where the symbol at a position is declared and
 //! referred to.
 //!
-//! Every answer is computed from a fresh type check of the file and what it
-//! imports. Nothing is kept between requests.
-use crate::check::{Target, diagnose, project_root, run};
+//! Every answer is computed from a type check of the file and what it
+//! imports, with the documents' text exactly as it is: a new check, or one
+//! a `Cache` kept from an earlier question about the same text.
+use crate::check::{Fingerprint, Target, diagnose, project_root, run};
 use crate::edits::{Changes, Fallback};
 use crate::position::{Encoding, HirPosition, Lines, Position, contains, position_at};
 use crate::units::{Effect, Outline, Unit, effect, names};
@@ -13,15 +14,17 @@ use crate::walker::{
     expressions_pass_ran, inferred, type_symbol,
 };
 use compiler::hir;
+use crossbeam_channel::Sender;
 use location::Location;
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Once;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use types::format::{TypeFormatter, format_type};
 use types::{
     Block, Database, MethodId, MethodKind, MethodLookup, MethodSource, ModuleId, Symbol,
@@ -148,6 +151,11 @@ pub struct Answer<T> {
     /// answers from older results (`Fallback`).
     #[serde(default)]
     pub typed: bool,
+    /// Whether the check the answer came from (the one `source` names)
+    /// was kept from an earlier request (`Cache`), rather than run for
+    /// this one.
+    #[serde(default)]
+    pub cached: bool,
 }
 
 impl<T> Answer<T> {
@@ -158,6 +166,7 @@ impl<T> Answer<T> {
             elapsed: self.elapsed,
             source: self.source,
             typed: self.typed,
+            cached: self.cached,
         }
     }
 }
@@ -253,7 +262,7 @@ pub fn ask(
     request: &Request,
     questions: &[(Question, Position)],
 ) -> Vec<Answer<Reply>> {
-    ask_with(session, request, None, true, questions)
+    ask_with(&Cache::new(0), session, request, None, true, questions)
 }
 
 /// `ask`, where the documents as they are can't be checked, answering
@@ -261,6 +270,7 @@ pub fn ask(
 /// of the file's last check that typed method bodies (`fallback`), if the
 /// question allows it (`allows`).
 pub fn ask_with(
+    cache: &Cache,
     session: &Session,
     request: &Request,
     fallback: Option<&Fallback>,
@@ -285,10 +295,18 @@ pub fn ask_with(
 
         let items: Vec<(Question, Position)> = group.iter().map(|i| questions[*i]).collect();
 
-        for (i, answer) in group
-            .iter()
-            .zip(pipeline(session, request, project, &items, older, repair))
-        {
+        for (i, answer) in group.iter().zip(pipeline(
+            cache,
+            session,
+            request,
+            Checking {
+                project,
+                keep: true,
+            },
+            &items,
+            older,
+            repair,
+        )) {
             answers[*i] = Some(answer);
         }
     }
@@ -296,7 +314,7 @@ pub fn ask_with(
     for (i, (question, position)) in questions.iter().enumerate() {
         if edits_text(*question) {
             answers[i] = Some(edited_question(
-                session, request, *question, *position, older, repair,
+                cache, session, request, *question, *position, older, repair,
             ));
         }
     }
@@ -418,9 +436,7 @@ fn definition_in(scope: &Scope) -> Result<Option<Place>, Unavailable> {
         ) else {
             return Ok(None);
         };
-        let index = Index::new(scope);
-
-        Ok(index
+        Ok(scope
             .declaration(reference.symbol)
             .map(|(file, location)| scope.place(&file, location)))
     }
@@ -464,9 +480,7 @@ fn type_definition_in(scope: &Scope) -> Result<Option<Place>, Unavailable> {
                 _ => return Ok(None),
             },
         };
-        let index = Index::new(scope);
-
-        Ok(index
+        Ok(scope
             .declaration(symbol)
             .map(|(file, location)| scope.place(&file, location)))
     }
@@ -528,10 +542,9 @@ fn references_in(
 
             if file == scope.file {
                 collect(&file, scope.walker);
-            } else if scope.in_project(&file) {
-                let mut walker = Walker::new(scope.db, module.module_id);
-
-                walker.module(module);
+            } else if scope.in_project(&file)
+                && let Some(walker) = scope.checked.walker(&file)
+            {
                 collect(&file, &walker);
             }
         }
@@ -686,6 +699,7 @@ pub fn diagnostics(session: &Session, request: &Request) -> Answer<Diagnostics> 
         // Always from the documents as they are.
         source: Source::Fresh,
         typed,
+        cached: false,
     }
 }
 
@@ -789,18 +803,6 @@ pub struct Index {
 }
 
 impl Index {
-    /// The declarations of every module checked, and the variables of the
-    /// walked module.
-    fn new(scope: &Scope) -> Index {
-        let mut index = Index::from_modules(scope.db, scope.modules);
-
-        for d in &scope.walker.declarations {
-            index.add(&scope.file, d);
-        }
-
-        index
-    }
-
     /// The declarations of `modules`, without their variables other than
     /// methods' arguments (which need walking method bodies).
     pub fn from_modules(db: &Database, modules: &[hir::Module]) -> Index {
@@ -871,6 +873,7 @@ pub fn complete(session: &Session, request: &Request) -> Answer<MembersAt> {
 /// the position. Completion inserts `PLACEHOLDER`, and signature help a `)`
 /// if the file doesn't parse but does with it.
 fn edited_question(
+    cache: &Cache,
     session: &Session,
     request: &Request,
     question: Question,
@@ -911,9 +914,22 @@ fn edited_question(
     };
     let mut answer = match prepared {
         Ok((copy, changed)) => {
-            let mut answer = pipeline(session, &copy, false, &[(inspect, position)], older, repair)
-                .pop()
-                .unwrap();
+            // A copy edited at the position is asked about once: keeping
+            // it would only push out checks that answer more.
+            let mut answer = pipeline(
+                cache,
+                session,
+                &copy,
+                Checking {
+                    project: false,
+                    keep: !changed,
+                },
+                &[(inspect, position)],
+                older,
+                repair,
+            )
+            .pop()
+            .unwrap();
 
             // A copy's check says nothing of the documents as they are.
             answer.typed &= !changed;
@@ -924,6 +940,7 @@ fn edited_question(
             elapsed: Duration::ZERO,
             source: Source::Fresh,
             typed: false,
+            cached: false,
         },
     };
 
@@ -1270,14 +1287,16 @@ fn range(lines: &Lines, location: &Location) -> Range {
 
 /// What a query sees: the checked modules, the requested file's walked HIR,
 /// and the position.
-struct Scope<'a> {
-    db: &'a Database,
+struct Scope<'a, 'db> {
+    db: &'db Database,
     /// Every module checked, including imported ones.
-    modules: &'a [hir::Module],
+    modules: &'db [hir::Module],
+    /// The check, and what it kept.
+    checked: &'a Checked<'db>,
     /// The requested file.
     file: PathBuf,
     module: ModuleId,
-    walker: &'a Walker<'a>,
+    walker: &'a Walker<'db>,
     lines: &'a Lines<'a>,
     at: HirPosition,
     target: &'a Target,
@@ -1286,7 +1305,20 @@ struct Scope<'a> {
     texts: RefCell<HashMap<PathBuf, String>>,
 }
 
-impl Scope<'_> {
+impl Scope<'_, '_> {
+    /// Where a symbol is declared: in the checked modules, or else among
+    /// the walked module's variables. The first declaration wins, as
+    /// `Index::add` has it.
+    fn declaration(&self, symbol: SymbolId) -> Option<(PathBuf, Location)> {
+        self.checked.index().declaration(symbol).or_else(|| {
+            self.walker
+                .declarations
+                .iter()
+                .find(|d| d.symbol == symbol)
+                .map(|d| (self.file.clone(), d.location))
+        })
+    }
+
     /// A location in any file as a range in the request's encoding.
     fn place(&self, file: &Path, location: Location) -> Place {
         if file == self.file {
@@ -1324,6 +1356,14 @@ impl Scope<'_> {
     }
 }
 
+/// What `pipeline` checks: the whole project, or the file and what it
+/// imports; and whether the check may be kept for later questions.
+#[derive(Clone, Copy)]
+struct Checking {
+    project: bool,
+    keep: bool,
+}
+
 /// Type checks the request's file and answers each question from its
 /// walked HIR, in order. With `project` set, it checks the whole project
 /// the file is part of (unless the file is outside its `src/` and
@@ -1334,15 +1374,16 @@ impl Scope<'_> {
 /// answer because the code doesn't parse or a declaration has an error is
 /// answered from the older documents where that's safe (`from_older`).
 fn pipeline(
+    cache: &Cache,
     session: &Session,
     request: &Request,
-    project: bool,
+    Checking { project, keep }: Checking,
     questions: &[(Question, Position)],
     older: Option<(&Request, &Fallback)>,
     repair: bool,
 ) -> Vec<Answer<Reply>> {
     let start = Instant::now();
-    let (mut results, typed) = match prepare(session, request) {
+    let (mut results, typed, kept) = match prepare(session, request) {
         Ok((mut target, text)) => {
             let file = target.file.clone().unwrap();
 
@@ -1350,18 +1391,21 @@ fn pipeline(
                 target.file = None;
             }
 
-            guarded(|| analyze(&target, &file, &text, request.encoding, questions)).unwrap_or_else(
-                |message| {
-                    (
-                        vec![Err(Unavailable::new("compilerPanic", message)); questions.len()],
-                        false,
-                    )
-                },
+            analyze(
+                cache,
+                &target,
+                keep,
+                &file,
+                &text,
+                request.encoding,
+                questions,
             )
         }
-        Err(e) => (vec![Err(e); questions.len()], false),
+        Err(e) => (vec![Err(e); questions.len()], false, false),
     };
     let mut sources = vec![Source::Fresh; questions.len()];
+    // Whether the check each answer came from was kept from before.
+    let mut cached = vec![kept; questions.len()];
     let wanted: Vec<usize> = (0..questions.len())
         .filter(|i| {
             matches!(&results[*i], Err(r) if recoverable(r))
@@ -1377,14 +1421,13 @@ fn pipeline(
         && let Some(repaired) = repaired_copy(request, older, parse)
     {
         let asked: Vec<(Question, Position)> = wanted.iter().map(|i| questions[*i]).collect();
+        let (found, kept) = from_older(cache, session, request, &repaired, true, &asked);
 
-        for (i, found) in wanted
-            .iter()
-            .zip(from_older(session, request, &repaired, true, &asked))
-        {
+        for (i, found) in wanted.iter().zip(found) {
             if let Some(result) = found {
                 results[*i] = result;
                 sources[*i] = Source::Repaired;
+                cached[*i] = kept;
             }
         }
     }
@@ -1399,14 +1442,13 @@ fn pipeline(
 
         if !wanted.is_empty() {
             let asked: Vec<(Question, Position)> = wanted.iter().map(|i| questions[*i]).collect();
+            let (found, kept) = from_older(cache, session, now, fallback, false, &asked);
 
-            for (i, found) in wanted
-                .iter()
-                .zip(from_older(session, now, fallback, false, &asked))
-            {
+            for (i, found) in wanted.iter().zip(found) {
                 if let Some(result) = found {
                     results[*i] = result;
                     sources[*i] = Source::Stale;
+                    cached[*i] = kept;
                 }
             }
         }
@@ -1415,11 +1457,13 @@ fn pipeline(
     results
         .into_iter()
         .zip(sources)
-        .map(|(result, source)| Answer {
+        .zip(cached)
+        .map(|((result, source), cached)| Answer {
             result,
             elapsed: start.elapsed(),
             source,
             typed,
+            cached,
         })
         .collect()
 }
@@ -1489,14 +1533,17 @@ fn canonical(path: &Path) -> Result<PathBuf, Unavailable> {
 
 type Results = Vec<Result<Option<Reply>, Unavailable>>;
 
-/// The answers, and whether the check typed method bodies.
+/// The answers, whether the check typed method bodies, and whether it was
+/// kept from an earlier request (`Cache`).
 fn analyze(
+    cache: &Cache,
     target: &Target,
+    keep: bool,
     file: &Path,
     text: &str,
     encoding: Encoding,
     questions: &[(Question, Position)],
-) -> (Results, bool) {
+) -> (Results, bool, bool) {
     let lines = Lines::with_encoding(text, encoding);
     let ats: Vec<Result<HirPosition, Unavailable>> = questions
         .iter()
@@ -1511,60 +1558,319 @@ fn analyze(
             .map(|at| Err(at.clone().err().unwrap_or_else(|| reason.clone())))
             .collect()
     };
-
-    let run = run(target, false, false, |db, modules: &[hir::Module]| {
-        if !expressions_pass_ran(modules) {
-            return (all(declaration_errors()), false);
-        }
-
-        let Some(module) = modules.iter().find(|m| m.module_id.file(db) == file) else {
-            return (
-                all(Unavailable::new("internal", "the file wasn't type checked")),
-                false,
-            );
+    let (file, text, asked, positions) = (
+        file.to_path_buf(),
+        text.to_string(),
+        questions.to_vec(),
+        ats.clone(),
+    );
+    let (found, kept) = cache.with(target, keep, move |checked| {
+        let lines = Lines::with_encoding(&text, encoding);
+        let Some(walker) = checked.walker(&file) else {
+            return Err(Unavailable::new("internal", "the file wasn't type checked"));
         };
-        let mut walker = Walker::new(db, module.module_id);
+        let module = walker_module(checked, &file);
 
-        walker.module(module);
-
-        let results = questions
+        Ok(asked
             .iter()
-            .zip(&ats)
+            .zip(&positions)
             .map(|((question, _), at)| {
                 inspect(
                     *question,
                     &Scope {
-                        db,
-                        modules,
-                        file: file.to_path_buf(),
-                        module: module.module_id,
+                        db: checked.db,
+                        modules: checked.modules,
+                        checked,
+                        file: file.clone(),
+                        module,
                         walker: &walker,
                         lines: &lines,
                         at: at.clone()?,
-                        target,
+                        target: checked.target,
                         encoding,
                         texts: RefCell::new(HashMap::new()),
                     },
                 )
             })
-            .collect();
-
-        (results, true)
+            .collect::<Results>())
     });
 
-    match run {
-        Ok(run) => match run.inspected {
-            Some(inspected) => inspected,
-            None => (
-                all(Unavailable::new(
+    match found.and_then(|r| r) {
+        Ok(results) => (results, true, kept),
+        Err(reason) => (all(reason), false, kept),
+    }
+}
+
+/// The module of a file the check walked.
+fn walker_module(checked: &Checked, file: &Path) -> ModuleId {
+    checked.modules[checked.files[file]].module_id
+}
+
+/// How many checks a `Cache` keeps by default. Each holds its compiler's
+/// state: about 50 MB for a file that imports all of std.
+pub const KEPT_CHECKS: usize = 4;
+
+/// Checks kept to answer later questions about the same text, without
+/// checking again (docs/lsp.md, "Freshness, cost and side effects").
+///
+/// The compiler hands its typed HIR to a callback, and drops it when the
+/// callback returns. So each check runs on a thread of its own, and stays
+/// inside the callback, answering the questions sent to it, until the
+/// cache lets it go. A check is found by its target, which includes the
+/// exact text of every document it used, and is used only while the files
+/// and directories it read on disk are as they were (`Fingerprint`).
+pub struct Cache {
+    capacity: usize,
+    /// The least recently used first.
+    kept: RefCell<Vec<Kept>>,
+}
+
+struct Kept {
+    target: Target,
+    fingerprint: Fingerprint,
+    /// Sends questions to the check's thread, or the error in a
+    /// declaration that kept it from typing method bodies.
+    state: Result<Sender<Task>, Unavailable>,
+}
+
+/// Something to run inside a kept check, which says whether the check
+/// may go on answering (not after a panic).
+type Task = Box<dyn for<'a> FnOnce(&Checked<'a>) -> bool + Send>;
+
+impl Default for Cache {
+    fn default() -> Self {
+        Cache::new(KEPT_CHECKS)
+    }
+}
+
+impl Cache {
+    /// A cache of at most `capacity` checks. With 0, every question is
+    /// answered by a check of its own, as if there were no cache.
+    pub fn new(capacity: usize) -> Cache {
+        Cache {
+            capacity,
+            kept: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// How many checks it holds.
+    pub fn len(&self) -> usize {
+        self.kept.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.kept.borrow().is_empty()
+    }
+
+    /// Runs `f` with a check of `target`: a kept one, if its fingerprint
+    /// is current, or else a new one, which is kept if `keep` and nothing
+    /// it read changed while it ran. Also says whether the check was kept
+    /// from before. `Err` if there's no typed HIR to run `f` with: nothing
+    /// parsed (`noHir`), a declaration's error (`declarationErrors`), the
+    /// compiler failed or panicked (`compilerError`, `compilerPanic`), or
+    /// `f` panicked.
+    fn with<R: Send + 'static>(
+        &self,
+        target: &Target,
+        keep: bool,
+        f: impl for<'a> FnOnce(&Checked<'a>) -> R + Send + 'static,
+    ) -> (Result<R, Unavailable>, bool) {
+        let mut kept = self.kept.borrow_mut();
+
+        if let Some(i) = kept.iter().position(|k| k.target == *target) {
+            let entry = kept.remove(i);
+
+            if entry.fingerprint.current() {
+                let result = match &entry.state {
+                    Ok(tasks) => run_task(tasks, f),
+                    Err(reason) => Err(reason.clone()),
+                };
+
+                // A panic ends the check.
+                if !matches!(&result, Err(e) if e.code == "compilerPanic") {
+                    kept.push(entry);
+                }
+
+                return (result, true);
+            }
+        }
+
+        let (state, fingerprint) = match start_check(target.clone()) {
+            Ok(started) => started,
+            Err(reason) => return (Err(reason), false),
+        };
+        let result = match &state {
+            Ok(tasks) => run_task(tasks, f),
+            Err(reason) => Err(reason.clone()),
+        };
+
+        if keep
+            && self.capacity > 0
+            && fingerprint.settled()
+            && !matches!(&result, Err(e) if e.code == "compilerPanic")
+        {
+            kept.push(Kept {
+                target: target.clone(),
+                fingerprint,
+                state,
+            });
+
+            if kept.len() > self.capacity {
+                kept.remove(0);
+            }
+        }
+
+        (result, false)
+    }
+}
+
+/// Starts a check of `target` on a thread of its own, and waits until it
+/// has typed the HIR. Returns the channel to send it tasks on (or the
+/// declaration error that kept it from typing method bodies), and the
+/// fingerprint of what it read. The thread ends when the channel is
+/// dropped.
+fn start_check(
+    target: Target,
+) -> Result<(Result<Sender<Task>, Unavailable>, Fingerprint), Unavailable> {
+    install_panic_hook();
+
+    let (ready, typed) = crossbeam_channel::bounded(1);
+    let (tasks, queue) = crossbeam_channel::unbounded::<Task>();
+    let started = SystemTime::now();
+    let spawned = std::thread::Builder::new()
+        .name("check".to_string())
+        .stack_size(STACK_SIZE)
+        .spawn(move || {
+            let checking = catch_unwind(AssertUnwindSafe(|| {
+                run(&target, false, false, |db, modules: &[hir::Module]| {
+                    let fingerprint = Fingerprint::take(
+                        &target,
+                        modules.iter().map(|m| m.module_id.file(db)),
+                        started,
+                    );
+
+                    if !expressions_pass_ran(modules) {
+                        let _ = ready.send(Ok((false, fingerprint)));
+                        return;
+                    }
+
+                    let checked = Checked::new(db, modules, &target);
+                    let _ = ready.send(Ok((true, fingerprint)));
+
+                    while let Ok(task) = queue.recv() {
+                        if !task(&checked) {
+                            break;
+                        }
+                    }
+                })
+            }));
+            let failure = match checking {
+                Ok(Ok(run)) if run.inspected.is_some() => return,
+                Ok(Ok(_)) => Unavailable::new(
                     "noHir",
                     "the file or a module it imports couldn't be parsed or found, \
                      so nothing was type checked",
-                )),
-                false,
-            ),
-        },
-        Err(e) => (all(Unavailable::new("compilerError", e)), false),
+                ),
+                Ok(Err(e)) => Unavailable::new("compilerError", e),
+                Err(_) => Unavailable::new("compilerPanic", panic_message()),
+            };
+
+            let _ = ready.send(Err(failure));
+        });
+
+    if let Err(e) = spawned {
+        return Err(Unavailable::new(
+            "compilerPanic",
+            format!("failed to start a thread: {}", e),
+        ));
+    }
+
+    match typed.recv() {
+        Ok(Ok((true, fingerprint))) => Ok((Ok(tasks), fingerprint)),
+        Ok(Ok((false, fingerprint))) => Ok((Err(declaration_errors()), fingerprint)),
+        Ok(Err(reason)) => Err(reason),
+        Err(_) => Err(Unavailable::new("compilerPanic", "the compiler panicked")),
+    }
+}
+
+/// Runs `f` in a kept check, and waits for its result. `compilerPanic` if
+/// it panicked.
+fn run_task<R: Send + 'static>(
+    tasks: &Sender<Task>,
+    f: impl for<'a> FnOnce(&Checked<'a>) -> R + Send + 'static,
+) -> Result<R, Unavailable> {
+    let (done, result) = crossbeam_channel::bounded(1);
+    let task: Task = Box::new(move |checked| {
+        let outcome = catch_unwind(AssertUnwindSafe(|| f(checked))).map_err(|_| panic_message());
+        let ok = outcome.is_ok();
+
+        let _ = done.send(outcome);
+        ok
+    });
+
+    if tasks.send(task).is_err() {
+        return Err(Unavailable::new("compilerPanic", "the check ended"));
+    }
+
+    match result.recv() {
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(message)) => Err(Unavailable::new("compilerPanic", message)),
+        Err(_) => Err(Unavailable::new("compilerPanic", "the check ended")),
+    }
+}
+
+/// A check that typed method bodies, and what's been worked out from it
+/// so far, kept for later questions.
+struct Checked<'db> {
+    db: &'db Database,
+    modules: &'db [hir::Module],
+    target: &'db Target,
+    /// Each module's index in `modules`, by file.
+    files: HashMap<PathBuf, usize>,
+    walkers: RefCell<HashMap<PathBuf, Rc<Walker<'db>>>>,
+    index: OnceCell<Index>,
+}
+
+impl<'db> Checked<'db> {
+    fn new(db: &'db Database, modules: &'db [hir::Module], target: &'db Target) -> Self {
+        Checked {
+            db,
+            modules,
+            target,
+            files: modules
+                .iter()
+                .enumerate()
+                .map(|(i, m)| (m.module_id.file(db), i))
+                .collect(),
+            walkers: RefCell::new(HashMap::new()),
+            index: OnceCell::new(),
+        }
+    }
+
+    /// The walked HIR of a checked file, walked the first time it's asked
+    /// for.
+    fn walker(&self, file: &Path) -> Option<Rc<Walker<'db>>> {
+        if let Some(walker) = self.walkers.borrow().get(file) {
+            return Some(walker.clone());
+        }
+
+        let module = &self.modules[*self.files.get(file)?];
+        let mut walker = Walker::new(self.db, module.module_id);
+
+        walker.module(module);
+
+        let walker = Rc::new(walker);
+
+        self.walkers
+            .borrow_mut()
+            .insert(file.to_path_buf(), walker.clone());
+        Some(walker)
+    }
+
+    /// Where each symbol of the checked modules is declared.
+    fn index(&self) -> &Index {
+        self.index
+            .get_or_init(|| Index::from_modules(self.db, self.modules))
     }
 }
 
@@ -1813,6 +2119,9 @@ fn parse_error_line(text: &str) -> Option<usize> {
         .map(|e| e.location.line_start.saturating_sub(1) as usize)
 }
 
+/// An answer from another check, or `None` where it doesn't hold.
+type Found = Option<Result<Option<Reply>, Unavailable>>;
+
 /// A file as an older check read it, and as it is now.
 struct Version {
     old: String,
@@ -1833,20 +2142,22 @@ struct Version {
 /// (`repaired_copy`), and a method with blank lines still answers before the
 /// first of them (`Guard::limit`).
 fn from_older(
+    cache: &Cache,
     session: &Session,
     now: &Request,
     fallback: &Fallback,
     repaired: bool,
     questions: &[(Question, Position)],
-) -> Vec<Option<Result<Option<Reply>, Unavailable>>> {
-    let nothing = || vec![None; questions.len()];
+) -> (Vec<Found>, bool) {
+    let count = questions.len();
+    let nothing = move || vec![None; count];
     let canonical_keys = |map: &HashMap<PathBuf, String>| -> HashMap<PathBuf, String> {
         map.iter()
             .filter_map(|(p, t)| Some((canonical(p).ok()?, t.clone())))
             .collect()
     };
     let Ok(file) = canonical(&now.file) else {
-        return nothing();
+        return (nothing(), false);
     };
     let contents = canonical_keys(&fallback.contents);
     let current = canonical_keys(&now.contents);
@@ -1864,7 +2175,7 @@ fn from_older(
         }
 
         let (Some(old), Some(new)) = (text(&contents, &path), text(&current, &path)) else {
-            return nothing();
+            return (nothing(), false);
         };
 
         versions.insert(
@@ -1878,7 +2189,7 @@ fn from_older(
     }
 
     let Some(old) = text(&contents, &file) else {
-        return nothing();
+        return (nothing(), false);
     };
     let new = versions
         .get(&file)
@@ -1909,77 +2220,65 @@ fn from_older(
         std: session.std.clone(),
         overlay: contents.clone(),
     };
-    let lines = Lines::with_encoding(&old, encoding);
+    let questions = questions.to_vec();
+    let changes = changes.clone();
+    let (found, kept) = cache.with(&target, true, move |checked| {
+        let lines = Lines::with_encoding(&old, encoding);
+        let Some(walker) = checked.walker(&file) else {
+            return nothing();
+        };
+        let module = walker_module(checked, &file);
+        let own = Version {
+            old: old.clone(),
+            new: new.clone(),
+            changes: changes.clone(),
+        };
+        let Some(guard) = Guard::new(&file, &own, &versions, &walker, encoding, repaired) else {
+            return nothing();
+        };
 
-    guarded(|| {
-        let run = run(&target, false, false, |db, modules: &[hir::Module]| {
-            if !expressions_pass_ran(modules) {
-                return nothing();
-            }
+        questions
+            .iter()
+            .zip(&positions)
+            .map(|((question, position), old_position)| {
+                let old_position = (*old_position)?;
+                let at = lines.to_hir(old_position)?;
 
-            let Some(module) = modules.iter().find(|m| m.module_id.file(db) == file) else {
-                return nothing();
-            };
-            let mut walker = Walker::new(db, module.module_id);
+                if !matches!(question, Question::InlayHints { .. })
+                    && !guard.safe(byte_offset(&old, old_position, encoding)?)
+                {
+                    return None;
+                }
 
-            walker.module(module);
+                let reply = inspect(
+                    *question,
+                    &Scope {
+                        db: checked.db,
+                        modules: checked.modules,
+                        checked,
+                        file: file.clone(),
+                        module,
+                        walker: &walker,
+                        lines: &lines,
+                        at,
+                        target: checked.target,
+                        encoding,
+                        texts: RefCell::new(HashMap::new()),
+                    },
+                )
+                .ok()?;
 
-            let own = Version {
-                old: old.clone(),
-                new: new.clone(),
-                changes: changes.clone(),
-            };
-            let Some(guard) = Guard::new(&file, &own, &versions, &walker, encoding, repaired)
-            else {
-                return nothing();
-            };
-
-            questions
-                .iter()
-                .zip(&positions)
-                .map(|((question, position), old_position)| {
-                    let old_position = (*old_position)?;
-                    let at = lines.to_hir(old_position)?;
-
-                    if !matches!(question, Question::InlayHints { .. })
-                        && !guard.safe(byte_offset(&old, old_position, encoding)?)
-                    {
-                        return None;
+                match (question, reply) {
+                    (Question::InlayHints { end }, Some(Reply::Hints(hints))) => {
+                        guard.hints(hints, *position, *end).map(|h| Ok(Some(h)))
                     }
+                    (_, reply) => guard.reply(reply).map(Ok),
+                }
+            })
+            .collect()
+    });
 
-                    let reply = inspect(
-                        *question,
-                        &Scope {
-                            db,
-                            modules,
-                            file: file.clone(),
-                            module: module.module_id,
-                            walker: &walker,
-                            lines: &lines,
-                            at,
-                            target: &target,
-                            encoding,
-                            texts: RefCell::new(HashMap::new()),
-                        },
-                    )
-                    .ok()?;
-
-                    match (question, reply) {
-                        (Question::InlayHints { end }, Some(Reply::Hints(hints))) => {
-                            guard.hints(hints, *position, *end).map(|h| Ok(Some(h)))
-                        }
-                        (_, reply) => guard.reply(reply).map(Ok),
-                    }
-                })
-                .collect()
-        });
-
-        match run {
-            Ok(run) => run.inspected.unwrap_or_else(nothing),
-            Err(_) => nothing(),
-        }
-    })
-    .unwrap_or_else(|_| nothing())
+    (found.unwrap_or_else(|_| vec![None; count]), kept)
 }
 
 /// Decides which parts of an older check of a file still hold, and maps
@@ -2354,15 +2653,9 @@ thread_local! {
     static PANIC: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-/// The stack size for a type check. The compiler is recursive, and the
-/// default 2 MiB for spawned threads is less than the main thread's 8 MiB.
-const STACK_SIZE: usize = 64 * 1024 * 1024;
-
-/// Runs `f` on its own thread and returns `Err` with the panic's message
-/// and location if it panics, so a compiler panic can't take the process
-/// down. Nothing outlives `f`: each type check builds its own compiler
-/// state, so there's nothing a panic can leave half-updated.
-pub fn guarded<R: Send>(f: impl FnOnce() -> R + Send) -> Result<R, String> {
+/// Records each panic's message and location for `panic_message`, as
+/// well as printing it as usual.
+fn install_panic_hook() {
     static HOOK: Once = Once::new();
 
     HOOK.call_once(|| {
@@ -2373,17 +2666,32 @@ pub fn guarded<R: Send>(f: impl FnOnce() -> R + Send) -> Result<R, String> {
             default(info);
         }));
     });
+}
+
+/// The message of the last panic on this thread.
+fn panic_message() -> String {
+    PANIC
+        .with(|p| p.borrow_mut().take())
+        .unwrap_or_else(|| "the compiler panicked".to_string())
+}
+
+/// The stack size for a type check. The compiler is recursive, and the
+/// default 2 MiB for spawned threads is less than the main thread's 8 MiB.
+const STACK_SIZE: usize = 64 * 1024 * 1024;
+
+/// Runs `f` on its own thread and returns `Err` with the panic's message
+/// and location if it panics, so a compiler panic can't take the process
+/// down. Nothing outlives `f`: each type check builds its own compiler
+/// state, so there's nothing a panic can leave half-updated.
+pub fn guarded<R: Send>(f: impl FnOnce() -> R + Send) -> Result<R, String> {
+    install_panic_hook();
 
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("check".to_string())
             .stack_size(STACK_SIZE)
             .spawn_scoped(scope, || {
-                catch_unwind(AssertUnwindSafe(f)).map_err(|_| {
-                    PANIC
-                        .with(|p| p.borrow_mut().take())
-                        .unwrap_or_else(|| "the compiler panicked".to_string())
-                })
+                catch_unwind(AssertUnwindSafe(f)).map_err(|_| panic_message())
             })
             .map_err(|e| format!("failed to start a thread: {}", e))?
             .join()

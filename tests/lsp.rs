@@ -1051,19 +1051,22 @@ fn checks_wait_until_typing_pauses() {
     );
 
     // An edit during the wait supersedes the request before any check
-    // starts.
+    // starts. A running one would have been killed, with its worker; the
+    // worker the earlier hovers left waiting is still there.
     client.change(&file, 3, json!([{ "text": text.clone() }]));
 
+    let workers = client.workers();
     let start = Instant::now();
     let id = client.send_at("textDocument/hover", &file, line, character);
 
     std::thread::sleep(Duration::from_millis(100));
-    assert!(client.workers().is_empty());
     client.change(&file, 4, json!([{ "text": text.clone() }]));
 
     let response = client.response(id);
 
     assert_eq!(response["error"]["code"], CONTENT_MODIFIED);
+    assert_eq!(workers.len(), 1);
+    assert_eq!(client.workers(), workers);
     assert!(
         start.elapsed() < Duration::from_millis(400),
         "{:?}",

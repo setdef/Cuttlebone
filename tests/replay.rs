@@ -741,6 +741,9 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
     // What the server keeps, from a check when the files are opened (as
     // their diagnostics would be) and each check since.
     let mut snapshots = Snapshots::default();
+    // As a worker keeps checks between jobs (none with
+    // CUTTLEBONE_NO_CACHE set).
+    let cache = query::Cache::new(cuttlebone::worker::kept_checks());
     let ask = |snapshots: &mut Snapshots,
                docs: &Documents,
                check: u64,
@@ -749,6 +752,7 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
 
         let fallback = snapshots.fallback(file, None).filter(|_| memory);
         let answers = query::ask_with(
+            &cache,
             &scenario.session,
             &docs.request(file),
             fallback.as_ref(),

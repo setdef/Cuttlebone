@@ -698,7 +698,10 @@ a custom notification if the client opts in with
 | `stale` | Computed from an earlier version of the documents: the last that type checked, because the code as it is now can't be (it doesn't parse, or a declaration has an error). The answer holds for the documents as they are: every position and range in it is in text that hasn't changed since, mapped to where that text is now, in code no change since could make mean something else. Only read-only requests give these ([Answers in code being edited](#answers-in-code-being-edited)). |
 
 A `fresh` answer from a [repaired copy](#answers-in-code-being-edited)
-has `"repaired": true` too.
+has `"repaired": true` too. An answer from a check kept from an earlier
+query about the same text (rather than one run for it) has
+`"cached": true` ([Kept checks](#kept-checks)); its status is otherwise
+the one a new check would give.
 
 A client that doesn't know `stale` must treat it, like any status other
 than `fresh`, as having no usable answer. One that does may show a stale
@@ -706,8 +709,8 @@ answer as it shows a fresh one, or mark it. Clients must also ignore fields
 and codes they don't know.
 
 `reason` has `code`, a stable identifier, and `message`, a description for
-people. `elapsedMs` is how long the check took inside the worker, or 0 if
-there was no check.
+people. `elapsedMs` is how long the answer took inside the worker: the
+check, or the lookup in a kept one, or 0 if it never reached the worker.
 
 | Code | When |
 |---|---|
@@ -794,9 +797,10 @@ they are:
 
 Everywhere else the answer is `null`, with the fresh check's reason.
 
-**Cost.** A repaired copy or an older version is checked from scratch,
-like the documents as they are, so an answer in broken code can take up to
-three checks: on an Apple M1 Max, under `cargo test` (dependencies
+**Cost.** A repaired copy or an older version is checked like the
+documents as they are, and kept like them ([Kept checks](#kept-checks)), so
+an answer in broken code can take up to three checks the first time, and
+none for the next questions about the same text: on an Apple M1 Max, under `cargo test` (dependencies
 optimized), a hover in a std-sized project takes about 135 ms from a
 repaired copy, and 240 ms when neither may answer (tests/latency.rs holds both to 500 ms). A document
 that doesn't parse is found in about a millisecond, before any type
@@ -833,33 +837,44 @@ Other errors are `MethodNotFound` (-32601) for anything not listed here,
 
 ## Robustness
 
-Each query runs in a fresh worker process (`cuttlebone --worker`):
+Queries run in a worker process (`cuttlebone --worker`), one at a time.
+The worker stays between queries, keeping the checks it did
+([Kept checks](#kept-checks)):
 
-- The server kills the worker when the query times out (`checkTimeoutMs`),
-  is cancelled, or is superseded.
+- The server kills the worker when a query times out (`checkTimeoutMs`),
+  is cancelled, or is superseded, and starts a new one for the next query.
+  The checks it kept go with it.
 - If the worker panics, aborts, or overflows its stack, the server reports
-  it (`compilerPanic` or `checkCrashed`) and goes on.
-- Every check builds its own compiler state, so nothing carries over from
-  one to the next.
-- Each worker also exits by itself (with status 124) once it has run for
-  `checkTimeoutMs` plus 1 s. If the server is killed outright, its workers
-  don't outlive it for longer than that.
+  it (`compilerPanic` or `checkCrashed`) and goes on. A compiler panic
+  ends the check it happened in, so nothing half-done is kept.
+- Every check builds its own compiler state: a kept check is only ever
+  read, never checked again.
+- A worker exits by itself (with status 124) once a query has run for
+  `checkTimeoutMs` plus 1 s, and when its stdin closes. If the server is
+  killed outright, its workers don't outlive it for longer than that.
+- Diagnostics checks each run in a worker of their own, which exits after
+  the check.
 
-On an Apple M1 Max, a worker adds 13 to 20 ms to a 100 ms check of a file
-that imports all of std, in a release build ([history/MILESTONE-2.md](history/MILESTONE-2.md) has the
-numbers).
+On an Apple M1 Max, a fresh worker added 13 to 20 ms to a 100 ms check of
+a file that imports all of std, in a release build
+([history/MILESTONE-2.md](history/MILESTONE-2.md) has the numbers); a
+worker kept between queries saves the 5.5 ms of starting one.
 
 The server's own subprocesses (`inko --version`, `inko print std`) have a
 10 s timeout.
 
 ## Freshness, cost and side effects
 
-- **Freshness.** Every query type checks the document and every module it
-  imports (including the standard library's prelude) from scratch, with the
-  open documents' text, so a `fresh` answer is never older than the
-  request. Only when that check can't answer is an earlier version of the
-  documents checked instead (a second check, from scratch too), for a
-  `stale` answer ([Answers in code being edited](#answers-in-code-being-edited)). Queries don't lower to MIR, which types never depend on.
+- **Freshness.** Every query is answered from a type check of the
+  document and every module it imports (including the standard library's
+  prelude), with the open documents' text exactly as they are, and the
+  files on disk as they are, so a `fresh` answer is never older than the
+  request. The check is a new one, or one kept from an earlier query about
+  the same text ([Kept checks](#kept-checks)). Only when that check can't
+  answer is a repaired copy or an earlier version of the documents
+  checked instead, for a `repaired` or `stale` answer
+  ([Answers in code being edited](#answers-in-code-being-edited)). Queries
+  don't lower to MIR, which types never depend on.
 - **Cost.** A query on a file that imports all of the standard library (116
   modules) takes about 100 to 120 ms on an Apple M1 Max. One on a typical std
   module takes 30 to 100 ms. References check the whole project instead of
@@ -870,6 +885,53 @@ The server's own subprocesses (`inko --version`, `inko print std`) have a
   directory. It writes nothing anywhere. It does enforce the Inko version
   that the project's and its dependencies' `inko.pkg` require. Dependencies
   are whatever `inko pkg sync` last put in `dep/`.
+
+### Kept checks
+
+A check answers every question about the text it checked. The worker
+keeps the last 4 checks it did, and answers a query from one of them
+without checking again when everything the query would check is the same:
+
+- **The same target**: the same file and project (references check the
+  whole project, so they have a check of their own), with the same standard
+  library.
+- **The same text, exactly**, of every open document. Any edit, opening or
+  closing a document makes the text, and so the check, a different one.
+- **The same files on disk.** A check records what it read: each module's
+  file, the manifests (`inko.pkg`), and every directory under std, `src/`,
+  `test/` and `dep/`, and the project's directory (a file created or
+  deleted there changes its directory). Before each answer, the worker
+  looks at all of them again (their size, modification and change times,
+  and inode), and checks again if any differs. So a file changed outside
+  the editor (a `git checkout`, a formatter, a save) is never answered
+  from an older check, without `workspace/didChangeWatchedFiles`. A check
+  that read a file changed while it ran, or so shortly before it that the
+  file system's clock can't tell (2 s, on one that records whole seconds),
+  isn't kept.
+
+This covers all three kinds of answer: the documents as they are, a
+repaired copy, and the last good check's version, each of which is a
+check of its own text. Typing in broken code checks a new repaired copy
+on each edit, but reuses the older version's check. Completion's copy
+(with its placeholder) is used once, and not kept.
+
+A kept answer is exactly the answer a new check would give: it comes from
+the same check of the same text, with the same rules for which request may
+answer from which kind of check. Its [status](#status) is the same, with
+`"cached": true` added.
+
+**Cost.** A burst of queries about unchanged text costs one check and a
+lookup each: on an Apple M1 Max, in a release build, 1,000 definition
+requests sent at once on a std-sized project are answered in 0.7 s
+(tests/latency.rs holds them to 3 s under `cargo test`). Looking again at
+what a check read costs about 2 µs a path (150 paths for a file that
+imports all of std).
+
+**Memory.** Each kept check holds its compiler's state: about 50 MB for a
+file that imports all of std, so at most about 200 MB for the 4, in the
+worker. The worker frees a check when it keeps a fifth, and all of them
+when it's killed or exits. Diagnostics checks are never kept: they lower to
+MIR, which consumes what the queries would need.
 
 ## `shutdown` and `exit`
 

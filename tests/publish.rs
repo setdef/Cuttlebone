@@ -340,8 +340,9 @@ fn a_query_is_not_stuck_behind_a_diagnostics_check() {
         "{:?}",
         start.elapsed()
     );
-    // The diagnostics check is still running.
-    assert_eq!(client.workers().len(), 1);
+    // The diagnostics check is still running, beside the queries' worker,
+    // which waits for the next query.
+    assert_eq!(client.workers().len(), 2);
 }
 
 /// An edit to a project whose check is running cancels the check, and
@@ -489,7 +490,8 @@ fn diagnostics_can_be_turned_off() {
     let (_, response) = client.hover(&file, 0, 0);
 
     assert!(response.get("error").is_none());
-    assert!(client.workers().is_empty());
+    // Only the queries' worker, waiting for the next query.
+    assert_eq!(client.workers().len(), 1);
     assert!(
         !client
             .notifications

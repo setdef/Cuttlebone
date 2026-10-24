@@ -20,7 +20,7 @@ use crate::query::{
     self, Access, Answer, Diagnostics, HintKind, MemberKind, MembersAt, Place, Session, Source,
     TypeAt, Unavailable,
 };
-use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query};
+use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query, Worker};
 use crossbeam_channel::{Receiver, Sender, select};
 use lsp_server::{
     Connection, ErrorCode, Message, Notification, ProtocolError, Request, RequestId, Response,
@@ -181,6 +181,9 @@ struct Server {
     documents: HashMap<Url, Document>,
     queue: VecDeque<Pending>,
     running: Option<(Pending, Check)>,
+    /// The queries' worker while it waits for a job, with the checks it
+    /// kept (`query::Cache`).
+    idle: Option<Worker>,
     diagnoser: Diagnoser,
     /// The documents of each file's last check that typed method bodies,
     /// and the edits since, for answers from older results.
@@ -215,6 +218,7 @@ impl Server {
             documents: HashMap::new(),
             queue: VecDeque::new(),
             running: None,
+            idle: None,
             diagnoser: Diagnoser::default(),
             snapshots: Snapshots::default(),
             checks: 0,
@@ -581,6 +585,10 @@ impl Server {
             check.kill();
         }
 
+        if let Some(worker) = self.idle.take() {
+            worker.kill();
+        }
+
         self.diagnoser.pending.clear();
     }
 
@@ -841,11 +849,29 @@ impl Server {
                 self.snapshots.sent(self.checks, &job.request.contents);
             }
 
-            match job.and_then(|job| Check::start(self.checks, &job, self.finished.0.clone())) {
+            match job.and_then(|job| self.send(self.checks, &job)) {
                 Ok(check) => self.running = Some((pending, check)),
                 Err(reason) => self.answer(connection, pending, Outcome::Failed(reason)),
             }
         }
+    }
+
+    /// Sends a query's job to the idle worker, or to a new one if there's
+    /// none or it exited.
+    fn send(&mut self, id: u64, job: &Job) -> Result<Check, Unavailable> {
+        if let Some(worker) = self.idle.take() {
+            let stderr = worker.take_stderr();
+
+            if !stderr.trim().is_empty() {
+                log(&format!("worker: {}", stderr.trim_end()));
+            }
+
+            if let Ok(check) = worker.run(id, job) {
+                return Ok(check);
+            }
+        }
+
+        Worker::start(self.finished.0.clone())?.run(id, job)
     }
 
     fn job(&self, pending: &Pending) -> Result<Job, Unavailable> {
@@ -898,7 +924,7 @@ impl Server {
                 ));
             }
 
-            let outcome = check.finish(&done);
+            let (outcome, _) = check.finish(&done);
 
             // A check that typed method bodies is the last good one of every
             // open document it checked, and of the target, for documents
@@ -948,7 +974,10 @@ impl Server {
             ));
         }
 
-        let outcome = check.finish(&done);
+        let (outcome, worker) = check.finish(&done);
+
+        self.idle = worker;
+
         let file = self
             .documents
             .get(&pending.uri)
@@ -1113,7 +1142,10 @@ impl Server {
 
                 (result, status)
             }
-            Outcome::Failed(reason) => (Value::Null, (Err(reason), Duration::ZERO, Source::Fresh)),
+            Outcome::Failed(reason) => (
+                Value::Null,
+                (Err(reason), Duration::ZERO, Source::Fresh, false),
+            ),
             Outcome::Diagnostics(_) => (
                 Value::Null,
                 (
@@ -1123,12 +1155,13 @@ impl Server {
                     )),
                     Duration::ZERO,
                     Source::Fresh,
+                    false,
                 ),
             ),
         };
 
         if self.options.status {
-            let (state, elapsed, source) = status;
+            let (state, elapsed, source, cached) = status;
             let mut params = json!({
                 "id": pending.id,
                 "method": pending.method,
@@ -1145,6 +1178,12 @@ impl Server {
             // were blank.
             if state.is_ok() && source == Source::Repaired {
                 params["repaired"] = json!(true);
+            }
+
+            // No check ran for it: it came from checks kept from earlier
+            // requests about the same text.
+            if cached {
+                params["cached"] = json!(true);
             }
 
             if let Err(reason) = state {
@@ -1186,11 +1225,12 @@ impl Server {
     }
 }
 
-fn status_of<T>(answer: &Answer<T>) -> (Result<(), Unavailable>, Duration, Source) {
+fn status_of<T>(answer: &Answer<T>) -> (Result<(), Unavailable>, Duration, Source, bool) {
     (
         answer.result.as_ref().map(|_| ()).map_err(Clone::clone),
         answer.elapsed,
         answer.source,
+        answer.cached,
     )
 }
 
