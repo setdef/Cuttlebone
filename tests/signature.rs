@@ -210,3 +210,34 @@ fn null_outside_parentheses_or_without_a_method() {
     session.client.open(&file, &text);
     assert_eq!(help(&mut session, "counter.nope(1)", 13), Value::Null);
 }
+
+/// Past the last parameter none is active: `null`, for a client that
+/// supports it (tests/conformance.rs has one that doesn't).
+#[test]
+fn past_the_last_parameter_none_is_active() {
+    for utf8 in [false, true] {
+        let mut session = Session::new(utf8);
+        let file = session.file.clone();
+        let text = session
+            .text
+            .replace("counter.add(total, 2)", "counter.add(total, 2, 3)");
+
+        session.text = text.clone();
+        session.client.open(&file, &text);
+        assert_eq!(
+            help(&mut session, "counter.add(total, 2, 3)", 22),
+            json!({ "label": ADD, "parameters": ["amount: Int", "times: Int"], "active": null })
+        );
+
+        // There, not left out, which would mean the first.
+        let (_, response) =
+            session.request("textDocument/signatureHelp", "counter.add(total, 2, 3)", 22);
+        let result = &response["result"];
+
+        assert_eq!(result.get("activeParameter"), Some(&Value::Null));
+        assert_eq!(
+            result["signatures"][0].get("activeParameter"),
+            Some(&Value::Null)
+        );
+    }
+}

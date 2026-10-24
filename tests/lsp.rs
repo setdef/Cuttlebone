@@ -502,15 +502,30 @@ fn nothing_at_a_position_is_a_null_result() {
 #[test]
 fn a_client_without_markdown_gets_plain_text() {
     let (root, file, text) = members();
-    let capabilities = json!({ "textDocument": { "hover": { "contentFormat": ["plaintext"] } } });
-    let mut client = Client::initialized_with(Launch::default(), &root, json!({}), capabilities);
-    let (line, character) = at(&text, "name.size", 5, false);
-    let (_, response) = client.hover(&file, line, character);
 
-    assert_eq!(
-        response["result"]["contents"],
-        json!({ "kind": "plaintext", "value": "Int" })
-    );
+    // The first format the client lists, in its order of preference.
+    for (formats, expected) in [
+        (
+            json!(["plaintext"]),
+            json!({ "kind": "plaintext", "value": "Int" }),
+        ),
+        (
+            json!(["plaintext", "markdown"]),
+            json!({ "kind": "plaintext", "value": "Int" }),
+        ),
+        (
+            json!(["markdown", "plaintext"]),
+            json!({ "kind": "markdown", "value": "```inko\nInt\n```" }),
+        ),
+    ] {
+        let capabilities = json!({ "textDocument": { "hover": { "contentFormat": formats } } });
+        let mut client =
+            Client::initialized_with(Launch::default(), &root, json!({}), capabilities);
+        let (line, character) = at(&text, "name.size", 5, false);
+        let (_, response) = client.hover(&file, line, character);
+
+        assert_eq!(response["result"]["contents"], expected, "{}", formats);
+    }
 }
 
 #[test]
@@ -565,7 +580,7 @@ fn workspace_folders_are_project_roots() {
                 "processId": null,
                 "rootUri": null,
                 "workspaceFolders": folders,
-                "capabilities": {},
+                "capabilities": crate::common::spec::capable_client(),
                 "initializationOptions": {
                     "inko": fake_inko(upstream_version()),
                     "statusNotifications": true,

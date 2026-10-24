@@ -11,6 +11,7 @@ mod broken;
 mod cache;
 mod citations;
 mod complete;
+mod conformance;
 mod corpus;
 mod corpus_definition;
 mod crosscheck;

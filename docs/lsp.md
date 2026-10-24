@@ -1,10 +1,17 @@
 # Cuttlebone's language server
 
 `cuttlebone` is a language server. It speaks standard
-[LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/)
+[LSP 3.18](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.18/specification/)
 over stdin and stdout, for any editor with an LSP client. It assumes nothing
-about the editor. This document covers what it supports, and the few things
-that LSP leaves to the server.
+about the editor. This document covers what it supports, the few things
+that LSP leaves to the server, and the few [extensions](#extensions) where
+LSP has no way to do something.
+
+It sends only what the client's capabilities say the client supports
+(Markdown hovers, completion's label details and kinds, signature help's
+parameter offsets and active parameters, diagnostic tags), and every
+message the tests receive is checked against the 3.18 specification's
+meta model (tests/common/spec.rs).
 
 ## Starting it
 
@@ -156,7 +163,9 @@ The type of the expression at the position, as a Markdown code block:
  "range": {"start": {"line": 4, "character": 18}, "end": {"line": 4, "character": 26}}}
 ```
 
-- A client whose `textDocument.hover.contentFormat` lacks `markdown` gets
+- The format is the first of `markdown` and `plaintext` in the client's
+  `textDocument.hover.contentFormat`, its order of preference. A client
+  that lists neither, or sends no `contentFormat`, gets
   `{"kind": "plaintext", "value": "Array[Int]"}`.
 - `range` is the expression's range.
 - The type is formatted the way the compiler formats types in its
@@ -237,9 +246,9 @@ Clients send the buffer as it is.
 | Field | |
 |---|---|
 | `label` | The member's name, which is also what's inserted. |
-| `kind` | Method (2), Field (5), Constant (21) or Class (7, for a type in a module). |
+| `kind` | Method (2), Field (5), Constant (21) or Class (7, for a type in a module). Constant only for a client whose `completionItemKind.valueSet` has it (the kinds every client has end at Reference, 18); others get Value (12). |
 | `detail` | The declaration, with the receiver's type arguments filled in, including in default methods from generic traits (e.g. `fn pub inline get(index: Int) -> Result[ref Int, OutOfBounds]` on an `Array[Int]`). |
-| `labelDetails.description` | The module that defines it. |
+| `labelDetails.description` | The module that defines it, for a client with `completionItem.labelDetailsSupport`. Others get no `labelDetails`. |
 
 Items are sorted by name, and each name appears once. They aren't filtered
 by the typed prefix, and `isIncomplete` is `false`, so the client filters as
@@ -456,15 +465,23 @@ parameter the argument at the position is for. `(` and `,` trigger it.
   `fn pub move map[R](func: fn (ref Int) -> Int) -> ...`. There's one
   signature, since Inko has no overloading.
 - **Parameters** are `[start, end)` offsets into the label, in the
-  negotiated encoding. Inko's identifiers are ASCII, so in practice the
-  offsets are the same in every encoding.
+  negotiated encoding, for a client with
+  `signatureInformation.parameterInformation.labelOffsetSupport`. Inko's
+  identifiers are ASCII, so in practice the offsets are the same in every
+  encoding. Other clients get each parameter's text instead (`"label":
+  "amount: Int"`), which is part of the signature's label.
 - **The active parameter:**
   - a positional argument is the parameter at its index
   - a named argument (`times: 1`) is the parameter of that name, in any
     order
   - after a `,` with nothing typed yet, the next positional parameter, or
     after named arguments, the first parameter not named yet
-  - `null` past the last parameter
+  - none past the last parameter: `null` for a client with
+    `signatureHelp.noActiveParameterSupport` (LSP 3.18). For others it's
+    left out, which the spec says means the first, since they have no way
+    to be told there's none.
+- **`activeParameter` on the signature** as well as on the result, for a
+  client with `signatureInformation.activeParameterSupport`.
 - **While typing.** `counter.add(` and `counter.add(1, ` don't parse. If the
   document doesn't parse but does with a `)` inserted at the position,
   Cuttlebone checks that copy instead (as completion inserts its
@@ -576,7 +593,8 @@ Cuttlebone publishes the errors and warnings `inko check` reports, with
   from a **full check**, not the queries' type check. The exceptions are
   under [Where it differs from `inko check`](#where-it-differs-from-inko-check).
 - **`tags`:** `unused-symbol` and `unreachable` warnings are tagged
-  `Unnecessary` (1), which clients usually show by fading the code.
+  `Unnecessary` (1), which clients usually show by fading the code, if the
+  client's `publishDiagnostics.tagSupport.valueSet` has it.
 - **Ranges** are in the negotiated encoding. The compiler counts columns in
   grapheme clusters (👩‍👩‍👦 is one column), and Cuttlebone converts them as
   it does for every other range.
@@ -944,6 +962,19 @@ MIR, which consumes what the queries would need.
 - If stdin closes without `exit`, the process ends with status 1.
 - Malformed messages (bad framing or JSON) end the session, as lsp-server
   handles them; clients don't send those.
+
+## Extensions
+
+LSP 3.18 has a standard way to do most of what Cuttlebone does, and
+Cuttlebone uses it. These are the exceptions, and why the spec's own
+channels don't solve the problem:
+
+| Extension | What it's for | Why not the spec |
+|---|---|---|
+| [`cuttlebone/status`](#status), opted into with `statusNotifications` | Why a request has no answer, whether an answer is `stale` or `repaired`, `cached`, how long it took; why a diagnostics check didn't publish | **Reasons:** the spec's channel is an error response, `RequestFailed` (-32803) with `data`, which would tie the reason to its request. But clients show those errors to people, and "no answer here" is routine: the code doesn't parse while it's typed. VS Code's client (vscode-languageclient 11.0.0, `handleFailedRequest` in lib/common/client.js) treats every error other than `RequestCancelled`, `ServerCancelled` and `ContentModified` as a failure, and shows it in an error notification ("Request textDocument/hover failed.") with its default `revealOutputChannelOn` (`Error`). Neovim 0.12.6 shows an `ERROR` message for an error to `documentHighlight` (its default handler, runtime/lua/vim/lsp/handlers.lua) and `signatureHelp` (buf.lua), and a `WARN` for completion; only hover, inlay hints and definitions are logged quietly. A reason as an error would mean popups while typing, so the result is `null` and the reason goes here. **Staleness, coverage, cost:** results have no field for where an answer came from or what it covers. **Diagnostics:** `publishDiagnostics` has no way to say a check didn't finish. |
+| `experimental.cuttlebone` in the server's capabilities | Which Inko and standard library the session checks with, and whether status notifications and diagnostics are on | `experimental` is the spec's place for what isn't in it. `serverInfo` has only the server's name and version, and no capability says what a server checks against. |
+| `initializationOptions` (`inko`, `checkTimeoutMs`, `debounceMs`, `statusNotifications`, `diagnostics`, `diagnosticsDebounceMs`) | Settings | `initializationOptions` is the spec's field for them, and their names are the server's to define. `workspace/configuration` would only arrive after `initialize`, which needs `inko` to accept or refuse the session. |
+| `data` in `initialize`'s refusal: `code`, `cuttlebone`, `supported`, `installed`, beside `retry` | A stable code for why the session was refused, and the versions involved | The spec's `InitializeError` has only `retry`; `data` is where a response error carries more. `RequestFailed` is the spec's code for a request that failed, since `InitializeErrorCodes` has only the deprecated `unknownProtocolVersion`. |
 
 ## Testing faults
 

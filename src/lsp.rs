@@ -104,6 +104,7 @@ fn handshake(connection: &Connection) -> Result<Option<Server>, ProtocolError> {
             Err(e) if format!("{:?}", e).contains("\"exit\"") => return Ok(None),
             Err(e) => return Err(e),
         };
+        let raw = params.clone();
         let params: lsp::InitializeParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
@@ -118,7 +119,7 @@ fn handshake(connection: &Connection) -> Result<Option<Server>, ProtocolError> {
             }
         };
 
-        match Server::new(&params) {
+        match Server::new(&params, &raw["capabilities"]) {
             Ok(server) => {
                 let result = server.capabilities();
 
@@ -173,11 +174,72 @@ struct Diagnoser {
     published: HashMap<PathBuf, HashSet<Url>>,
 }
 
+/// What the client's capabilities say it supports, where the spec makes
+/// what a server may send depend on it. Read from the capabilities as the
+/// client sent them, since lsp-types (for 3.17) drops what 3.18 added.
+#[derive(Clone, Copy, Debug, Default)]
+struct Support {
+    /// Hovers in Markdown: the first format the client lists that
+    /// Cuttlebone has, in its order of preference, is Markdown. Plain text
+    /// if it lists neither.
+    markdown: bool,
+    /// `CompletionItem.labelDetails`.
+    label_details: bool,
+    /// `CompletionItemKind.Constant`, which isn't one of the kinds every
+    /// client has (Text to Reference).
+    constant_kind: bool,
+    /// Parameter labels as offsets into the signature's label.
+    label_offsets: bool,
+    /// `SignatureInformation.activeParameter`.
+    signature_active_parameter: bool,
+    /// `activeParameter: null` for no active parameter (3.18).
+    no_active_parameter: bool,
+    /// The `Unnecessary` diagnostic tag.
+    unnecessary_tag: bool,
+}
+
+impl Support {
+    fn of(capabilities: &Value) -> Support {
+        let at = |path: &str| capabilities.pointer(path).unwrap_or(&Value::Null);
+        let yes = |path: &str| at(path) == &Value::Bool(true);
+        let lists = |path: &str, value: Value| {
+            at(path)
+                .as_array()
+                .is_some_and(|values| values.contains(&value))
+        };
+        let signature = "/textDocument/signatureHelp/signatureInformation";
+
+        Support {
+            markdown: at("/textDocument/hover/contentFormat")
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|f| *f == "markdown" || *f == "plaintext")
+                .is_some_and(|f| f == "markdown"),
+            label_details: yes("/textDocument/completion/completionItem/labelDetailsSupport"),
+            constant_kind: lists(
+                "/textDocument/completion/completionItemKind/valueSet",
+                json!(lsp::CompletionItemKind::CONSTANT),
+            ),
+            label_offsets: yes(&format!(
+                "{}/parameterInformation/labelOffsetSupport",
+                signature
+            )),
+            signature_active_parameter: yes(&format!("{}/activeParameterSupport", signature)),
+            no_active_parameter: yes("/textDocument/signatureHelp/noActiveParameterSupport"),
+            unnecessary_tag: lists(
+                "/textDocument/publishDiagnostics/tagSupport/valueSet",
+                json!(lsp::DiagnosticTag::UNNECESSARY),
+            ),
+        }
+    }
+}
+
 struct Server {
     options: Options,
     session: Session,
     encoding: Encoding,
-    markdown: bool,
+    support: Support,
     documents: HashMap<Url, Document>,
     queue: VecDeque<Pending>,
     running: Option<(Pending, Check)>,
@@ -195,17 +257,11 @@ struct Server {
 
 impl Server {
     /// Checks the toolchain and sets up a session, or explains why not.
-    fn new(params: &lsp::InitializeParams) -> Result<Server, ResponseError> {
+    /// `capabilities` are the client's, as it sent them.
+    fn new(params: &lsp::InitializeParams, capabilities: &Value) -> Result<Server, ResponseError> {
         let options = Options::parse(params.initialization_options.as_ref());
         let std = find_std(&options.inko)?;
         let encoding = choose_encoding(params);
-        let markdown = params
-            .capabilities
-            .text_document
-            .as_ref()
-            .and_then(|t| t.hover.as_ref())
-            .and_then(|h| h.content_format.as_ref())
-            .is_none_or(|formats| formats.contains(&lsp::MarkupKind::Markdown));
 
         Ok(Server {
             session: Session {
@@ -214,7 +270,7 @@ impl Server {
             },
             options,
             encoding,
-            markdown,
+            support: Support::of(capabilities),
             documents: HashMap::new(),
             queue: VecDeque::new(),
             running: None,
@@ -739,7 +795,8 @@ impl Server {
                 code: Some(lsp::NumberOrString::String(d.id)),
                 source: Some("cuttlebone".to_string()),
                 message: d.message,
-                tags: unnecessary.then(|| vec![lsp::DiagnosticTag::UNNECESSARY]),
+                tags: (unnecessary && self.support.unnecessary_tag)
+                    .then(|| vec![lsp::DiagnosticTag::UNNECESSARY]),
                 ..Default::default()
             });
         }
@@ -1044,7 +1101,7 @@ impl Server {
             Outcome::Members(answer) => {
                 let status = status_of(&answer);
 
-                (completion(answer.result), status)
+                (completion(answer.result, self.support), status)
             }
             Outcome::Place(answer) => {
                 let status = status_of(&answer);
@@ -1088,25 +1145,7 @@ impl Server {
             Outcome::Signature(answer) => {
                 let status = status_of(&answer);
                 let result = match answer.result {
-                    Ok(Some(s)) => serde_json::to_value(lsp::SignatureHelp {
-                        signatures: vec![lsp::SignatureInformation {
-                            label: s.label,
-                            documentation: None,
-                            parameters: Some(
-                                s.parameters
-                                    .into_iter()
-                                    .map(|(_, [start, end])| lsp::ParameterInformation {
-                                        label: lsp::ParameterLabel::LabelOffsets([start, end]),
-                                        documentation: None,
-                                    })
-                                    .collect(),
-                            ),
-                            active_parameter: s.active,
-                        }],
-                        active_signature: Some(0),
-                        active_parameter: s.active,
-                    })
-                    .unwrap(),
+                    Ok(Some(s)) => signature_help(s, self.support, self.encoding),
                     _ => Value::Null,
                 };
 
@@ -1205,7 +1244,7 @@ impl Server {
         let Ok(Some(t)) = result else {
             return Value::Null;
         };
-        let contents = if self.markdown {
+        let contents = if self.support.markdown {
             lsp::MarkupContent {
                 kind: lsp::MarkupKind::Markdown,
                 value: format!("```inko\n{}\n```", t.typ),
@@ -1234,7 +1273,7 @@ fn status_of<T>(answer: &Answer<T>) -> (Result<(), Unavailable>, Duration, Sourc
     )
 }
 
-fn completion(result: Result<Option<MembersAt>, Unavailable>) -> Value {
+fn completion(result: Result<Option<MembersAt>, Unavailable>, support: Support) -> Value {
     let Ok(Some(members)) = result else {
         return Value::Null;
     };
@@ -1245,14 +1284,18 @@ fn completion(result: Result<Option<MembersAt>, Unavailable>) -> Value {
             kind: Some(match m.kind {
                 MemberKind::Method => lsp::CompletionItemKind::METHOD,
                 MemberKind::Field => lsp::CompletionItemKind::FIELD,
-                MemberKind::Constant => lsp::CompletionItemKind::CONSTANT,
+                MemberKind::Constant if support.constant_kind => lsp::CompletionItemKind::CONSTANT,
+                // The nearest of the kinds every client has.
+                MemberKind::Constant => lsp::CompletionItemKind::VALUE,
                 MemberKind::Type => lsp::CompletionItemKind::CLASS,
             }),
             detail: Some(m.signature),
-            label_details: Some(lsp::CompletionItemLabelDetails {
-                detail: None,
-                description: Some(m.module),
-            }),
+            label_details: support
+                .label_details
+                .then_some(lsp::CompletionItemLabelDetails {
+                    detail: None,
+                    description: Some(m.module),
+                }),
             label: m.name,
             ..Default::default()
         })
@@ -1263,6 +1306,59 @@ fn completion(result: Result<Option<MembersAt>, Unavailable>) -> Value {
         items,
     })
     .unwrap()
+}
+
+/// A signature as `SignatureHelp`, with what the client supports: each
+/// parameter's label as offsets into the signature's, or else its text,
+/// and the active parameter on the signature too, and `null` when none is
+/// (past the last parameter), or else left out. A client that can't take
+/// `null` then defaults to the first, as the spec says.
+fn signature_help(s: query::Signature, support: Support, encoding: Encoding) -> Value {
+    let parameters: Vec<Value> = s
+        .parameters
+        .iter()
+        .map(|(_, [start, end])| {
+            if support.label_offsets {
+                json!({ "label": [start, end] })
+            } else {
+                json!({ "label": slice_units(&s.label, *start, *end, encoding) })
+            }
+        })
+        .collect();
+    let active = match s.active {
+        Some(i) => Some(json!(i)),
+        None if support.no_active_parameter => Some(Value::Null),
+        None => None,
+    };
+    let mut signature = json!({ "label": s.label, "parameters": parameters });
+    let mut help = json!({ "signatures": [], "activeSignature": 0 });
+
+    if let Some(active) = active {
+        if support.signature_active_parameter {
+            signature["activeParameter"] = active.clone();
+        }
+
+        help["activeParameter"] = active;
+    }
+
+    help["signatures"] = json!([signature]);
+    help
+}
+
+/// The text from `start` to `end` in `encoding`'s code units.
+fn slice_units(text: &str, start: u32, end: u32, encoding: Encoding) -> String {
+    let mut units = 0;
+    let mut out = String::new();
+
+    for c in text.chars() {
+        if units >= start && units < end {
+            out.push(c);
+        }
+
+        units += encoding.len(c.encode_utf8(&mut [0; 4]));
+    }
+
+    out
 }
 
 /// A place as an LSP `Location`, or `null` for a path that can't be a

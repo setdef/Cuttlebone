@@ -1,6 +1,8 @@
 //! A minimal LSP client that drives the real `cuttlebone` binary over stdio.
+use super::spec::{capable_client, spec};
 use cuttlebone::dump::upstream_std;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -21,6 +23,12 @@ pub struct Client {
     /// Everything the server wrote to stderr so far.
     pub stderr: Arc<Mutex<String>>,
     next_id: i64,
+    /// The method of each request sent, for checking its response.
+    methods: HashMap<i64, String>,
+    /// The capabilities the client sent in the `initialize` that
+    /// succeeded, and those of each `initialize` sent, by id.
+    capabilities: Value,
+    offered: HashMap<i64, Value>,
 }
 
 /// How to start the server.
@@ -38,7 +46,12 @@ impl Client {
     }
 
     pub fn launch(launch: Launch) -> Client {
-        let mut command = Command::new(super::server_bin());
+        Client::launch_program(&super::server_bin(), launch)
+    }
+
+    /// Starts `program` instead of the server, for tests of this client.
+    pub fn launch_program(program: &Path, launch: Launch) -> Client {
+        let mut command = Command::new(program);
 
         command
             .stdin(Stdio::piped())
@@ -96,6 +109,9 @@ impl Client {
             notifications: Vec::new(),
             stderr: log,
             next_id: 1,
+            methods: HashMap::new(),
+            capabilities: json!({}),
+            offered: HashMap::new(),
         }
     }
 
@@ -119,8 +135,23 @@ impl Client {
         client
     }
 
-    /// Sends `initialize`, and returns the response.
+    /// Sends `initialize` with the capabilities of a client that supports
+    /// everything Cuttlebone can use (`spec::capable_client`), with
+    /// `capabilities` merged over them, and returns the response.
     pub fn initialize(&mut self, root: &Path, options: Value, capabilities: Value) -> Value {
+        let mut all = capable_client();
+
+        merge_deep(&mut all, capabilities);
+        self.initialize_exactly(root, options, all)
+    }
+
+    /// Sends `initialize` with exactly `capabilities`.
+    pub fn initialize_exactly(
+        &mut self,
+        root: &Path,
+        options: Value,
+        capabilities: Value,
+    ) -> Value {
         let mut init = json!({ "inko": fake_inko(cuttlebone::check::upstream_version()) });
 
         merge(&mut init, options);
@@ -136,6 +167,15 @@ impl Client {
     }
 
     pub fn send(&mut self, message: Value) {
+        if let (Some(id), Some(method)) = (message["id"].as_i64(), message["method"].as_str()) {
+            self.methods.insert(id, method.to_string());
+
+            if method == "initialize" {
+                self.offered
+                    .insert(id, message["params"]["capabilities"].clone());
+            }
+        }
+
         let body = message.to_string();
         let stdin = self.stdin.as_mut().unwrap();
 
@@ -168,8 +208,7 @@ impl Client {
     pub fn response(&mut self, id: i64) -> Value {
         loop {
             let message = self
-                .messages
-                .recv_timeout(TIMEOUT)
+                .receive(TIMEOUT)
                 .unwrap_or_else(|e| panic!("no response to {}: {}", id, e));
 
             if message.get("id") == Some(&json!(id)) && message.get("method").is_none() {
@@ -185,6 +224,36 @@ impl Client {
         }
     }
 
+    /// The next message from the server, checked against the spec
+    /// (`spec::Spec::check`): a test fails on any message that doesn't
+    /// conform.
+    pub fn receive(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Value, std::sync::mpsc::RecvTimeoutError> {
+        let message = self.messages.recv_timeout(timeout)?;
+        let method = message["id"]
+            .as_i64()
+            .and_then(|id| self.methods.get(&id))
+            .map(String::as_str);
+
+        if method == Some("initialize")
+            && message.get("result").is_some()
+            && let Some(offered) = self.offered.get(&message["id"].as_i64().unwrap())
+        {
+            self.capabilities = offered.clone();
+        }
+
+        if let Err(e) = spec().check(&message, method, &self.capabilities) {
+            panic!(
+                "a message that doesn't conform to LSP 3.18: {}\n{}",
+                e, message
+            );
+        }
+
+        Ok(message)
+    }
+
     /// Waits for a notification that `matches`, among those received so
     /// far or arriving next, and takes it out of `notifications`.
     pub fn wait_for(&mut self, matches: impl Fn(&Value) -> bool) -> Value {
@@ -194,8 +263,7 @@ impl Client {
             }
 
             let message = self
-                .messages
-                .recv_timeout(TIMEOUT)
+                .receive(TIMEOUT)
                 .unwrap_or_else(|e| panic!("no matching notification: {}", e));
 
             assert!(
@@ -339,6 +407,23 @@ fn read_message(reader: &mut impl BufRead) -> Option<Value> {
 
     reader.read_exact(&mut body).ok()?;
     serde_json::from_slice(&body).ok()
+}
+
+/// `from` merged into `into`, recursively for objects.
+pub fn merge_deep(into: &mut Value, from: Value) {
+    match (into, from) {
+        (Value::Object(a), Value::Object(b)) => {
+            for (k, v) in b {
+                match a.get_mut(&k) {
+                    Some(existing) => merge_deep(existing, v),
+                    None => {
+                        a.insert(k, v);
+                    }
+                }
+            }
+        }
+        (into, from) => *into = from,
+    }
 }
 
 fn merge(into: &mut Value, from: Value) {

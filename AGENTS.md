@@ -57,6 +57,9 @@ to get past it.
   them instead of an extension. An extension is allowed only where the
   spec has no way to do it, and docs/lsp.md ("Extensions") must say why
   for each one.
+- Send only what the client's capabilities say it supports. Every message
+  the tests receive is checked against the 3.18 meta model and the
+  client's capabilities (tests/common/spec.rs).
 
 ## Tests
 
