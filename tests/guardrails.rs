@@ -1,7 +1,7 @@
 //! The standing rules in AGENTS.md that a test can check by reading the
 //! repository: the layering of src/, no editor or client named in code, no
-//! product named after Inko, and a justification in patches/README.md for
-//! every line of the upstream patch.
+//! product named after Inko, a justification in patches/README.md for
+//! every line of the upstream patch, and a changelog entry for the version.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -476,4 +476,102 @@ fn patches_readme_accounts_for_every_line_of_the_patch() {
          lines (as `+added -removed`), and justify each line below it. \
          Left: (added, removed) in the patch. Right: in the README."
     );
+}
+
+/// The `## X.Y.Z` entries of CHANGELOG.md, newest first, with their text.
+fn changelog_entries() -> Vec<(String, String)> {
+    let changelog = read(&root().join("CHANGELOG.md"));
+
+    changelog
+        .split("\n## ")
+        .skip(1)
+        .map(|entry| {
+            let (heading, body) = entry.split_once('\n').unwrap_or((entry, ""));
+
+            (heading.trim().to_string(), body.to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn the_version_has_a_changelog_entry() {
+    let version = env!("CARGO_PKG_VERSION");
+    let entries = changelog_entries();
+
+    assert_eq!(
+        entries.first().map(|(v, _)| v.as_str()),
+        Some(version),
+        "CHANGELOG.md's newest entry must be this version, {} (AGENTS.md, \"Versions\")",
+        version
+    );
+
+    for (heading, body) in &entries {
+        let minor = heading.split('.').nth(1).unwrap_or("");
+        let report = format!("docs/history/MILESTONE-{}.md", minor);
+
+        assert!(
+            heading.split('.').count() == 3 && heading.starts_with("0."),
+            "CHANGELOG.md: {:?} isn't a version 0.<milestone>.0",
+            heading
+        );
+        assert!(
+            body.contains(&format!("]({})", report)),
+            "CHANGELOG.md: {} doesn't link to {}",
+            heading,
+            report
+        );
+        // The milestone in progress adds its report last.
+        assert!(
+            heading == version || root().join(&report).is_file(),
+            "CHANGELOG.md: {} links to {}, which doesn't exist",
+            heading,
+            report
+        );
+    }
+}
+
+/// The versions docs/lsp.md shows for Cuttlebone itself, after each of
+/// the ways its examples print one.
+fn documented_versions(text: &str) -> Vec<String> {
+    let prefixes = [
+        "cuttlebone ",
+        "Cuttlebone ",
+        "\"cuttlebone\": \"",
+        "\"version\": \"",
+        "\"version\":\"",
+    ];
+    let mut found = Vec::new();
+
+    for prefix in prefixes {
+        for (i, _) in text.match_indices(prefix) {
+            let rest = &text[i + prefix.len()..];
+            let token: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+
+            if token.split('.').count() == 3 && token.split('.').all(|p| !p.is_empty()) {
+                found.push(token);
+            }
+        }
+    }
+
+    found
+}
+
+#[test]
+fn docs_show_the_current_version() {
+    let docs = read(&root().join("docs/lsp.md"));
+    let versions = documented_versions(&docs);
+
+    assert!(!versions.is_empty(), "docs/lsp.md shows no version");
+
+    for v in versions {
+        assert_eq!(
+            v,
+            env!("CARGO_PKG_VERSION"),
+            "docs/lsp.md shows Cuttlebone's version as {}",
+            v
+        );
+    }
 }

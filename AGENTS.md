@@ -42,6 +42,22 @@ to get past it.
 - Use repository-relative paths in code, scripts and docs, never paths
   from one machine.
 
+## Versions
+
+- Every milestone has its own version, `0.<milestone>.0` in Cargo.toml.
+  Its first commit bumps the version and adds the version's entry to
+  CHANGELOG.md, linking to the milestone's report (tests/guardrails.rs
+  fails if the version has no entry). Examples in docs show the current
+  version.
+
+## Spec
+
+- Cuttlebone follows LSP 3.18. Whenever the spec's standard requests,
+  responses, error codes, capabilities or fields can solve a problem, use
+  them instead of an extension. An extension is allowed only where the
+  spec has no way to do it, and docs/lsp.md ("Extensions") must say why
+  for each one.
+
 ## Tests
 
 - Every behaviour needs a test that fails when it breaks. Prove it with a

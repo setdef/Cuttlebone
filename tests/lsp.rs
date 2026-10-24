@@ -152,6 +152,24 @@ fn initialize_advertises_only_what_works() {
 }
 
 #[test]
+fn version_prints_this_builds_version_and_inkos() {
+    let out = std::process::Command::new(crate::common::server_bin())
+        .arg("--version")
+        .output()
+        .unwrap();
+
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!(
+            "cuttlebone {} (Inko {})\n",
+            env!("CARGO_PKG_VERSION"),
+            upstream_version()
+        )
+    );
+}
+
+#[test]
 fn utf8_is_used_when_the_client_prefers_it() {
     let cases = [
         (json!(["utf-8", "utf-16"]), "utf-8"),

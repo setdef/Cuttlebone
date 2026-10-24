@@ -4,9 +4,9 @@ Cuttlebone is a plain LSP server (see [docs/lsp.md](../docs/lsp.md)), so any
 editor with an LSP client can start it. These are minimal setups for two
 editors, each with a scripted smoke check.
 
-Build the server first (`cargo build --release`). Then either put
-`target/release/cuttlebone` on your `PATH`, or give its absolute path in the
-settings below. Cuttlebone also needs `inko` 0.21.1, on `PATH` or configured.
+Install the server first (`cargo install --locked --path .`, see
+[README.md](../README.md#building)), or build it (`cargo build --release`)
+and give `target/release/cuttlebone`'s absolute path in the settings below. Cuttlebone also needs `inko` 0.21.1, on `PATH` or configured.
 
 ## Checking both
 

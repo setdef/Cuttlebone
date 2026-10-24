@@ -16,7 +16,7 @@ cuttlebone            # or: cuttlebone --stdio
   (such as VS Code's) pass it.
 - stderr carries free-form logs: compiler panics, killed checks, worker
   output. Clients may show it or discard it, but shouldn't parse it.
-- `cuttlebone --version` prints `cuttlebone 0.1.0 (Inko 0.21.1)`.
+- `cuttlebone --version` prints `cuttlebone 0.7.0 (Inko 0.21.1)`.
 
 One process serves one editor session, with any number of workspace folders.
 
@@ -45,8 +45,8 @@ response instead of a result:
 ```json
 {"jsonrpc": "2.0", "id": 1, "error": {
   "code": -32803,
-  "message": "Cuttlebone 0.1.0 works with Inko 0.21.1 only, but /usr/local/bin/inko is Inko 0.20.0. Install Inko 0.21.1, or use a build of Cuttlebone for Inko 0.20.0.",
-  "data": {"retry": false, "code": "inkoVersionMismatch", "cuttlebone": "0.1.0", "supported": "0.21.1", "installed": "0.20.0"}
+  "message": "Cuttlebone 0.7.0 works with Inko 0.21.1 only, but /usr/local/bin/inko is Inko 0.20.0. Install Inko 0.21.1, or use a build of Cuttlebone for Inko 0.20.0.",
+  "data": {"retry": false, "code": "inkoVersionMismatch", "cuttlebone": "0.7.0", "supported": "0.21.1", "installed": "0.20.0"}
 }}
 ```
 
@@ -100,7 +100,7 @@ Only what works:
     "inlayHintProvider": true,
     "experimental": {"cuttlebone": {"inko": "0.21.1", "std": "/path/to/std", "statusNotifications": false, "diagnostics": true}}
   },
-  "serverInfo": {"name": "cuttlebone", "version": "0.1.0"}
+  "serverInfo": {"name": "cuttlebone", "version": "0.7.0"}
 }
 ```
 
@@ -960,7 +960,7 @@ only `cargo test` enables it: release builds ignore the variable.
 
 ```
 → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file:///home/me/hello","capabilities":{},"initializationOptions":{"inko":"/usr/local/bin/inko"}}}
-← {"jsonrpc":"2.0","id":1,"result":{"capabilities":{...},"serverInfo":{"name":"cuttlebone","version":"0.1.0"}}}
+← {"jsonrpc":"2.0","id":1,"result":{"capabilities":{...},"serverInfo":{"name":"cuttlebone","version":"0.7.0"}}}
 → {"jsonrpc":"2.0","method":"initialized","params":{}}
 → {"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///home/me/hello/src/main.inko","languageId":"inko","version":1,"text":"..."}}}
 → {"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///home/me/hello/src/main.inko"},"position":{"line":5,"character":14}}}
