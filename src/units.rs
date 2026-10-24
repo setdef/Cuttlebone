@@ -399,6 +399,37 @@ fn widen(old: &str, new: &str, change: &Change) -> (Range<usize>, Range<usize>) 
     )
 }
 
+/// The names that text declares, if it's whole items (at the top level of
+/// a module, or in a type's body), such as a method typed in full or blank
+/// in a repaired copy: what the items declare, with the members of types,
+/// and every name in an import. `None` if it isn't, or is only blank.
+fn declared(text: &str) -> Option<HashSet<String>> {
+    if blank(text) {
+        return None;
+    }
+
+    let wrapped = format!("type CuttleboneItems {{\n{}\n}}", text);
+    let (outline, source, skip) = match Outline::parse(text) {
+        Some(o) => (o, text, None),
+        None => (Outline::parse(&wrapped)?, wrapped.as_str(), Some(0)),
+    };
+    let mut out = HashSet::new();
+
+    for (i, item) in outline.items.iter().enumerate() {
+        if Some(i) == skip {
+            continue;
+        }
+
+        match item.kind {
+            Kind::Import => out.extend(names(&source[item.range.clone()]).map(String::from)),
+            Kind::Comment => {}
+            _ => out.extend(item.names.iter().cloned()),
+        }
+    }
+
+    Some(out)
+}
+
 /// Whether text is only blank or comments: each line, trimmed, is empty or
 /// starts with `#`.
 fn blank(text: &str) -> bool {
@@ -425,6 +456,8 @@ pub struct Effect {
     /// The names in the text it added, wherever it is: a list of a symbol's
     /// uses may be missing one there.
     pub added: Vec<String>,
+    /// Whether it's inside a method's body.
+    pub body: bool,
 }
 
 impl Effect {
@@ -445,8 +478,14 @@ pub fn effect(outline: &Outline, old: &str, new: &str, change: &Change) -> Effec
         ..Effect::default()
     };
     let changed = |effect: &mut Effect| {
-        effect.names.extend(names(removed).map(String::from));
-        effect.prefixes.extend(names(added).map(String::from));
+        for (text, added) in [(removed, false), (added, true)] {
+            match declared(text) {
+                // Whole declarations: only what they declare.
+                Some(declared) => effect.names.extend(declared),
+                None if added => effect.prefixes.extend(names(text).map(String::from)),
+                None => effect.names.extend(names(text).map(String::from)),
+            }
+        }
     };
     let Some(index) = innermost else {
         // Between items: what it removed or added may declare or import
@@ -465,6 +504,7 @@ pub fn effect(outline: &Outline, old: &str, new: &str, change: &Change) -> Effec
         && old_range.end < body.end
     {
         // Inside a method's body: only the method changed.
+        effect.body = true;
         return effect;
     }
 
@@ -612,7 +652,7 @@ fn main {
         );
         // A method typed between a type's members, or between items.
         assert_eq!(
-            sorted(&effect_of("\n  fn add", 0, "\n  fn size -> Int {}")),
+            sorted(&effect_of("\n  fn add", 0, "\n  fn size -> Int {")),
             ["Counter", "Int", "size"]
         );
         assert_eq!(
@@ -634,6 +674,28 @@ fn main {
         assert!(e.affects("Stdout"));
         assert!(!e.affects("StdoutWriter"));
         assert_eq!(effect_of("Counter.new.add", 0, "x.y\n  ").added, ["x", "y"]);
+    }
+
+    #[test]
+    fn whole_items_change_only_what_they_declare() {
+        // A method typed in full, between a type's members or items.
+        let e = effect_of("\n  fn add", 0, "\n  fn size(by: Int) -> Int { by }\n");
+
+        assert_eq!(sorted(&e), ["Counter", "size"]);
+        assert!(e.prefixes.is_empty());
+
+        let e = effect_of(
+            "fn main",
+            0,
+            "import std.fmt (Format)\n\nfn other(a: Int) {}\n",
+        );
+
+        assert_eq!(sorted(&e), ["Format", "fmt", "other", "std"]);
+        // Unfinished, it may declare anything it names.
+        assert_eq!(
+            sorted(&effect_of("fn main", 0, "fn other(a: Int) {\n")),
+            ["Int", "a", "other"]
+        );
     }
 
     #[test]

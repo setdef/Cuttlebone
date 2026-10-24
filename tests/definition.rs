@@ -314,10 +314,11 @@ fn definition_in_code_with_errors_is_unavailable_with_the_same_reasons() {
         query::definition(&project.session, &request).result
     };
 
-    // A syntax error.
+    // A syntax error: a repaired copy answers before it, but not after.
     let broken = text.replacen("let pair = (1, 'two')", "let pair = (1, ", 1);
 
-    assert_eq!(query(broken, "point.moved(2)").unwrap_err().code, "noHir");
+    assert!(query(broken.clone(), "point.moved(2)").unwrap().is_some());
+    assert_eq!(query(broken, "pair.0").unwrap_err().code, "noHir");
 
     // An undefined type in a signature.
     let broken = text.replacen("ref Shape", "ref Nope", 1);

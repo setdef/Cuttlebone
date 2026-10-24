@@ -253,6 +253,54 @@ pub fn type_symbol(db: &Database, typ: TypeRef) -> Option<SymbolId> {
     Some(symbol.canonical(db))
 }
 
+/// Whether a type has nothing left to infer: no placeholder without a
+/// value anywhere in it, in type arguments and closures' signatures too. An
+/// unassigned placeholder for a type parameter formats as the parameter's
+/// name (`Array[T]`), so the formatted type doesn't say.
+pub fn inferred(db: &Database, typ: TypeRef) -> bool {
+    fn typ_inferred(db: &Database, typ: TypeRef, depth: usize) -> bool {
+        if depth > 32 {
+            return false;
+        }
+
+        match typ {
+            TypeRef::Placeholder(id) => {
+                id.value(db).is_some_and(|t| typ_inferred(db, t, depth + 1))
+            }
+            TypeRef::Error | TypeRef::Unknown => false,
+            TypeRef::Never => true,
+            TypeRef::Owned(e)
+            | TypeRef::Uni(e)
+            | TypeRef::Ref(e)
+            | TypeRef::Mut(e)
+            | TypeRef::UniRef(e)
+            | TypeRef::UniMut(e)
+            | TypeRef::Any(e)
+            | TypeRef::Pointer(e) => enum_inferred(db, e, depth),
+        }
+    }
+
+    fn enum_inferred(db: &Database, typ: TypeEnum, depth: usize) -> bool {
+        let arguments = |args: Option<&types::TypeArguments>| {
+            args.is_none_or(|a| a.values().all(|t| typ_inferred(db, t, depth + 1)))
+        };
+
+        match typ {
+            TypeEnum::TypeInstance(ins) => arguments(ins.type_arguments(db)),
+            TypeEnum::TraitInstance(ins) => arguments(ins.type_arguments(db)),
+            TypeEnum::Closure(id) => {
+                id.arguments(db)
+                    .iter()
+                    .all(|a| typ_inferred(db, a.value_type, depth + 1))
+                    && typ_inferred(db, types::Block::return_type(&id, db), depth + 1)
+            }
+            _ => true,
+        }
+    }
+
+    typ_inferred(db, typ, 0)
+}
+
 /// The symbols a module declares, at their names: types, traits, their
 /// type parameters, constructors and fields, constants, methods and their
 /// arguments. Method bodies aren't visited, so this is cheap enough to run

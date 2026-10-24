@@ -1135,11 +1135,17 @@ impl Server {
                 "textDocument": { "uri": pending.uri },
                 "status": match (&state, source) {
                     (Err(_), _) => "unavailable",
-                    (Ok(()), Source::Fresh) => "fresh",
+                    (Ok(()), Source::Fresh | Source::Repaired) => "fresh",
                     (Ok(()), Source::Stale) => "stale",
                 },
                 "elapsedMs": (elapsed.as_secs_f64() * 10000.0).round() / 10.0,
             });
+
+            // Fresh, for the documents as they are, except the lines that
+            // were blank.
+            if state.is_ok() && source == Source::Repaired {
+                params["repaired"] = json!(true);
+            }
 
             if let Err(reason) = state {
                 params["reason"] = json!({ "code": reason.code, "message": reason.message });

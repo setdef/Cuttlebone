@@ -21,7 +21,7 @@ url = "2"
 serde = { version = "1", features = ["derive"] }
 
 [features]
-# CUTTLEBONE_FAULT, which makes workers hang or abort (docs/lsp.md, "Testing
+# CUTTLEBONE_FAULT, which makes workers hang, abort or skip repaired copies (docs/lsp.md, "Testing
 # faults"). Only the tests enable it, through the dev-dependency below, so
 # release builds don't contain it.
 fault-injection = []

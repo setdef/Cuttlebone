@@ -350,30 +350,26 @@ fn broken_code_has_no_answers_and_the_same_status_reasons() {
         assert_eq!(client.status(id).unwrap()["method"], method);
     }
 
-    for (version, broken, code) in [
+    // After an unfinished statement in the same method, a repaired copy
+    // can't answer (tests/repaired.rs), and before it nothing older may.
+    for (version, broken, needle, code) in [
         (
             2,
             text.replacen("let pair = (1, 'two')", "let pair = (1, ", 1),
+            "pair.0.to_string",
             "noHir",
         ),
         (
             3,
             text.replacen("ref Shape", "ref Nope", 1),
+            "point.moved(2)",
             "declarationErrors",
         ),
     ] {
         client.change(&file, version, json!([{ "text": broken }]));
 
         for method in methods {
-            let (id, response) = ask(
-                &mut client,
-                method,
-                &root,
-                &text,
-                "point.moved(2)",
-                0,
-                false,
-            );
+            let (id, response) = ask(&mut client, method, &root, &text, needle, 0, false);
             let status = client.status(id).unwrap();
 
             assert_eq!(response["result"], Value::Null, "{}", method);

@@ -28,8 +28,10 @@ pub const DEADLINE_STATUS: i32 = 124;
 pub const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
 
 /// For testing robustness only: makes a worker hang (`hang`) or abort
-/// (`abort`) instead of checking, when the checked file's path ends with
-/// the text after the `:`, e.g. `hang:src/slow.inko`. No real input is
+/// (`abort`) instead of checking, or check without repaired copies
+/// (`norepair`, so answers from older results can be tested), when the
+/// checked file's path ends with the text after the `:`, e.g.
+/// `hang:src/slow.inko`. No real input is
 /// known to do either, and the server must survive both. Only in builds with
 /// the `fault-injection` feature, which only the tests enable.
 #[cfg(feature = "fault-injection")]
@@ -107,10 +109,15 @@ impl Job {
                 return Outcome::Diagnostics(query::diagnostics(&self.session, &self.request));
             }
         };
+        #[cfg(feature = "fault-injection")]
+        let repair = fault(self).as_deref() != Some("norepair");
+        #[cfg(not(feature = "fault-injection"))]
+        let repair = true;
         let answer = query::ask_with(
             &self.session,
             &self.request,
             self.fallback.as_ref(),
+            repair,
             &[(question, self.request.position)],
         )
         .pop()
@@ -199,20 +206,27 @@ pub fn serve() -> Result<(), String> {
         .map_err(|e| format!("couldn't write the outcome: {}", e))
 }
 
+/// The fault `CUTTLEBONE_FAULT` asks for, if its suffix matches the job's
+/// file.
+#[cfg(feature = "fault-injection")]
+fn fault(job: &Job) -> Option<String> {
+    let fault = std::env::var(FAULT_VARIABLE).ok()?;
+    let (kind, suffix) = fault.split_once(':')?;
+
+    job.request
+        .file
+        .to_string_lossy()
+        .ends_with(suffix)
+        .then(|| kind.to_string())
+}
+
 #[cfg(feature = "fault-injection")]
 fn inject_fault(job: &Job) {
-    let Ok(fault) = std::env::var(FAULT_VARIABLE) else {
-        return;
-    };
-    let Some((kind, suffix)) = fault.split_once(':') else {
+    let Some(kind) = fault(job) else {
         return;
     };
 
-    if !job.request.file.to_string_lossy().ends_with(suffix) {
-        return;
-    }
-
-    match kind {
+    match kind.as_str() {
         "hang" => loop {
             std::thread::sleep(Duration::from_secs(3600));
         },

@@ -415,3 +415,48 @@ fn queries_stay_fast_while_diagnostics_are_checked() {
         );
     }
 }
+
+/// Code that doesn't parse: a hover answered from a repaired copy (two
+/// checks), and the worst case, a hover after the edit, where neither the
+/// repaired copy nor the last good check may answer (three checks, and no
+/// answer).
+#[test]
+fn answers_in_code_being_edited_are_fast_enough() {
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let mut client = Client::initialized(&root, QUERIES_ONLY.clone());
+
+    client.open(&file, &text);
+
+    let (line, character) = at(&text, "[1, 2].size", 7, false);
+
+    // The last good check.
+    client.hover(&file, line, character);
+
+    let edited = text.replacen("    let doubled", "    let broken = (\n    let doubled", 1);
+
+    client.change(&file, 2, json!([{ "text": edited }]));
+
+    for (name, needle, offset, answered) in [
+        ("a repaired copy", "[1, 2].size", 7, true),
+        ("no answer, after three checks", "[value].iter", 1, false),
+    ] {
+        let (line, character) = at(&edited, needle, offset, false);
+        let times: Vec<Duration> = (0..RUNS)
+            .map(|_| {
+                let start = Instant::now();
+                let (_, response) = client.hover(&file, line, character);
+
+                assert_eq!(response["result"].is_object(), answered, "{}", response);
+                start.elapsed()
+            })
+            .collect();
+        let median = median(times.clone());
+
+        eprintln!(
+            "hover in code being edited, {}: {:?} (all: {:?})",
+            name, median, times
+        );
+        assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
+    }
+}

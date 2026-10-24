@@ -697,6 +697,9 @@ a custom notification if the client opts in with
 | `unavailable` | Cuttlebone has no answer, and the response is `null`. `reason` says why. A client with heuristics of its own can fall back to them. |
 | `stale` | Computed from an earlier version of the documents: the last that type checked, because the code as it is now can't be (it doesn't parse, or a declaration has an error). The answer holds for the documents as they are: every position and range in it is in text that hasn't changed since, mapped to where that text is now, in code no change since could make mean something else. Only read-only requests give these ([Answers in code being edited](#answers-in-code-being-edited)). |
 
+A `fresh` answer from a [repaired copy](#answers-in-code-being-edited)
+has `"repaired": true` too.
+
 A client that doesn't know `stale` must treat it, like any status other
 than `fresh`, as having no usable answer. One that does may show a stale
 answer as it shows a fresh one, or mark it. Clients must also ignore fields
@@ -726,27 +729,44 @@ there was no check.
 
 Code being typed usually doesn't parse, and a declaration being edited
 (say, a type in a signature typed halfway) stops the type checker before
-it types any method body. Then a fresh check has nothing to answer from,
-in that file or any file that imports it. So the server keeps, for each
-file, the open documents as they were at its last check that typed method
-bodies (a query's, or a diagnostics check's), and every edit since. When a
-fresh check can't answer (reason `noHir` or `declarationErrors`), a request
-that allows it is answered from that check instead, with status `stale`.
+it types any method body. Then a check of the documents as they are has
+nothing to answer from, in that file or any file that imports it (reason
+`noHir` or `declarationErrors`). Cuttlebone then tries two other checks,
+in this order:
+
+1. **A repaired copy.** The lines in the way are made blank, in a copy of
+   the documents, and the copy is checked. For a document that doesn't
+   parse, the first of these that parses: the lines changed since the
+   file's last good check (below), then also the line of a bracket
+   nothing closes (the parser often reports that lines later), then also
+   each line the parser stops at, in turn. For a declaration error, the
+   methods or items that the changes since the last good check outside
+   method bodies are in. Blank lines keep every
+   other line where it is. Answers are `fresh`, with `"repaired": true` in
+   the [status](#status): they come from the documents as they are, except
+   for the blank lines.
+2. **The last good check** of the file: the server keeps the open
+   documents as they were at each file's last check that typed method
+   bodies (a query's, or a diagnostics check's), and every edit since. The
+   position is mapped back through the edits, and every range in the
+   answer forward. Answers are `stale`.
 
 | Request | Answers from |
 |---|---|
-| hover, definition, type definition, document highlight, signature help, inlay hints | the documents as they are, or else the last good check (`stale`) |
-| completion | the documents as they are only: its items are inserted into the code |
-| references | the documents as they are only: a rename relies on them |
+| hover, definition, type definition, document highlight, signature help, inlay hints | the documents as they are, or else a repaired copy, or else the last good check (`stale`) |
+| completion | the documents as they are, or else a repaired copy: its items are inserted into the code, so never stale |
+| references | the documents as they are only: a rename relies on them, and a blank line may have a use |
 | diagnostics | the documents as they are, always |
 
-A stale answer is only given where it still holds:
+Either way, an answer is only given where it holds for the documents as
+they are:
 
-- **Unchanged text.** The position must be in text that hasn't changed
-  since that check, and so must every range in the answer, with the
-  characters on either side of it (an identifier typed onto is a different
-  identifier). The edits are exact: they're the `didChange` ranges. Each
-  range is mapped to where its text is now, in the negotiated encoding.
+- **Unchanged text.** The position must be in text that's the same in the
+  checked copy or version, and so must every range in the answer, with
+  the characters on either side of it (an identifier typed onto is a
+  different identifier). The edits are exact: they're the `didChange`
+  ranges. Each range is mapped to where its text is now, in the negotiated
+  encoding.
 - **Unchanged meaning.** A file is split into units: each method, and each
   other item (a type apart from its methods, a trait, an `impl` block, a
   constant, an import). A unit's types depend on its own text and the
@@ -757,15 +777,30 @@ A stale answer is only given where it still holds:
   type or import it's in, and the names it removed or added (an added name
   may be unfinished, so any name it starts counts). A change inside a
   method's body only affects that method.
+- **Before the edit, in a repaired copy.** In a method whose body has
+  blank lines, what ends before the first one still means the same once
+  the blank text is back, if all of it has a complete type: text added
+  later can only fill in a type the checker couldn't infer yet (`?`), or
+  fail to type. So there, answers are given before the first blank line.
+  Not from the last good check, where a complete type may have come from
+  text that changed since.
 - **No errors there then.** A unit that had an expression the check
-  couldn't type gets no stale answers: it may name something that didn't
-  exist then.
-- **Complete lists.** Document highlights are stale only if the name isn't
-  in changed text, or in a unit with no stale answers, where uses could be
-  missing. Inlay hints are those in units that hold, and the request is
-  unavailable if none of its range is in one.
+  couldn't type gets no answers: it may name something that didn't exist
+  then, and is being typed now. Completion's own placeholder doesn't count.
+- **Complete lists.** Document highlights are given only if the name isn't
+  in changed text, or in a unit (or part of one) with no answers, where
+  uses could be missing. Inlay hints are those in units that hold, and the
+  request is unavailable if none of its range is in one.
 
 Everywhere else the answer is `null`, with the fresh check's reason.
+
+**Cost.** A repaired copy or an older version is checked from scratch,
+like the documents as they are, so an answer in broken code can take up to
+three checks: on an Apple M1 Max, in a release build of the tests, a hover
+in a std-sized project takes about 140 ms from a repaired copy, and 240 ms
+when neither may answer (tests/latency.rs holds both to 500 ms). A document
+that doesn't parse is found in about a millisecond, before any type
+checking.
 
 **Memory.** The server keeps at most 4 versions of the open documents
 (each shared by every file whose last good check used it; a file whose
@@ -849,8 +884,10 @@ The server's own subprocesses (`inko --version`, `inko print std`) have a
 For tests only: with `CUTTLEBONE_FAULT=hang:<suffix>` or
 `CUTTLEBONE_FAULT=abort:<suffix>` in the server's environment, a worker
 checking a file whose path ends with `<suffix>` hangs or aborts instead of
-checking. No real input is known to do either, and the server must survive
-both. Only builds with the `fault-injection` cargo feature have this, and
+checking. No real input is known to do either, and the server must
+survive both. With `CUTTLEBONE_FAULT=norepair:<suffix>`, it checks no
+[repaired copies](#answers-in-code-being-edited), so tests can reach
+answers from the last good check. Only builds with the `fault-injection` cargo feature have this, and
 only `cargo test` enables it: release builds ignore the variable.
 
 ## Example

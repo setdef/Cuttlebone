@@ -1,12 +1,27 @@
 //! Answers from the last good check over LSP, with the real binary
 //! (docs/lsp.md, "Answers in code being edited"): which requests give them,
 //! that positions and ranges map through edits in both encodings, and what
-//! stays unavailable. tests/replay.rs measures them on a corpus of edits.
+//! stays unavailable. Repaired copies answer most of these first
+//! (tests/repaired.rs), so these run with them off. tests/replay.rs measures
+//! both on a corpus of edits.
 mod common;
 
-use common::client::{Client, at};
+use common::client::{Client, Launch, at};
 use common::features::Session;
 use serde_json::{Value, json};
+
+/// A server that never checks repaired copies (a fault only test builds
+/// have), so answers come from the last good check.
+fn no_repair() -> Launch<'static> {
+    Launch {
+        env: vec![("CUTTLEBONE_FAULT", "norepair:.inko".to_string())],
+        ..Launch::default()
+    }
+}
+
+fn stale_session(utf8: bool) -> Session {
+    Session::launched(utf8, no_repair())
+}
 
 /// A change that inserts `text` at the start of the line containing
 /// `needle`.
@@ -52,7 +67,7 @@ fn ask(
 #[test]
 fn read_only_requests_answer_from_the_last_good_check() {
     for utf8 in [false, true] {
-        let mut session = Session::new(utf8);
+        let mut session = stale_session(utf8);
         let file = session.file.clone();
         let text = session.text.clone();
 
@@ -225,7 +240,7 @@ fn read_only_requests_answer_from_the_last_good_check() {
 
 #[test]
 fn a_changed_declaration_leaves_out_what_mentions_it() {
-    let mut session = Session::new(false);
+    let mut session = stale_session(false);
     let file = session.file.clone();
     let text = session.text.clone();
 
@@ -296,10 +311,15 @@ fn a_changed_declaration_leaves_out_what_mentions_it() {
 
 #[test]
 fn a_diagnostics_check_is_a_good_check_too() {
-    let session = Session::new(false);
+    let session = stale_session(false);
     let (file, text) = (session.file.clone(), session.text.clone());
     let root = file.parent().unwrap().parent().unwrap().to_path_buf();
-    let mut client = Client::initialized(&root, json!({ "statusNotifications": true }));
+    let mut client = Client::initialized_with(
+        no_repair(),
+        &root,
+        json!({ "statusNotifications": true }),
+        json!({}),
+    );
 
     client.open(&file, &text);
     assert_eq!(client.diagnostics_status()["status"], "fresh");
@@ -318,7 +338,7 @@ fn a_diagnostics_check_is_a_good_check_too() {
 
 #[test]
 fn without_a_good_check_there_is_nothing_older() {
-    let mut session = Session::new(false);
+    let mut session = stale_session(false);
     let file = session.file.clone();
     let edited = session
         .text
@@ -341,7 +361,7 @@ fn without_a_good_check_there_is_nothing_older() {
 
 #[test]
 fn hints_in_the_method_being_edited_are_left_out() {
-    let mut session = Session::new(false);
+    let mut session = stale_session(false);
     let file = session.file.clone();
     let text = session.text.clone();
 
@@ -378,7 +398,7 @@ fn hints_in_the_method_being_edited_are_left_out() {
 
 #[test]
 fn a_copy_with_a_paren_is_not_a_good_check() {
-    let mut session = Session::new(false);
+    let mut session = stale_session(false);
     let file = session.file.clone();
     let text = session.text.clone();
 
@@ -435,10 +455,15 @@ fn a_copy_with_a_paren_is_not_a_good_check() {
 
 #[test]
 fn unsaved_text_when_opened_counts_as_an_edit() {
-    let session = Session::new(false);
+    let session = stale_session(false);
     let (file, text) = (session.file.clone(), session.text.clone());
     let root = file.parent().unwrap().parent().unwrap().to_path_buf();
-    let mut client = Client::initialized(&root, json!({ "statusNotifications": true }));
+    let mut client = Client::initialized_with(
+        no_repair(),
+        &root,
+        json!({ "statusNotifications": true }),
+        json!({}),
+    );
 
     // The check of the project at start reads the file from disk.
     assert_eq!(client.diagnostics_status()["status"], "fresh");
@@ -471,9 +496,11 @@ fn definitions_into_an_edited_import_are_mapped() {
     let alpha = root.join("src/alpha.inko");
     let main_text = std::fs::read_to_string(&main).unwrap();
     let alpha_text = std::fs::read_to_string(&alpha).unwrap();
-    let mut client = Client::initialized(
+    let mut client = Client::initialized_with(
+        no_repair(),
         &root,
         json!({ "statusNotifications": true, "diagnostics": false }),
+        json!({}),
     );
 
     client.open(&main, &main_text);

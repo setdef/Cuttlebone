@@ -128,6 +128,15 @@ impl Changes {
             .map(|(old, new, _)| old + offset - new)
     }
 
+    /// The offset in the new text of the byte at `offset` in the old one, if
+    /// that byte is unchanged.
+    pub fn new_offset(&self, offset: usize) -> Option<usize> {
+        self.same
+            .iter()
+            .find(|(old, _, n)| *old <= offset && offset < old + n)
+            .map(|(old, new, _)| new + offset - old)
+    }
+
     /// The range in the new text of the old `range`, if the range and the
     /// bytes just before and after it are unchanged, so it's still the
     /// same text with the same text around it: an identifier that text was
@@ -397,6 +406,8 @@ mod tests {
         assert_eq!(changes.new_range(7..8), Some(9..10));
         assert_eq!(changes.old_offset(16), Some(14));
         assert_eq!(changes.old_offset(5), None);
+        assert_eq!(changes.new_offset(14), Some(16));
+        assert_eq!(changes.new_offset(4), None);
         assert_eq!(
             changes.changed(),
             vec![Change {

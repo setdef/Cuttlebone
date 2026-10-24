@@ -14,6 +14,10 @@ pub struct Session {
 
 impl Session {
     pub fn new(utf8: bool) -> Session {
+        Session::launched(utf8, Launch::default())
+    }
+
+    pub fn launched(utf8: bool, launch: Launch) -> Session {
         let root = fixture("features");
         let file = root.join("src/main.inko");
         let text = std::fs::read_to_string(&file).unwrap();
@@ -23,7 +27,7 @@ impl Session {
             json!(["utf-16"])
         };
         let client = Client::initialized_with(
-            Launch::default(),
+            launch,
             &root,
             json!({ "statusNotifications": true, "diagnostics": false }),
             json!({ "general": { "positionEncodings": encodings } }),

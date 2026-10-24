@@ -10,14 +10,14 @@ use crate::position::{Encoding, HirPosition, Lines, Position, contains, position
 use crate::units::{Effect, Outline, Unit, effect, names};
 use crate::walker::{
     ArgumentList, Expr, ListArgument, Reference, SymbolId, Walker, declarations,
-    expressions_pass_ran, type_symbol,
+    expressions_pass_ran, inferred, type_symbol,
 };
 use compiler::hir;
 use location::Location;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -174,6 +174,11 @@ pub enum Source {
     /// in text that hasn't changed since, in a unit nothing changed the
     /// meaning of (`units`).
     Stale,
+    /// A check of the documents as they are, but with the lines that keep
+    /// them from parsing (or a changed declaration's) blank (`repaired_copy`), in
+    /// a unit the blank lines don't change the meaning of. Shown as
+    /// `fresh`.
+    Repaired,
 }
 
 /// Whether a question may be answered from a source: read-only displays
@@ -183,6 +188,8 @@ pub enum Source {
 fn allows(question: Question, source: Source) -> bool {
     match source {
         Source::Fresh => true,
+        // Only what's blank changed, but references must find every use.
+        Source::Repaired => !matches!(question, Question::References { .. }),
         Source::Stale => matches!(
             question,
             Question::Type
@@ -246,16 +253,18 @@ pub fn ask(
     request: &Request,
     questions: &[(Question, Position)],
 ) -> Vec<Answer<Reply>> {
-    ask_with(session, request, None, questions)
+    ask_with(session, request, None, true, questions)
 }
 
-/// `ask`, answering from the documents of the file's last check that typed
-/// method bodies (`fallback`) where the documents as they are can't be
-/// checked, if the question allows it (`allows`).
+/// `ask`, where the documents as they are can't be checked, answering
+/// from a repaired copy of them (if `repair`), or else from the documents
+/// of the file's last check that typed method bodies (`fallback`), if the
+/// question allows it (`allows`).
 pub fn ask_with(
     session: &Session,
     request: &Request,
     fallback: Option<&Fallback>,
+    repair: bool,
     questions: &[(Question, Position)],
 ) -> Vec<Answer<Reply>> {
     let older = fallback.map(|f| (request, f));
@@ -278,7 +287,7 @@ pub fn ask_with(
 
         for (i, answer) in group
             .iter()
-            .zip(pipeline(session, request, project, &items, older))
+            .zip(pipeline(session, request, project, &items, older, repair))
         {
             answers[*i] = Some(answer);
         }
@@ -287,7 +296,7 @@ pub fn ask_with(
     for (i, (question, position)) in questions.iter().enumerate() {
         if edits_text(*question) {
             answers[i] = Some(edited_question(
-                session, request, *question, *position, older,
+                session, request, *question, *position, older, repair,
             ));
         }
     }
@@ -867,6 +876,7 @@ fn edited_question(
     question: Question,
     position: Position,
     older: Option<(&Request, &Fallback)>,
+    repair: bool,
 ) -> Answer<Reply> {
     let start = Instant::now();
     let request = Request {
@@ -901,7 +911,7 @@ fn edited_question(
     };
     let mut answer = match prepared {
         Ok((copy, changed)) => {
-            let mut answer = pipeline(session, &copy, false, &[(inspect, position)], older)
+            let mut answer = pipeline(session, &copy, false, &[(inspect, position)], older, repair)
                 .pop()
                 .unwrap();
 
@@ -1329,6 +1339,7 @@ fn pipeline(
     project: bool,
     questions: &[(Question, Position)],
     older: Option<(&Request, &Fallback)>,
+    repair: bool,
 ) -> Vec<Answer<Reply>> {
     let start = Instant::now();
     let (mut results, typed) = match prepare(session, request) {
@@ -1351,6 +1362,32 @@ fn pipeline(
         Err(e) => (vec![Err(e); questions.len()], false),
     };
     let mut sources = vec![Source::Fresh; questions.len()];
+    let wanted: Vec<usize> = (0..questions.len())
+        .filter(|i| {
+            matches!(&results[*i], Err(r) if recoverable(r))
+                && allows(questions[*i].0, Source::Repaired)
+        })
+        .collect();
+    let parse = results
+        .iter()
+        .any(|r| matches!(r, Err(e) if e.code == "noHir"));
+
+    if repair
+        && !wanted.is_empty()
+        && let Some(repaired) = repaired_copy(request, older, parse)
+    {
+        let asked: Vec<(Question, Position)> = wanted.iter().map(|i| questions[*i]).collect();
+
+        for (i, found) in wanted
+            .iter()
+            .zip(from_older(session, request, &repaired, true, &asked))
+        {
+            if let Some(result) = found {
+                results[*i] = result;
+                sources[*i] = Source::Repaired;
+            }
+        }
+    }
 
     if let Some((now, fallback)) = older {
         let wanted: Vec<usize> = (0..questions.len())
@@ -1365,7 +1402,7 @@ fn pipeline(
 
             for (i, found) in wanted
                 .iter()
-                .zip(from_older(session, now, fallback, &asked))
+                .zip(from_older(session, now, fallback, false, &asked))
             {
                 if let Some(result) = found {
                     results[*i] = result;
@@ -1531,6 +1568,250 @@ fn analyze(
     }
 }
 
+/// A copy of the documents that may type check where they don't, as a
+/// `Fallback` (the copy, and how the documents differ from it). With
+/// `parse`, each document that doesn't parse gets lines blank, the first of
+/// these that parses: the lines changed since the last good check
+/// (`older`), then also the line of the bracket nothing closes (`unclosed`), then also each line the parser stops at in turn.
+/// Otherwise (a declaration has an error), each changed document gets the
+/// units (as that check's outline has them) of its changes outside method
+/// bodies blank. Blank lines keep every
+/// other line where it was. `None` if nothing changes, or no copy parses.
+fn repaired_copy(
+    request: &Request,
+    older: Option<(&Request, &Fallback)>,
+    parse: bool,
+) -> Option<Fallback> {
+    let file = canonical(&request.file).ok()?;
+    let mut docs: HashMap<PathBuf, String> = request
+        .contents
+        .iter()
+        .filter_map(|(p, t)| Some((canonical(p).ok()?, t.clone())))
+        .collect();
+
+    if !docs.contains_key(&file) {
+        docs.insert(file.clone(), read(&file).ok()?);
+    }
+
+    let mut out = Fallback {
+        contents: docs.clone(),
+        changes: HashMap::new(),
+    };
+
+    for (path, text) in &docs {
+        if parse && parses(text) {
+            continue;
+        }
+
+        let (changed, declarations) = older.map_or_else(Default::default, |(now, fallback)| {
+            changed_lines(now, fallback, path)
+        });
+        let mut candidates: Vec<BTreeSet<usize>> = Vec::new();
+
+        if parse {
+            candidates.push(changed.clone());
+        } else {
+            candidates.push(declarations);
+        }
+
+        if parse {
+            let mut with = candidates.last().cloned().unwrap_or_default();
+
+            if let Some(line) = unclosed(&blank(text, &with)) {
+                with.insert(line);
+                candidates.push(with);
+            }
+        }
+
+        let found = candidates
+            .iter()
+            .filter(|lines| !lines.is_empty())
+            .find(|lines| parses(&blank(text, lines)))
+            .cloned()
+            .or_else(|| {
+                // The lines the parser stops at, one by one.
+                let mut lines = candidates.last().cloned().unwrap_or_default();
+
+                for _ in 0..8 {
+                    if !parse {
+                        return None;
+                    }
+
+                    match parse_error_line(&blank(text, &lines)) {
+                        None => return Some(lines),
+                        Some(line) if lines.insert(line) => {}
+                        Some(_) => return None,
+                    }
+                }
+
+                None
+            });
+        let Some(lines) = found else {
+            if parse {
+                return None;
+            }
+
+            continue;
+        };
+
+        if lines.is_empty() {
+            continue;
+        }
+
+        let copy = blank(text, &lines);
+        let mut changes = Changes::none(copy.len());
+        let starts: Vec<usize> = std::iter::once(0)
+            .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+        let end_of = |line: usize| starts.get(line + 1).map_or(text.len(), |next| next - 1);
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+
+        // Consecutive blank lines are one change: a whole method blank is
+        // one method, not lines of one.
+        for line in &lines {
+            match runs.last_mut() {
+                Some((_, last)) if *last + 1 == *line => *last = *line,
+                _ => runs.push((*line, *line)),
+            }
+        }
+
+        // Each run's lines are empty in the copy apart from their `\n`s,
+        // and the earlier runs are back by the time it's replaced.
+        for (first, last) in runs {
+            let at = starts[first];
+
+            changes.replace(at, at + (last - first), end_of(last) - at);
+        }
+
+        out.contents.insert(path.clone(), copy);
+        out.changes.insert(path.clone(), changes);
+    }
+
+    (!out.changes.is_empty()).then_some(out)
+}
+
+/// The lines of `path` (as it is in `now`) that changed since the last
+/// good check (`fallback`), and those of the units of the changes outside
+/// method bodies.
+fn changed_lines(
+    now: &Request,
+    fallback: &Fallback,
+    path: &Path,
+) -> (BTreeSet<usize>, BTreeSet<usize>) {
+    let mut changed = BTreeSet::new();
+    let mut declarations = BTreeSet::new();
+    fn find<'a, T>(map: &'a HashMap<PathBuf, T>, path: &Path) -> Option<&'a T> {
+        map.iter()
+            .find(|(p, _)| canonical(p).ok().as_deref() == Some(path))
+            .map(|(_, v)| v)
+    }
+
+    let (Some(changes), Some(old)) = (
+        find(&fallback.changes, path),
+        find(&fallback.contents, path),
+    ) else {
+        return (changed, declarations);
+    };
+    let Some(new) = find(&now.contents, path)
+        .cloned()
+        .or_else(|| read(path).ok())
+    else {
+        return (changed, declarations);
+    };
+    let line = |byte: usize| new[..byte.min(new.len())].matches('\n').count();
+    let outline = Outline::parse(old);
+
+    for c in changes.changed() {
+        let (start, end) = (c.new.start, c.new.end.max(c.new.start + 1) - 1);
+
+        changed.extend(line(start)..=line(end));
+
+        if let Some(outline) = &outline
+            && let Unit::Item(i) = outline.unit_at(c.old.start)
+        {
+            let range = &outline.items[i].range;
+            let from = changes.new_offset(range.start).unwrap_or(c.new.start);
+            let to = changes
+                .new_offset(range.end.saturating_sub(1))
+                .unwrap_or(end)
+                .max(end);
+
+            if !effect(outline, old, &new, &c).body {
+                declarations.extend(line(from)..=line(to));
+            }
+        }
+    }
+
+    (changed, declarations)
+}
+
+/// `text` with `lines` (0-based) blank: empty, apart from their `\n`.
+fn blank(text: &str, lines: &BTreeSet<usize>) -> String {
+    text.split_inclusive('\n')
+        .enumerate()
+        .map(|(i, l)| {
+            if !lines.contains(&i) {
+                l
+            } else if l.ends_with('\n') {
+                "\n"
+            } else {
+                ""
+            }
+        })
+        .collect()
+}
+
+/// The line (0-based) of the bracket nothing closes: the one a closing
+/// bracket of another kind meets, or the innermost left open at the end.
+/// The parser reports these where it notices, which may be lines later.
+/// Strings and comments are skipped.
+fn unclosed(text: &str) -> Option<usize> {
+    let mut open: Vec<(char, usize)> = Vec::new();
+    let mut quote = None;
+
+    for (number, line) in text.lines().enumerate() {
+        let mut chars = line.chars();
+
+        while let Some(c) = chars.next() {
+            match (quote, c) {
+                (Some(_), '\\') => {
+                    chars.next();
+                }
+                (Some(q), c) if c == q => quote = None,
+                (Some(_), _) => {}
+                (None, '"' | '\'') => quote = Some(c),
+                (None, '#') => break,
+                (None, '(' | '[' | '{') => open.push((c, number)),
+                (None, ')' | ']' | '}') => {
+                    let expected = match c {
+                        ')' => '(',
+                        ']' => '[',
+                        _ => '{',
+                    };
+
+                    match open.pop() {
+                        Some((o, _)) if o == expected => {}
+                        Some((_, line)) => return Some(line),
+                        None => return Some(number),
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    open.last().map(|(_, line)| *line)
+}
+
+/// The line (0-based) where parsing a module's source stops, or `None` if
+/// it parses.
+fn parse_error_line(text: &str) -> Option<usize> {
+    ast::parser::Parser::new(text.as_bytes().to_vec(), PathBuf::from("check.inko"))
+        .parse()
+        .err()
+        .map(|e| e.location.line_start.saturating_sub(1) as usize)
+}
+
 /// A file as an older check read it, and as it is now.
 struct Version {
     old: String,
@@ -1546,10 +1827,15 @@ struct Version {
 /// change since could make mean something else (`units`). `None` where
 /// there's no such answer, and for every question if that check didn't
 /// type method bodies.
+///
+/// With `repaired`, the older documents are a repaired copy of these
+/// (`repaired_copy`), and a method with blank lines still answers before the
+/// first of them (`Guard::limit`).
 fn from_older(
     session: &Session,
     now: &Request,
     fallback: &Fallback,
+    repaired: bool,
     questions: &[(Question, Position)],
 ) -> Vec<Option<Result<Option<Reply>, Unavailable>>> {
     let nothing = || vec![None; questions.len()];
@@ -1637,7 +1923,12 @@ fn from_older(
 
             walker.module(module);
 
-            let Some(guard) = Guard::new(&file, &old, &new, changes, &versions, &walker, encoding)
+            let own = Version {
+                old: old.clone(),
+                new: new.clone(),
+                changes: changes.clone(),
+            };
+            let Some(guard) = Guard::new(&file, &own, &versions, &walker, encoding, repaired)
             else {
                 return nothing();
             };
@@ -1699,14 +1990,18 @@ struct Guard<'a> {
     changes: &'a Changes,
     versions: &'a HashMap<PathBuf, Version>,
     outline: Outline,
-    /// The byte of the old text each expression of the walk starts at, and
-    /// its type, `None` if the check couldn't type it.
-    types: Vec<(usize, Option<&'a str>)>,
+    /// The bytes of the old text each expression of the walk covers, its
+    /// type (`None` if the check couldn't type it), and whether there's
+    /// nothing left to infer in it (`inferred`).
+    types: Vec<(usize, usize, Option<&'a str>, bool)>,
+    /// Whether the old text is a repaired copy of the new.
+    repaired: bool,
     /// What the changes to the file did.
     effects: Vec<Effect>,
     /// What the changes to every file did.
     all: Vec<Effect>,
-    safe: RefCell<HashMap<Unit, bool>>,
+    /// Each unit's `limit`.
+    limits: RefCell<HashMap<Unit, usize>>,
     encoding: Encoding,
 }
 
@@ -1715,13 +2010,13 @@ impl<'a> Guard<'a> {
     /// happen for a check that typed method bodies.
     fn new(
         file: &'a Path,
-        old: &'a str,
-        new: &'a str,
-        changes: &'a Changes,
+        own: &'a Version,
         versions: &'a HashMap<PathBuf, Version>,
         walker: &'a Walker,
         encoding: Encoding,
+        repaired: bool,
     ) -> Option<Guard<'a>> {
+        let (old, new, changes) = (own.old.as_str(), own.new.as_str(), &own.changes);
         let outline = Outline::parse(old)?;
         let mut effects = Vec::new();
         let mut all = Vec::new();
@@ -1742,15 +2037,28 @@ impl<'a> Guard<'a> {
         let starts: Vec<usize> = std::iter::once(0)
             .chain(old.match_indices('\n').map(|(i, _)| i + 1))
             .collect();
+        // Completion's placeholder is never a method: the call it's in is
+        // never typed, which isn't an error in the code.
+        let placeholders: Vec<usize> = old.match_indices(PLACEHOLDER).map(|(i, _)| i).collect();
         let types = walker
             .out
             .iter()
             .filter_map(|e| {
-                let p = lines.from_hir(e.location.line_start, e.location.column_start);
-                let byte = starts.get(p.line as usize)? + p.character as usize;
+                let l = e.location;
+                let byte = |line: u32, column: u32| {
+                    let p = lines.from_hir(line, column);
 
-                Some((byte, e.typ.as_deref().filter(|t| !t.contains("<error>"))))
+                    Some(starts.get(p.line as usize)? + p.character as usize)
+                };
+
+                Some((
+                    byte(l.line_start, l.column_start)?,
+                    byte(l.line_end, l.column_end + 1)?,
+                    e.typ.as_deref().filter(|t| !t.contains("<error>")),
+                    e.raw.is_some_and(|t| inferred(walker.db, t)),
+                ))
             })
+            .filter(|(start, end, ..)| !placeholders.iter().any(|p| start <= p && p < end))
             .collect();
 
         Some(Guard {
@@ -1763,76 +2071,112 @@ impl<'a> Guard<'a> {
             types,
             effects,
             all,
-            safe: RefCell::new(HashMap::new()),
+            repaired,
+            limits: RefCell::new(HashMap::new()),
             encoding,
         })
     }
 
     /// Whether the unit the old text's byte `offset` is in means what it
-    /// did, and meant something then: no change touched it, it mentions
-    /// none of the names a change is about, and the check typed all of it.
-    /// A unit with an error may refer to something that didn't exist then,
-    /// and is being typed now.
+    /// did there (`limit`).
     fn safe(&self, offset: usize) -> bool {
-        self.safe_unit(self.outline.unit_at(offset))
+        offset < self.limit(self.outline.unit_at(offset))
     }
 
-    fn safe_unit(&self, unit: Unit) -> bool {
-        if let Some(safe) = self.safe.borrow().get(&unit) {
-            return *safe;
+    /// Where a unit stops meaning what it did: the end of the old text if
+    /// no change touched it, it mentions none of the names a change is
+    /// about, and the check typed all of it; 0 if not. A unit with an error
+    /// may refer to something that didn't exist then, and is being typed
+    /// now.
+    ///
+    /// In a repaired copy, a method whose body has blank lines still means
+    /// what it will before the first: the blank text can't change a type
+    /// that's complete without it (it could only fill in a `?`, or fail to
+    /// type), and what's before it can't refer to what it declares. So
+    /// there, the limit is the first blank line, if everything that ends
+    /// before it has a complete type. An older check has no such limit: a
+    /// complete type there may have come from text that changed since.
+    fn limit(&self, unit: Unit) -> usize {
+        if let Some(limit) = self.limits.borrow().get(&unit) {
+            return *limit;
         }
 
-        let safe = self.check_unit(unit);
+        let limit = self.find_limit(unit);
 
-        self.safe.borrow_mut().insert(unit, safe);
-        safe
+        self.limits.borrow_mut().insert(unit, limit);
+        limit
     }
 
-    fn check_unit(&self, unit: Unit) -> bool {
-        {
-            let own = self.outline.own(unit);
+    fn find_limit(&self, unit: Unit) -> usize {
+        // Only comments and blank lines are between items, and they mean
+        // nothing.
+        if unit == Unit::Between {
+            return usize::MAX;
+        }
 
-            // Only comments and blank lines are between items, and they
-            // mean nothing.
-            if unit == Unit::Between {
-                return true;
-            }
-
-            let touched = self.effects.iter().filter_map(|e| e.old.as_ref()).any(|t| {
-                own.iter().any(|r| {
-                    if t.is_empty() {
-                        r.start < t.start && t.start < r.end
-                    } else {
-                        t.start < r.end && r.start < t.end
-                    }
+        let own = self.outline.own(unit);
+        let touching: Vec<&Effect> = self
+            .effects
+            .iter()
+            .filter(|e| {
+                e.old.as_ref().is_some_and(|t| {
+                    own.iter().any(|r| {
+                        if t.is_empty() {
+                            r.start < t.start && t.start < r.end
+                        } else {
+                            t.start < r.end && r.start < t.end
+                        }
+                    })
                 })
-            });
-
-            if touched {
-                return false;
-            }
-
-            let types: Vec<Option<&str>> = self
-                .types
+            })
+            .collect();
+        let limit = if touching.is_empty() {
+            usize::MAX
+        } else if self.repaired && touching.iter().all(|e| e.body) {
+            touching
                 .iter()
-                .filter(|(byte, _)| own.iter().any(|r| r.contains(byte)))
-                .map(|(_, typ)| *typ)
-                .collect();
+                .filter_map(|e| e.old.as_ref().map(|r| r.start))
+                .min()
+                .unwrap()
+        } else {
+            return 0;
+        };
+        let before: Vec<std::ops::Range<usize>> = own
+            .iter()
+            .filter(|r| r.start < limit)
+            .map(|r| r.start..r.end.min(limit))
+            .collect();
+        let types: Vec<(Option<&str>, bool)> = self
+            .types
+            .iter()
+            .filter(|(start, ..)| before.iter().any(|r| r.contains(start)))
+            .map(|(_, _, typ, complete)| (*typ, *complete))
+            .collect();
 
-            if types.contains(&None) {
-                return false;
-            }
-
-            let mentioned: HashSet<&str> = own
-                .iter()
-                .flat_map(|r| names(&self.old[r.clone()]))
-                .chain(types.into_iter().flatten().flat_map(names))
-                .collect();
-
-            !mentioned
-                .iter()
-                .any(|n| self.all.iter().any(|e| e.affects(n)))
+        if types.iter().any(|(t, _)| t.is_none()) {
+            return 0;
         }
+
+        if limit < usize::MAX && types.iter().any(|(_, complete)| !complete) {
+            return 0;
+        }
+
+        let types: Vec<Option<&str>> = types.into_iter().map(|(t, _)| t).collect();
+
+        let mentioned: HashSet<&str> = before
+            .iter()
+            .flat_map(|r| names(&self.old[r.clone()]))
+            .chain(types.into_iter().flatten().flat_map(names))
+            .collect();
+
+        if mentioned
+            .iter()
+            .any(|n| self.all.iter().any(|e| e.affects(n)))
+        {
+            return 0;
+        }
+
+        limit
     }
 
     /// A range of the old text as a range of the new one, if it's
@@ -1936,12 +2280,13 @@ impl<'a> Guard<'a> {
                 .map(Unit::Item)
                 .filter(|u| self.outline.unit_at_item(*u))
                 .any(|u| {
-                    !self.safe_unit(u)
-                        && self
-                            .outline
-                            .own(u)
-                            .iter()
-                            .any(|r| names(&self.old[r.clone()]).any(|n| n == name))
+                    let limit = self.limit(u);
+
+                    self.outline
+                        .own(u)
+                        .iter()
+                        .filter(|r| r.end > limit)
+                        .any(|r| names(&self.old[r.start.max(limit)..r.end]).any(|n| n == name))
                 });
 
             added || unsafe_use

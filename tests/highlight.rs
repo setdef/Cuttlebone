@@ -3,7 +3,7 @@
 mod common;
 
 use common::features::Session;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const TEXT: u64 = 1;
 const READ: u64 = 2;
@@ -135,7 +135,9 @@ fn nothing_to_highlight_is_null() {
     }
 }
 
-/// Broken code: the same reasons as other queries.
+/// Broken code: the same reasons as other queries. A syntax error in
+/// another method leaves a repaired copy to answer from; one before the
+/// variable's uses doesn't.
 #[test]
 fn a_syntax_error_is_unavailable() {
     let mut session = Session::new(false);
@@ -145,6 +147,21 @@ fn a_syntax_error_is_unavailable() {
     session.client.open(&file, &broken);
 
     let (id, response) = session.request("textDocument/documentHighlight", "let mut total", 8);
+
+    assert_eq!(response["result"].as_array().unwrap().len(), 7);
+    assert_eq!(session.client.status(id).unwrap()["repaired"], true);
+
+    let broken = session
+        .text
+        .replacen("    let mut total", "    let x = (\n    let mut total", 1);
+
+    session.client.change(&file, 2, json!([{ "text": broken }]));
+
+    let (line, character) = common::client::at(&broken, "let mut total", 8, false);
+    let id = session
+        .client
+        .send_at("textDocument/documentHighlight", &file, line, character);
+    let response = session.client.response(id);
 
     assert_eq!(response["result"], Value::Null);
     assert_eq!(

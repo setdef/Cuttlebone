@@ -358,6 +358,19 @@ fn scenarios() -> Vec<Scenario> {
             test_set,
             |p, t| retype_line(p, t, "let set = Set.from_array([10, 20, 30])"),
         ),
+        // The array's type comes from the pushes typed again.
+        scenario(
+            "std test_int: retype a closure",
+            std_session(),
+            "test/std/test_int.inko",
+            |p, t| retype_line(p, t, "3.times(fn (v) { vals.push(v) })"),
+        ),
+        scenario(
+            "std test_array: delete and retype pushes",
+            std_session(),
+            "test/std/test_array.inko",
+            |p, t| retype_lines(p, t, "    vals.push(10)\n    vals.push(20)", 2),
+        ),
     ]
 }
 
@@ -452,21 +465,22 @@ impl Tally {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "| request | asked | fresh | stale | no answer | fresh, differs at the end | wrong |"
+            "| request | asked | fresh | repaired | stale | no answer | fresh, differs at the end | wrong |"
         );
-        let _ = writeln!(out, "|---|---|---|---|---|---|---|");
+        let _ = writeln!(out, "|---|---|---|---|---|---|---|---|");
 
         for request in REQUESTS {
             let _ = writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} |",
                 request,
                 self.asked(request),
                 self.get(request, Verdict::Right(Source::Fresh)),
+                self.get(request, Verdict::Right(Source::Repaired)),
                 self.get(request, Verdict::Right(Source::Stale)),
                 self.get(request, Verdict::None),
                 self.wrong(request, Source::Fresh),
-                self.wrong(request, Source::Stale),
+                self.wrong(request, Source::Stale) + self.wrong(request, Source::Repaired),
             );
         }
 
@@ -713,7 +727,10 @@ struct Asked {
 
 /// Runs a scenario: applies each edit, asks every question after it, and
 /// compares the answers with the final ones.
-fn replay(scenario: &Scenario) -> Tally {
+/// Without `memory`, the server keeps no older checks (as just after it
+/// starts, or for a file that was never good), so no answer is stale.
+/// Without `repair`, no repaired copies are checked.
+fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
     let mut docs = Documents {
         texts: scenario.open.iter().cloned().collect(),
     };
@@ -730,11 +747,12 @@ fn replay(scenario: &Scenario) -> Tally {
                questions: &[(Question, Position)]| {
         snapshots.sent(check, &docs.texts);
 
-        let fallback = snapshots.fallback(file, None);
+        let fallback = snapshots.fallback(file, None).filter(|_| memory);
         let answers = query::ask_with(
             &scenario.session,
             &docs.request(file),
             fallback.as_ref(),
+            repair,
             questions,
         );
         let typed = answers.iter().any(|a| a.typed);
@@ -958,61 +976,118 @@ fn first_unchanged_on_line(
 /// The questions that got an answer, at least, per request: what the
 /// corpus measured. Raise these when coverage improves.
 const COVERAGE: &[(&str, usize)] = &[
-    ("hover", 8552),
-    ("definition", 8864),
-    ("typeDefinition", 8552),
-    ("completion", 78),
-    ("signatureHelp", 246),
-    ("inlayHint", 5129),
-    ("documentHighlight", 8039),
+    ("hover", 11068),
+    ("definition", 11475),
+    ("typeDefinition", 11154),
+    ("completion", 110),
+    ("signatureHelp", 353),
+    ("inlayHint", 6334),
+    ("documentHighlight", 10019),
+];
+
+/// What the server answers without older checks, from repaired copies
+/// only.
+const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
+    ("hover", 8819),
+    ("definition", 9190),
+    ("typeDefinition", 8869),
+    ("completion", 104),
+    ("signatureHelp", 258),
+    ("inlayHint", 5061),
+    ("documentHighlight", 8310),
+];
+
+/// What older checks answer alone, without repaired copies.
+const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
+    ("hover", 9088),
+    ("definition", 9409),
+    ("typeDefinition", 9088),
+    ("completion", 88),
+    ("signatureHelp", 269),
+    ("inlayHint", 5527),
+    ("documentHighlight", 8584),
 ];
 
 #[test]
 fn answers_mid_edit_agree_with_the_final_ones() {
     let scenarios = scenarios();
-    let tallies: Vec<Tally> = std::thread::scope(|s| {
-        let handles: Vec<_> = scenarios
+    let modes = [
+        ("", true, true, COVERAGE),
+        (
+            ", without older checks",
+            false,
+            true,
+            COVERAGE_WITHOUT_MEMORY,
+        ),
+        (
+            ", without repaired copies",
+            true,
+            false,
+            COVERAGE_WITHOUT_REPAIR,
+        ),
+    ];
+    let tallies: Vec<Vec<Tally>> = std::thread::scope(|s| {
+        let handles: Vec<Vec<_>> = scenarios
             .iter()
-            .map(|scenario| s.spawn(|| replay(scenario)))
+            .map(|scenario| {
+                modes
+                    .iter()
+                    .map(|(_, memory, repair, _)| {
+                        s.spawn(move || replay(scenario, *memory, *repair))
+                    })
+                    .collect()
+            })
             .collect();
 
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| h.into_iter().map(|h| h.join().unwrap()).collect())
+            .collect()
     });
-    let mut total = Tally::default();
+    let mut totals = vec![Tally::default(); modes.len()];
 
-    for (scenario, tally) in scenarios.iter().zip(&tallies) {
+    for (scenario, tallies) in scenarios.iter().zip(&tallies) {
         eprintln!(
             "\n{} ({} edits)\n\n{}",
             scenario.name,
             scenario.edits.len(),
-            tally.table()
+            tallies[0].table()
         );
-        total.merge(tally);
+
+        for (total, tally) in totals.iter_mut().zip(tallies) {
+            total.merge(tally);
+        }
     }
 
-    eprintln!("\nAll scenarios\n\n{}", total.table());
+    for ((name, ..), total) in modes.iter().zip(&totals) {
+        eprintln!("\nAll scenarios{}\n\n{}", name, total.table());
+    }
 
-    for differs in &total.differs {
+    for differs in &totals[0].differs {
         eprintln!("FRESH, DIFFERS: {}", differs);
     }
 
-    for wrong in total.wrong.iter().take(20) {
+    for wrong in totals.iter().flat_map(|t| &t.wrong).take(20) {
         eprintln!("WRONG: {}", wrong);
     }
 
-    for (request, minimum) in COVERAGE {
+    for ((name, _, _, coverage), tally) in modes.iter().zip(&totals) {
+        for (request, minimum) in *coverage {
+            assert!(
+                tally.answered(request) >= *minimum,
+                "{}{}: {} answered, fewer than the {} measured",
+                request,
+                name,
+                tally.answered(request),
+                minimum
+            );
+        }
+
         assert!(
-            total.answered(request) >= *minimum,
-            "{}: {} answered, fewer than the {} measured",
-            request,
-            total.answered(request),
-            minimum
+            tally.wrong.is_empty(),
+            "{} wrong answers{}",
+            tally.wrong.len(),
+            name
         );
     }
-
-    assert!(
-        total.wrong.is_empty(),
-        "{} wrong answers",
-        total.wrong.len()
-    );
 }
