@@ -289,7 +289,10 @@ impl Support {
                 signature
             )),
             signature_active_parameter: yes(&format!("{}/activeParameterSupport", signature)),
-            no_active_parameter: yes("/textDocument/signatureHelp/noActiveParameterSupport"),
+            // Where the meta model has it, and where the spec's text says it
+            // is.
+            no_active_parameter: yes(&format!("{}/noActiveParameterSupport", signature))
+                || yes("/textDocument/signatureHelp/noActiveParameterSupport"),
             unnecessary_tag: lists(
                 "/textDocument/publishDiagnostics/tagSupport/valueSet",
                 json!(lsp::DiagnosticTag::UNNECESSARY),

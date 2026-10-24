@@ -132,6 +132,15 @@ fn diagnostics_without_tag_support_have_no_tags() {
     }
 }
 
+/// The capabilities the tests send are the spec's: a capability in the
+/// wrong place would test what no client sends.
+#[test]
+fn the_tests_capabilities_conform() {
+    spec()
+        .conforms("ClientCapabilities", &capable_client())
+        .unwrap();
+}
+
 #[test]
 fn the_checks_catch_what_they_check() {
     let spec = spec();

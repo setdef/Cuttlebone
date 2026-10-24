@@ -485,7 +485,9 @@ parameter the argument at the position is for. `(` and `,` trigger it.
   - after a `,` with nothing typed yet, the next positional parameter, or
     after named arguments, the first parameter not named yet
   - none past the last parameter: `null` for a client with
-    `signatureHelp.noActiveParameterSupport` (LSP 3.18). For others it's
+    `signatureInformation.noActiveParameterSupport` (LSP 3.18; the spec's
+    text also calls it `signatureHelp.noActiveParameterSupport`, which
+    counts too). For others it's
     left out, which the spec says means the first, since they have no way
     to be told there's none.
 - **`activeParameter` on the signature** as well as on the result, for a

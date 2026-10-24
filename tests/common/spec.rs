@@ -148,6 +148,11 @@ impl Spec {
         }
     }
 
+    /// Checks `value` against a type of the meta model, by name.
+    pub fn conforms(&self, name: &str, value: &Value) -> Result<(), String> {
+        self.reference(name, value, name)
+    }
+
     /// Checks `value` against a meta model type.
     fn value(&self, typ: &Value, value: &Value, path: &str) -> Result<(), String> {
         let mismatch = || {
@@ -388,10 +393,11 @@ fn gates(method: &str, value: &Value, capabilities: &Value) -> Result<(), String
         }
         "textDocument/signatureHelp" => {
             let info = "textDocument.signatureHelp.signatureInformation";
-            let no_active = supports(
-                capabilities,
-                "textDocument.signatureHelp.noActiveParameterSupport",
-            );
+            let no_active = supports(capabilities, &format!("{}.noActiveParameterSupport", info))
+                || supports(
+                    capabilities,
+                    "textDocument.signatureHelp.noActiveParameterSupport",
+                );
 
             if value.get("activeParameter") == Some(&Value::Null) && !no_active {
                 return Err("activeParameter null without noActiveParameterSupport".to_string());
@@ -479,8 +485,8 @@ pub fn capable_client() -> Value {
                 "signatureInformation": {
                     "parameterInformation": { "labelOffsetSupport": true },
                     "activeParameterSupport": true,
+                    "noActiveParameterSupport": true,
                 },
-                "noActiveParameterSupport": true,
             },
             "publishDiagnostics": { "tagSupport": { "valueSet": [1, 2] } },
         },

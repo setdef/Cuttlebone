@@ -92,6 +92,7 @@ M = [
  ("parameter text off by one", "src/lsp.rs", "        if units >= start && units < end {", "        if units > start && units <= end {", "--test conformance signature_help_without"),
  ("signature activeParameter for every client", "src/lsp.rs", "        if support.signature_active_parameter {", "        if true {", "--test conformance signature_help_without"),
  ("null activeParameter for every client", "src/lsp.rs", "        None if support.no_active_parameter => Some(Value::Null),", "        None => Some(Value::Null),", "--test conformance signature_help_without"),
+ ("noActiveParameterSupport read from the spec text's place only", "src/lsp.rs", "            no_active_parameter: yes(&format!(\"{}/noActiveParameterSupport\", signature))\n", "            no_active_parameter: false\n", "--test signature past_the_last"),
  ("no null activeParameter", "src/lsp.rs", "        None if support.no_active_parameter => Some(Value::Null),", "", "--test signature past_the_last"),
  ("diagnostic tags for every client", "src/lsp.rs", "tags: (unnecessary && self.support.unnecessary_tag)", "tags: (unnecessary || self.support.unnecessary_tag)", "--test conformance diagnostics_without"),
  ("the conformance check off", "tests/common/client.rs", "        if let Err(e) = spec().check(&message, method, &self.capabilities) {", "        if let Err(e) = Ok::<(), String>(()) {", "--test conformance the_client_fails"),
