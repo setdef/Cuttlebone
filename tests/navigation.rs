@@ -1,9 +1,8 @@
 //! Go to definition, type definition and references over LSP: the real
 //! `cuttlebone` binary over stdio, as in tests/lsp.rs.
-mod common;
 
-use common::client::{Client, Launch, at, fake_inko_with_std, uri};
-use common::fixture;
+use crate::common::client::{Client, Launch, at, fake_inko_with_std, uri};
+use crate::common::fixture;
 use cuttlebone::check::upstream_version;
 use cuttlebone::dump::upstream_std;
 use serde_json::{Value, json};
@@ -400,7 +399,7 @@ fn copy_dir(from: &Path, to: &Path) {
 fn locations_in_std_are_in_the_installed_std() {
     // An installed Inko whose std is a copy, as a package manager would put
     // it, so a location under .upstream/ can't pass.
-    let installed = Path::new(env!("CARGO_TARGET_TMPDIR")).join("installed-inko");
+    let installed = crate::common::tmp().join("installed-inko");
     let _ = std::fs::remove_dir_all(&installed);
 
     copy_dir(&upstream_std(), &installed.join("lib/inko/std/src"));
@@ -434,7 +433,7 @@ fn locations_in_std_are_in_the_installed_std() {
 
 #[test]
 fn locations_in_dependencies_are_in_the_projects_dep_directory() {
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("navigation-dep");
+    let root = crate::common::tmp().join("navigation-dep");
     let _ = std::fs::remove_dir_all(&root);
     let url = "https://example.com/acme/geo";
     let dir = compiler::pkg::manifest::Url::parse(url)

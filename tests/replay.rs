@@ -21,11 +21,13 @@
 //! counted apart. The test also fails if fewer questions get an answer
 //! than were measured (`COVERAGE`).
 //!
-//! `cargo test --test replay -- --nocapture` prints the tables.
+//! Every commit replays a sample (`SAMPLE`); with `CUTTLEBONE_CORPUS_FULL`
+//! set, the milestone tier and the mutation runner replay all of it
+//! (AGENTS.md). `cargo test --test integration replay:: -- --nocapture` prints the
+//! tables.
 
 // The tables are this test's report.
 #![allow(clippy::print_stderr)]
-mod common;
 
 use cuttlebone::dump::upstream_std;
 use cuttlebone::edits::{Changes, Snapshots};
@@ -63,6 +65,9 @@ struct Scenario {
     /// Every file the scenario opens, with its text.
     open: Vec<(PathBuf, String)>,
     edits: Vec<Edit>,
+    /// Questions are asked after every `every`th edit (and the last): 1
+    /// for the full corpus, more for a scenario in the sample.
+    every: usize,
 }
 
 /// The line containing `needle`: its start, and its end before the `\n`.
@@ -222,7 +227,7 @@ fn retype_word(file: &Path, text: &str, needle: &str, word: &str) -> Vec<Edit> {
 }
 
 fn fixture_session(name: &str) -> (Session, PathBuf) {
-    let root = common::fixture(name);
+    let root = crate::common::fixture(name);
 
     (
         Session {
@@ -261,6 +266,7 @@ fn scenario(
         edits: edits(&path, &text),
         file: path.clone(),
         open: vec![(path, text)],
+        every: 1,
     }
 }
 
@@ -718,6 +724,7 @@ struct Asked {
     /// The question at its position in the final text.
     question: (Question, Position),
     /// The index of the edit it was asked after, in `mappings`.
+    /// Which of `mappings` the answer's text maps to the end through.
     step: usize,
     answer: Answer<Reply>,
     /// `answer`, normalized against the final text.
@@ -794,6 +801,11 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
             edit.text.len(),
         );
         docs.apply(edit);
+
+        // The sample asks after every `every`th edit, and the last.
+        if step % scenario.every != 0 && step + 1 != scenario.edits.len() {
+            continue;
+        }
 
         let now = docs.texts[file].clone();
         let mapping = Mapping {
@@ -876,7 +888,7 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
             let reply = answer.result.clone().unwrap_or(None);
 
             asked.push(Asked {
-                step,
+                step: mappings.len(),
                 request: request_name(question),
                 question: final_question,
                 normalized: normalize(&reply, file, &mapping, true),
@@ -977,8 +989,53 @@ fn first_unchanged_on_line(
     })
 }
 
+/// With this set (to anything), the test replays the whole corpus, as the
+/// milestone tier and the mutation runner do (AGENTS.md); without it, the
+/// sample below, as every commit does.
+const FULL_VARIABLE: &str = "CUTTLEBONE_CORPUS_FULL";
+
+/// The scenarios every commit replays, and after every how many edits each
+/// asks its questions: one of each kind of edit, the long ones thinned.
+const SAMPLE: &[(&str, usize)] = &[
+    ("features: retype a let", 8),
+    ("features: delete and retype lines", 1),
+    ("features: retype a method", 8),
+    ("features: break an argument's type", 1),
+    ("navigation: break a return type in an import", 2),
+    ("std range: delete and retype lines", 1),
+];
+
 /// The questions that got an answer, at least, per request: what the
 /// corpus measured. Raise these when coverage improves.
+/// The same as `COVERAGE` and the two below, for the sample.
+const SAMPLE_COVERAGE: &[(&str, usize)] = &[
+    ("hover", 1278),
+    ("definition", 1291),
+    ("typeDefinition", 1278),
+    ("completion", 19),
+    ("signatureHelp", 35),
+    ("inlayHint", 720),
+    ("documentHighlight", 1212),
+];
+const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
+    ("hover", 990),
+    ("definition", 1003),
+    ("typeDefinition", 990),
+    ("completion", 19),
+    ("signatureHelp", 29),
+    ("inlayHint", 549),
+    ("documentHighlight", 983),
+];
+const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
+    ("hover", 1242),
+    ("definition", 1255),
+    ("typeDefinition", 1242),
+    ("completion", 19),
+    ("signatureHelp", 35),
+    ("inlayHint", 705),
+    ("documentHighlight", 1185),
+];
+
 const COVERAGE: &[(&str, usize)] = &[
     ("hover", 11068),
     ("definition", 11475),
@@ -1014,30 +1071,49 @@ const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
 
 #[test]
 fn answers_mid_edit_agree_with_the_final_ones() {
-    let scenarios = scenarios();
+    let full = std::env::var_os(FULL_VARIABLE).is_some();
+    let scenarios: Vec<Scenario> = scenarios()
+        .into_iter()
+        .filter_map(|mut s| {
+            if full {
+                return Some(s);
+            }
+
+            let (_, every) = SAMPLE.iter().find(|(name, _)| *name == s.name)?;
+
+            s.every = *every;
+            Some(s)
+        })
+        .collect();
+    let (coverage, without_memory, without_repair) = if full {
+        (COVERAGE, COVERAGE_WITHOUT_MEMORY, COVERAGE_WITHOUT_REPAIR)
+    } else {
+        (
+            SAMPLE_COVERAGE,
+            SAMPLE_COVERAGE_WITHOUT_MEMORY,
+            SAMPLE_COVERAGE_WITHOUT_REPAIR,
+        )
+    };
     let modes = [
-        ("", true, true, COVERAGE),
-        (
-            ", without older checks",
-            false,
-            true,
-            COVERAGE_WITHOUT_MEMORY,
-        ),
-        (
-            ", without repaired copies",
-            true,
-            false,
-            COVERAGE_WITHOUT_REPAIR,
-        ),
+        ("", true, true, coverage),
+        (", without older checks", false, true, without_memory),
+        (", without repaired copies", true, false, without_repair),
     ];
-    let tallies: Vec<Vec<Tally>> = std::thread::scope(|s| {
+
+    assert_eq!(scenarios.len(), if full { 16 } else { SAMPLE.len() });
+    let tallies: Vec<Vec<(Tally, std::time::Duration)>> = std::thread::scope(|s| {
         let handles: Vec<Vec<_>> = scenarios
             .iter()
             .map(|scenario| {
                 modes
                     .iter()
                     .map(|(_, memory, repair, _)| {
-                        s.spawn(move || replay(scenario, *memory, *repair))
+                        s.spawn(move || {
+                            let start = std::time::Instant::now();
+                            let tally = replay(scenario, *memory, *repair);
+
+                            (tally, start.elapsed())
+                        })
                     })
                     .collect()
             })
@@ -1052,13 +1128,15 @@ fn answers_mid_edit_agree_with_the_final_ones() {
 
     for (scenario, tallies) in scenarios.iter().zip(&tallies) {
         eprintln!(
-            "\n{} ({} edits)\n\n{}",
+            "\n{} ({} edits, asked after every {}; {:.1} s)\n\n{}",
             scenario.name,
             scenario.edits.len(),
-            tallies[0].table()
+            scenario.every,
+            tallies[0].1.as_secs_f64(),
+            tallies[0].0.table()
         );
 
-        for (total, tally) in totals.iter_mut().zip(tallies) {
+        for (total, (tally, _)) in totals.iter_mut().zip(tallies) {
             total.merge(tally);
         }
     }

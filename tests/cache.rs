@@ -2,9 +2,8 @@
 //! checks"): which questions they answer, that their answers are the ones
 //! a new check gives, and that nothing changed since (an edit, a file on
 //! disk, a file created or deleted) is ever answered from one.
-mod common;
 
-use common::client::{Client, Launch, at};
+use crate::common::client::{Client, Launch, at};
 use cuttlebone::check::{Fingerprint, Target};
 use cuttlebone::dump::upstream_std;
 use cuttlebone::edits::{Changes, Fallback};
@@ -39,7 +38,7 @@ const LIB: &str = "fn pub size -> Int {
 /// A project in the tests' temporary directory, with `files` (relative
 /// paths and text).
 fn project(name: &str, files: &[(&str, &str)]) -> (PathBuf, Session) {
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cache-{}", name));
+    let root = crate::common::tmp().join(format!("cache-{}", name));
     let _ = std::fs::remove_dir_all(&root);
 
     for (path, text) in files {
@@ -509,7 +508,7 @@ fn a_check_of_a_file_that_may_have_changed_during_it_is_not_kept() {
 /// A check the compiler panicked in has nothing to keep.
 #[test]
 fn a_check_that_panicked_is_not_kept() {
-    let root = common::fixture("panic");
+    let root = crate::common::fixture("panic");
     let session = Session {
         std: upstream_std(),
         projects: vec![root.clone()],

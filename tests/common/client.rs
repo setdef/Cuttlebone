@@ -36,7 +36,7 @@ impl Client {
     }
 
     pub fn launch(launch: Launch) -> Client {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_cuttlebone"));
+        let mut command = Command::new(super::server_bin());
 
         command
             .stdin(Stdio::piped())
@@ -354,7 +354,7 @@ pub fn fake_inko(version: &str) -> PathBuf {
 /// A fake `inko` in a directory named `name`, that reports `version` and
 /// `std` as its standard library.
 pub fn fake_inko_with_std(version: &str, std: &Path, name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let dir = super::tmp().join(name);
     let path = dir.join("inko");
     let script = format!(
         "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'inko {}' ;;\n  print) echo '{}' ;;\n  *) exit 1 ;;\nesac\n",

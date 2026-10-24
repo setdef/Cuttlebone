@@ -1301,8 +1301,6 @@ struct Scope<'a, 'db> {
     at: HirPosition,
     target: &'a Target,
     encoding: Encoding,
-    /// The text of files other than the requested one, as read for `place`.
-    texts: RefCell<HashMap<PathBuf, String>>,
 }
 
 impl Scope<'_, '_> {
@@ -1328,7 +1326,7 @@ impl Scope<'_, '_> {
             };
         }
 
-        let mut texts = self.texts.borrow_mut();
+        let mut texts = self.checked.texts.borrow_mut();
         let text = texts.entry(file.to_path_buf()).or_insert_with(|| {
             self.target
                 .overlay
@@ -1588,7 +1586,6 @@ fn analyze(
                         at: at.clone()?,
                         target: checked.target,
                         encoding,
-                        texts: RefCell::new(HashMap::new()),
                     },
                 )
             })
@@ -1633,9 +1630,8 @@ struct Kept {
     state: Result<Sender<Task>, Unavailable>,
 }
 
-/// Something to run inside a kept check, which says whether the check
-/// may go on answering (not after a panic).
-type Task = Box<dyn for<'a> FnOnce(&Checked<'a>) -> bool + Send>;
+/// Something to run inside a kept check.
+type Task = Box<dyn for<'a> FnOnce(&Checked<'a>) + Send>;
 
 impl Default for Cache {
     fn default() -> Self {
@@ -1686,11 +1682,7 @@ impl Cache {
                     Err(reason) => Err(reason.clone()),
                 };
 
-                // A panic ends the check.
-                if !matches!(&result, Err(e) if e.code == "compilerPanic") {
-                    kept.push(entry);
-                }
-
+                kept.push(entry);
                 return (result, true);
             }
         }
@@ -1704,11 +1696,7 @@ impl Cache {
             Err(reason) => Err(reason.clone()),
         };
 
-        if keep
-            && self.capacity > 0
-            && fingerprint.settled()
-            && !matches!(&result, Err(e) if e.code == "compilerPanic")
-        {
+        if keep && self.capacity > 0 && fingerprint.settled() {
             kept.push(Kept {
                 target: target.clone(),
                 fingerprint,
@@ -1758,9 +1746,7 @@ fn start_check(
                     let _ = ready.send(Ok((true, fingerprint)));
 
                     while let Ok(task) = queue.recv() {
-                        if !task(&checked) {
-                            break;
-                        }
+                        task(&checked);
                     }
                 })
             }));
@@ -1794,7 +1780,8 @@ fn start_check(
 }
 
 /// Runs `f` in a kept check, and waits for its result. `compilerPanic` if
-/// it panicked.
+/// it panicked. The check is only read, so it stays as it was, and the
+/// same question panics again, as it would in a new check.
 fn run_task<R: Send + 'static>(
     tasks: &Sender<Task>,
     f: impl for<'a> FnOnce(&Checked<'a>) -> R + Send + 'static,
@@ -1802,10 +1789,8 @@ fn run_task<R: Send + 'static>(
     let (done, result) = crossbeam_channel::bounded(1);
     let task: Task = Box::new(move |checked| {
         let outcome = catch_unwind(AssertUnwindSafe(|| f(checked))).map_err(|_| panic_message());
-        let ok = outcome.is_ok();
 
         let _ = done.send(outcome);
-        ok
     });
 
     if tasks.send(task).is_err() {
@@ -1829,6 +1814,10 @@ struct Checked<'db> {
     files: HashMap<PathBuf, usize>,
     walkers: RefCell<HashMap<PathBuf, Rc<Walker<'db>>>>,
     index: OnceCell<Index>,
+    /// The text of files other than the requested one, as read for
+    /// `Scope::place`: the check's own modules, so the fingerprint covers
+    /// the ones read from disk.
+    texts: RefCell<HashMap<PathBuf, String>>,
 }
 
 impl<'db> Checked<'db> {
@@ -1844,6 +1833,7 @@ impl<'db> Checked<'db> {
                 .collect(),
             walkers: RefCell::new(HashMap::new()),
             index: OnceCell::new(),
+            texts: RefCell::new(HashMap::new()),
         }
     }
 
@@ -2263,7 +2253,6 @@ fn from_older(
                         at,
                         target: checked.target,
                         encoding,
-                        texts: RefCell::new(HashMap::new()),
                     },
                 )
                 .ok()?;

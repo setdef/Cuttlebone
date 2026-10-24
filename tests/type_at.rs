@@ -1,8 +1,7 @@
 //! `query::type_at` (hover): which expression a position means, and the type
 //! it reports.
-mod common;
 
-use common::{Project, position_of};
+use crate::common::{Project, position_of};
 use cuttlebone::check::Target;
 use cuttlebone::dump::{check, upstream_std};
 use cuttlebone::position::Position;
@@ -215,7 +214,7 @@ fn every_synthetic_node_shares_its_range_with_a_real_one() {
     // A synthetic node with a range of its own would make that range
     // unanswerable, so each must share it with a node that isn't synthetic
     // or be contained in one.
-    let file = common::fixture("desugar").join(MAIN);
+    let file = crate::common::fixture("desugar").join(MAIN);
     let checked = check(&Target::new(&file, upstream_std()).unwrap()).unwrap();
     let real: Vec<_> = checked
         .expressions
@@ -251,7 +250,7 @@ fn unicode() -> Project {
 
 #[test]
 fn compiler_columns_count_grapheme_clusters() {
-    let file = common::fixture("unicode").join(MAIN);
+    let file = crate::common::fixture("unicode").join(MAIN);
     let checked = check(&Target::new(&file, upstream_std()).unwrap()).unwrap();
     let float = checked
         .expressions

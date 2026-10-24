@@ -27,10 +27,19 @@ const RUNS: usize = 7;
 /// also check its whole project for diagnostics, so those are off.
 /// `queries_stay_fast_while_diagnostics_are_checked` measures queries
 /// with them.
-/// Held by the tests that load the machine on purpose (a diagnostics check
-/// beside every query) or measure small differences (a worker's cost), so
-/// those two never overlap.
-static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+///
+/// The tests that load the machine on purpose (a diagnostics check beside
+/// every query, a burst of requests) or measure small differences (a
+/// worker's cost) run alone (`alone`); the others share it (`shared`).
+static LOAD: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+fn alone() -> std::sync::RwLockWriteGuard<'static, ()> {
+    LOAD.write().unwrap_or_else(|e| e.into_inner())
+}
+
+fn shared() -> std::sync::RwLockReadGuard<'static, ()> {
+    LOAD.read().unwrap_or_else(|e| e.into_inner())
+}
 
 static QUERIES_ONLY: std::sync::LazyLock<serde_json::Value> =
     std::sync::LazyLock::new(|| json!({ "diagnostics": false }));
@@ -59,7 +68,7 @@ fn median(mut times: Vec<Duration>) -> Duration {
 /// A project whose main module imports every std module that builds on
 /// this platform, so one hover type checks all of std/src.
 fn std_sized_project() -> (PathBuf, String) {
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("std-sized");
+    let root = common::tmp().join("std-sized");
     let src = upstream_std();
     let mut modules = Vec::new();
     let mut dirs = vec![src.join("std")];
@@ -97,7 +106,17 @@ fn std_sized_project() -> (PathBuf, String) {
          let doubled = [value].iter.map(fn (x) { x * 2 }).to_array\n  }\n}\n",
     );
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("src/main.inko"), &text).unwrap();
+
+    // Tests run at once, and a rewrite would count as a change on disk
+    // for each other's kept checks.
+    if std::fs::read_to_string(root.join("src/main.inko"))
+        .ok()
+        .as_ref()
+        != Some(&text)
+    {
+        std::fs::write(root.join("src/main.inko"), &text).unwrap();
+    }
+
     (root.canonicalize().unwrap(), text)
 }
 
@@ -115,6 +134,7 @@ fn hover_times(client: &mut Client, file: &Path, line: u32, character: u32) -> V
 
 #[test]
 fn hover_on_a_std_sized_project_is_fast_enough() {
+    let _shared = shared();
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
     let mut client = uncached(&root, QUERIES_ONLY.clone());
@@ -131,6 +151,7 @@ fn hover_on_a_std_sized_project_is_fast_enough() {
 
 #[test]
 fn hover_in_the_largest_std_module_is_fast_enough() {
+    let _shared = shared();
     // std.net.http.server imports the most of std (90 modules).
     let std = upstream_std();
     let file = std.join("std/net/http/server.inko");
@@ -149,6 +170,7 @@ fn hover_in_the_largest_std_module_is_fast_enough() {
 
 #[test]
 fn completion_on_a_std_sized_project_is_fast_enough() {
+    let _shared = shared();
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
     let mut client = uncached(&root, QUERIES_ONLY.clone());
@@ -173,7 +195,7 @@ fn completion_on_a_std_sized_project_is_fast_enough() {
 
 #[test]
 fn a_worker_process_costs_little_more_than_checking_in_the_servers_thread() {
-    let _exclusive = EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let _alone = alone();
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
     let (line, character) = at(&text, "[1, 2].size", 7, false);
@@ -280,6 +302,7 @@ fn assists(file: &Path, text: &str) -> Vec<(&'static str, serde_json::Value)> {
 
 #[test]
 fn highlights_signatures_and_inlay_hints_on_a_std_sized_project_are_fast_enough() {
+    let _shared = shared();
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
     let mut client = uncached(&root, QUERIES_ONLY.clone());
@@ -312,6 +335,7 @@ fn position(file: &Path, line: u32, character: u32) -> serde_json::Value {
 
 #[test]
 fn definition_and_type_definition_on_a_std_sized_project_are_fast_enough() {
+    let _shared = shared();
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
     let mut client = uncached(&root, QUERIES_ONLY.clone());
@@ -337,6 +361,7 @@ fn definition_and_type_definition_on_a_std_sized_project_are_fast_enough() {
 
 #[test]
 fn references_across_std_are_fast_enough() {
+    let _shared = shared();
     // std as the project: references check all of std/src and std/test
     // (hundreds of modules), not only what one file imports.
     let std = upstream_std();
@@ -363,7 +388,7 @@ fn references_across_std_are_fast_enough() {
 /// answer arrives, so the two overlapped.
 #[test]
 fn queries_stay_fast_while_diagnostics_are_checked() {
-    let _exclusive = EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let _alone = alone();
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
     let mut client = uncached(
@@ -439,6 +464,7 @@ fn queries_stay_fast_while_diagnostics_are_checked() {
 /// answer).
 #[test]
 fn answers_in_code_being_edited_are_fast_enough() {
+    let _shared = shared();
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
     let mut client = uncached(&root, QUERIES_ONLY.clone());
@@ -511,6 +537,8 @@ fn name_starts(text: &str) -> Vec<(u32, u32)> {
 /// kept.
 #[test]
 fn a_burst_of_definitions_costs_one_check() {
+    // It loads the machine: the server and the worker are busy throughout.
+    let _alone = alone();
     let (root, text) = std_sized_project();
     let file = root.join("src/main.inko");
     let mut client = Client::initialized(

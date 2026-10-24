@@ -1,8 +1,7 @@
 //! Completion after a `.`: `query::complete` inserts its own placeholder at
 //! the cursor, so a client sends its buffer as it is.
-mod common;
 
-use common::{Project, position_of};
+use crate::common::{Project, position_of};
 use cuttlebone::position::{Encoding, Position};
 use cuttlebone::query::{self, PLACEHOLDER, byte_offset};
 use std::collections::HashMap;

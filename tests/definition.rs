@@ -1,8 +1,7 @@
 //! Go to definition, type definition and references, on the core API.
 //! tests/lsp.rs covers the same over LSP.
-mod common;
 
-use common::{Project, position_of};
+use crate::common::{Project, position_of};
 use cuttlebone::dump::upstream_std;
 use cuttlebone::position::{Encoding, Position};
 use cuttlebone::query::{self, Place, Request, Unavailable};

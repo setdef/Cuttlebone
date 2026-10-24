@@ -4,9 +4,8 @@
 //! editors/check.sh.
 // Tests report why the check was skipped on stderr, which `cargo test` shows.
 #![allow(clippy::print_stderr)]
-mod common;
 
-use common::client::fake_inko;
+use crate::common::client::fake_inko;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -19,14 +18,14 @@ fn neovim_starts_the_server_negotiates_utf8_hovers_goes_to_a_definition_and_show
     }
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let state = Path::new(env!("CARGO_TARGET_TMPDIR")).join("nvim-state");
+    let state = crate::common::tmp().join("nvim-state");
     let mut child = Command::new("nvim")
         .args(["--headless", "--clean", "-c"])
         .arg(format!(
             "luafile {}",
             root.join("editors/neovim/check.lua").display()
         ))
-        .env("CUTTLEBONE", env!("CARGO_BIN_EXE_cuttlebone"))
+        .env("CUTTLEBONE", crate::common::server_bin())
         .env("INKO", fake_inko(cuttlebone::check::upstream_version()))
         .env("FILE", root.join("tests/fixtures/unicode/src/main.inko"))
         // As in editors/check.sh: the wrong encoding lands on `size`.

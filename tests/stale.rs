@@ -4,10 +4,9 @@
 //! stays unavailable. Repaired copies answer most of these first
 //! (tests/repaired.rs), so these run with them off. tests/replay.rs measures
 //! both on a corpus of edits.
-mod common;
 
-use common::client::{Client, Launch, at};
-use common::features::Session;
+use crate::common::client::{Client, Launch, at};
+use crate::common::features::Session;
 use serde_json::{Value, json};
 
 /// A server that never checks repaired copies (a fault only test builds
@@ -49,7 +48,7 @@ fn ask(
 ) -> (Value, Value) {
     let (line, character) = at(edited, needle, offset, session.utf8);
     let mut params = json!({
-        "textDocument": { "uri": common::client::uri(&session.file) },
+        "textDocument": { "uri": crate::common::client::uri(&session.file) },
         "position": { "line": line, "character": character },
     });
 
@@ -491,7 +490,7 @@ fn unsaved_text_when_opened_counts_as_an_edit() {
 
 #[test]
 fn definitions_into_an_edited_import_are_mapped() {
-    let root = common::fixture("navigation");
+    let root = crate::common::fixture("navigation");
     let main = root.join("src/main.inko");
     let alpha = root.join("src/alpha.inko");
     let main_text = std::fs::read_to_string(&main).unwrap();

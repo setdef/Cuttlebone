@@ -1,8 +1,7 @@
 //! Unsaved buffers: a request's `contents` replace files' text on disk, for
 //! the file asked about and for the modules it imports.
-mod common;
 
-use common::Project;
+use crate::common::Project;
 use cuttlebone::query;
 use std::path::PathBuf;
 

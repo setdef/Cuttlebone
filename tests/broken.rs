@@ -1,9 +1,8 @@
 //! What Cuttlebone can answer for code with errors: the cases SPIKE.md
 //! measured, on tests/fixtures/broken. Each broken version is sent as
 //! unsaved contents, so the file on disk stays valid.
-mod common;
 
-use common::{PLACEHOLDER, Project};
+use crate::common::{PLACEHOLDER, Project};
 use cuttlebone::check::Target;
 use cuttlebone::dump::{Status, check, upstream_std};
 use cuttlebone::walker::Origin;
@@ -20,7 +19,7 @@ fn broken(from: &str, to: &str) -> String {
 
 /// Every expression in the fixture (as `text`), with whether it has a type.
 fn statuses(text: Option<&str>) -> Vec<(&'static str, Origin, bool)> {
-    let file = common::fixture("broken").join(MAIN);
+    let file = crate::common::fixture("broken").join(MAIN);
     let mut target = Target::new(&file, upstream_std()).unwrap();
 
     if let Some(text) = text {

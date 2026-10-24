@@ -1,9 +1,8 @@
 //! Diagnostics over LSP, with the real binary: what's published, in which
 //! encoding, and when (docs/lsp.md, "Diagnostics").
-mod common;
 
-use common::client::{Client, Launch, at, uri};
-use common::fixture;
+use crate::common::client::{Client, Launch, at, uri};
+use crate::common::fixture;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -429,8 +428,8 @@ fn targets_are_projects_or_lone_files_but_not_std_or_dependencies() {
         projects: vec![root.clone()],
     };
     let target = |path: &Path| cuttlebone::query::diagnostics_target(&session, path);
-    let lone: PathBuf = Path::new(env!("CARGO_TARGET_TMPDIR")).join("lone.inko");
-    let dep = Path::new(env!("CARGO_TARGET_TMPDIR")).join("with-dep");
+    let lone: PathBuf = crate::common::tmp().join("lone.inko");
+    let dep = crate::common::tmp().join("with-dep");
     let dep_file = dep.join("dep/hash/v1/src/thing.inko");
 
     std::fs::write(&lone, "fn example {\n  let a = 1\n}\n").unwrap();

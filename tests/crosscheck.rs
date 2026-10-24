@@ -2,7 +2,6 @@
 //! `Origin::Symbol`) must agree with what the compiler stores elsewhere for
 //! the same values: a call's receiver, a variable's type, or a scope's type.
 //! See `CrossCheck` in src/walker.rs.
-mod common;
 
 use cuttlebone::check::Target;
 use cuttlebone::dump::{check, cross_checks, format_expr, upstream_std};
@@ -42,7 +41,7 @@ fn counts(checks: &[CrossCheck]) -> BTreeMap<(&'static str, &'static str), usize
 
 #[test]
 fn the_fixture_cross_checks_every_kind_of_reconstructed_type() {
-    let checks = checks(&common::fixture("crosscheck"));
+    let checks = checks(&crate::common::fixture("crosscheck"));
     let counts = counts(&checks);
 
     assert_agree(&checks);
@@ -90,8 +89,8 @@ fn the_fixture_cross_checks_every_kind_of_reconstructed_type() {
 fn a_break_inside_a_closure_makes_the_enclosing_loop_nil() {
     // The type checker looks for the loop through closure scopes
     // (compiler/src/type_check/expressions.rs:2940-2956), so this loop is Nil, not Never.
-    let checks = checks(&common::fixture("crosscheck"));
-    let line = std::fs::read_to_string(common::fixture("crosscheck").join("src/main.inko"))
+    let checks = checks(&crate::common::fixture("crosscheck"));
+    let line = std::fs::read_to_string(crate::common::fixture("crosscheck").join("src/main.inko"))
         .unwrap()
         .lines()
         .position(|l| l.contains("let a = loop {"))

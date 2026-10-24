@@ -85,10 +85,13 @@ about LSP. tests/guardrails.rs enforces the layering (see AGENTS.md).
 
 ## Tests
 
-    scripts/install-hooks.sh   # once per clone: run scripts/check.sh before each commit
-    scripts/check.sh           # formatting, clippy, tests, the patch, the release build
-    scripts/check.sh --full    # and the mutation runner (several minutes)
-    cargo test                 # the tests alone
+    scripts/install-hooks.sh          # once per clone: run scripts/check.sh before each commit
+    scripts/check.sh                  # every commit: formatting, clippy, tests, the patch, the release build
+    scripts/check.sh --milestone REV  # milestone reports: the whole corpus, no kept checks, mutations since REV
+    scripts/check.sh --exhaustive     # every mutation, when the runner or shared test code changes
+    cargo test                        # the tests alone (two binaries: tests/main.rs and tests/latency.rs)
+
+AGENTS.md ("Checks") says which tier each step needs.
 
 Dependencies (the compiler) are optimized even in debug builds, so this is
 also fast enough for the latency limits.
@@ -119,12 +122,16 @@ also fast enough for the latency limits.
 | `tests/guardrails.rs` | the layering of src/, no editor named in code, nothing named after Inko, no machine-specific paths, and patches/README.md accounting for every patch line |
 | `tests/repaired.rs` | fresh answers in code that doesn't parse, from a repaired copy, over LSP: the rest of the file, completion, before the edit in the method being edited, a placeholder type the blank lines could fill in, a changed declaration, and references never |
 | `tests/stale.rs` | answers from the last good check over LSP (with repaired copies off, a fault only tests have): which requests give them (and which never do), positions and ranges mapped through edits in both encodings, a changed declaration, diagnostics checks and unsaved text when opened, hints in the method being edited |
-| `tests/replay.rs` | the edit-replay corpus, the oracle for code being edited: real files edited as people do, every query asked at many positions after each edit, and each answer compared with the fresh one at the end. Fails on any wrong answer, or less coverage than measured. `-- --nocapture` prints the tables |
+| `tests/replay.rs` | the edit-replay corpus, the oracle for code being edited: real files edited as people do, every query asked at many positions after each edit, and each answer compared with the fresh one at the end. Fails on any wrong answer, or less coverage than measured. Every commit replays a sample; `CUTTLEBONE_CORPUS_FULL=1` replays all of it. `-- --nocapture` prints the tables |
 | `tests/cache.rs` | checks kept between questions: questions about the same text share one, with the same answers (fresh, repaired and stale); an edit, a file changed, created or deleted on disk (also outside the editor, over LSP) is never answered from one; what may have changed during a check isn't kept; the bound and least recently used order; completion's copies and panicked checks not kept; `cached` in the status; the worker replaced when it dies, stopped at `shutdown` |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |
 
 `scripts/mutate.py` breaks behaviours and rules on purpose, one at a time,
-and checks that a test (or clippy, or a check script) fails for each.
+and checks that a test (or clippy, or a check script) fails for each,
+running several mutations' tests at once. `--since REV` runs only those a
+change since REV could affect, and `scripts/check-selection.py` shows that
+this selection would have run every mutation guarding code the last three
+milestones changed.
 
 `scripts/check.sh` also checks that `patches/upstream.patch` applies to a
 fresh copy of the pinned release and matches `.upstream/inko`

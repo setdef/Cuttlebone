@@ -5,9 +5,8 @@
 //!
 //! This needs the installed `inko` to be the pinned release, and fails if it
 //! isn't: the oracle is the point.
-mod common;
 
-use common::fixture;
+use crate::common::fixture;
 use cuttlebone::check::upstream_version;
 use cuttlebone::dump::upstream_std;
 use cuttlebone::position::{Encoding, Position};
@@ -78,7 +77,7 @@ fn installed_std() -> PathBuf {
 /// creates and locks a directory in the user's data directory, so it runs
 /// with a home directory of its own.
 fn inko_check(dir: &Path) -> Vec<Value> {
-    let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("oracle-home");
+    let home = crate::common::tmp().join("oracle-home");
 
     std::fs::create_dir_all(&home).unwrap();
 
@@ -190,7 +189,7 @@ fn std_matches_inko_check() {
 fn unsaved_text_matches_inko_check_on_the_saved_text() {
     let std = installed_std();
     let dir = fixture("diagnostics/warnings");
-    let copy = Path::new(env!("CARGO_TARGET_TMPDIR")).join("oracle-unsaved");
+    let copy = crate::common::tmp().join("oracle-unsaved");
     let file = "src/main.inko";
     let text = std::fs::read_to_string(dir.join(file)).unwrap().replace(
         "let unused = 10",

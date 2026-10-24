@@ -1,8 +1,7 @@
 //! textDocument/signatureHelp over LSP, with the real binary, in UTF-16 and
 //! UTF-8.
-mod common;
 
-use common::features::Session;
+use crate::common::features::Session;
 use serde_json::{Value, json};
 
 /// The signature's label, each parameter's text (read from the label with

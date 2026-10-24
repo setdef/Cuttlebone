@@ -14,6 +14,11 @@ if grep -qaF CUTTLEBONE_FAULT "$bin"; then
     exit 1
 fi
 
+if grep -qaF CUTTLEBONE_NO_CACHE "$bin"; then
+    echo "the release build contains the tests' switch for kept checks (CUTTLEBONE_NO_CACHE)" >&2
+    exit 1
+fi
+
 if grep -qaF .upstream/inko/std/src "$bin"; then
     echo "the release build contains test helpers from src/dump.rs" >&2
     exit 1

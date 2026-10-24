@@ -6,10 +6,9 @@
 //! and so don't depend on what's installed.
 // Tests report why a test was skipped on stderr, which `cargo test` shows.
 #![allow(clippy::print_stderr)]
-mod common;
 
-use common::client::{Client, Launch, at, fake_inko, uri};
-use common::fixture;
+use crate::common::client::{Client, Launch, at, fake_inko, uri};
+use crate::common::fixture;
 use cuttlebone::check::upstream_version;
 use cuttlebone::worker::FAULT_VARIABLE;
 use serde_json::{Value, json};
@@ -69,7 +68,7 @@ fn status_options() -> Value {
 /// A copy of a fixture in a fresh temporary directory, for tests that edit
 /// files or need a fault injected into one path.
 fn copy_fixture(name: &str, as_name: &str) -> PathBuf {
-    let to = Path::new(env!("CARGO_TARGET_TMPDIR")).join(as_name);
+    let to = crate::common::tmp().join(as_name);
     let _ = std::fs::remove_dir_all(&to);
 
     copy_dir(&fixture(name), &to);
@@ -518,7 +517,7 @@ fn workspace_folders_are_project_roots() {
     // The workspace folder's inko.pkg (and dep/) apply to a file in a nested
     // src/ directory. Without the folder as a root, the nearest directory
     // with a src/ would be the project, with no manifest.
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("nested-roots");
+    let root = crate::common::tmp().join("nested-roots");
     let _ = std::fs::remove_dir_all(&root);
 
     std::fs::create_dir_all(root.join("src/inner/src")).unwrap();
@@ -1094,8 +1093,8 @@ fn queries_never_sync_dependencies_or_touch_the_data_directory() {
     // data directory, then try to sync dep/ (there's no dep/hash), cloning
     // a URL that doesn't exist. The server runs in the project's directory,
     // as editors often start it, with a fresh home directory.
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-side-effects");
-    let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-side-effects-home");
+    let root = crate::common::tmp().join("no-side-effects");
+    let home = crate::common::tmp().join("no-side-effects-home");
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&home);
 

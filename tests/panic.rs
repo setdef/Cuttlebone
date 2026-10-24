@@ -1,7 +1,6 @@
 //! A compiler panic must not take Cuttlebone down.
-mod common;
 
-use common::Project;
+use crate::common::Project;
 use cuttlebone::query::{self, guarded};
 
 const MAIN: &str = "src/main.inko";

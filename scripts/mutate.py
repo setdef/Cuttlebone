@@ -2,17 +2,39 @@
 """Breaks behaviours on purpose, one at a time, and checks that a test fails.
 
 Each mutation replaces one exact snippet of source (it must occur exactly
-once), runs the tests that should catch it, and restores the file. Run it
-from anywhere; pass words to run only the mutations whose names contain
-them, e.g. `scripts/mutate.py timeout`. A mutation reported as NOT CAUGHT
-means a behaviour has no test; SKIP means its snippet changed, so update
-the snippet. It exits with status 1 unless every mutation is caught.
+once), runs the tests that should catch it, and restores the file. A
+mutation reported as NOT CAUGHT means a behaviour has no test; SKIP means
+its snippet changed, so update the snippet. It exits with status 1 unless
+every mutation it ran is caught.
 
 The last field names what should catch the mutation: `--test FILE [FILTER]`
-for `cargo test`, or `sh:COMMAND` for a command that must fail (for rules
-that clippy or a check script enforces).
+for the tests in tests/FILE.rs, `--lib FILTER` for unit tests in src/, or
+`sh:COMMAND` for a command that must fail (for rules that clippy or a check
+script enforces).
+
+Usage: scripts/mutate.py [--since REV] [--jobs N | --serial] [--list] [WORD...]
+
+  (no options)   every mutation: the exhaustive tier (AGENTS.md)
+  --since REV    only the mutations a change since REV could affect: the
+                 milestone tier. See `selected`.
+  --list         print what would run, and why, without running anything
+  --jobs N       how many mutations' tests run at once (default: half the
+                 cores, at most 5)
+  --serial       build and test each mutation in place, one at a time, as
+                 the runner did before milestone 6
+  WORD...        only the mutations whose names contain one of the words
+
+The tests of a mutation run from copies of its build (the test binary and
+`cuttlebone`), each with a directory of its own for the files tests make
+(`CUTTLEBONE_TEST_TMPDIR`), so the next mutation can be built while they
+run. Tests that read the source tree itself (tests/guardrails.rs,
+tests/citations.rs) and `sh:` commands run in the tree, between builds.
+tests/latency.rs runs alone, after the rest, so that nothing else loads the
+machine. Every mutation replays the whole edit-replay corpus
+(`CUTTLEBONE_CORPUS_FULL`).
 """
-import subprocess, sys, os, json
+import json, os, shutil, subprocess, sys, threading, time
+from concurrent.futures import ThreadPoolExecutor
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 M = [
  ("patch: prepare() back in check_with", ".upstream/inko/compiler/src/compiler.rs",
@@ -216,7 +238,6 @@ M = [
  ("the cache keeps more than its capacity", "src/query.rs", "            if kept.len() > self.capacity {", "            if kept.len() > self.capacity + 1 {", "--test cache the_cache_keeps"),
  ("kept checks not moved to the end when used", "src/query.rs", "                if !matches!(&result, Err(e) if e.code == \"compilerPanic\") {\n                    kept.push(entry);", "                if !matches!(&result, Err(e) if e.code == \"compilerPanic\") {\n                    kept.insert(0, entry);", "--test cache the_cache_keeps"),
  ("completion's copies kept", "src/query.rs", "                    keep: !changed,", "                    keep: true,", "--test cache completions_copies"),
- ("a check that panicked kept", "src/query.rs", "            && !matches!(&result, Err(e) if e.code == \"compilerPanic\")\n", "", "sh:! cargo test --quiet --test cache a_check_that_panicked 2>&1 | grep -q 'test result: ok'"),
  ("repaired answers marked by the fresh check", "src/query.rs", "                sources[*i] = Source::Repaired;\n                cached[*i] = kept;", "                sources[*i] = Source::Repaired;", "--test cache repaired_and_stale"),
  ("stale answers marked by the fresh check", "src/query.rs", "                    sources[*i] = Source::Stale;\n                    cached[*i] = kept;", "                    sources[*i] = Source::Stale;", "--test cache repaired_and_stale"),
  ("no cached status", "src/lsp.rs", "            if cached {\n                params[\"cached\"]", "            if false {\n                params[\"cached\"]", "--test cache kept_answers_are_marked"),
@@ -225,41 +246,230 @@ M = [
  ("the tests can't turn kept checks off", "src/worker.rs", "    if std::env::var_os(NO_CACHE_VARIABLE).is_some() {\n        return 0;", "    if std::env::var_os(NO_CACHE_VARIABLE).is_some() {\n        return query::KEPT_CHECKS;", "--test cache the_tests_can_turn"),
  ("shutdown leaves the waiting worker", "src/lsp.rs", "        if let Some(worker) = self.idle.take() {\n            worker.kill();\n        }\n", "", "--test cache shutdown_stops"),
  ("a dead waiting worker sent a job", "src/worker.rs", "        if !sent {\n            self.kill();", "        if false {\n            self.kill();", "--test cache a_waiting_worker_that_died"),
+ ("the tests' switch for kept checks in release builds", "src/worker.rs", "    #[cfg(feature = \"fault-injection\")]\n    if std::env::var_os(NO_CACHE_VARIABLE).is_some() {", "    if std::env::var_os(\"CUTTLEBONE_NO_CACHE\").is_some() {", "sh:scripts/check-release.sh"),
  ("no worker deadline between jobs", "src/worker.rs", "        let _ = deadlines.send(job.deadline.map(|d| Instant::now() + d));", "        let _ = deadlines.send(None::<Instant>);", "--test lsp a_hung_worker"),
 ]
-only = sys.argv[1:]
-results = []
-for name, path, old, new, test in M:
-    if only and not any(o in name for o in only): continue
-    p = os.path.join(ROOT, path)
-    src = open(p).read()
-    if src.count(old) != 1:
-        results.append((name, "SKIP: pattern count %d" % src.count(old))); print(results[-1], flush=True); continue
-    open(p, "w").write(src.replace(old, new))
+
+
+# The test files built into tests/main.rs's binary, `integration`. Every
+# other file in tests/ is a binary of its own.
+INTEGRATION = "integration"
+OWN_BINARIES = {"latency"}
+# Tests that read the source tree, so they must run before it's restored.
+IN_PLACE = {"guardrails", "citations"}
+TIMEOUT = 900
+
+
+def target(test):
+    """What runs a `--test FILE FILTER` or `--lib FILTER` target: the cargo
+    arguments that build it, and the test binary's own arguments."""
+    words = test.split(" ", 2)
+    flt = words[2] if len(words) > 2 else ""
+    if words[0] == "--lib":
+        return ["--lib"], [words[1]]
+    name = words[1]
+    if name in OWN_BINARIES:
+        return ["--test", name], [flt] if flt else []
+    return ["--test", INTEGRATION], [name + "::" + flt]
+
+
+def test_file(test):
+    """The file that holds a mutation's tests."""
+    if test.startswith("sh:"):
+        return None
+    words = test.split(" ")
+    return None if words[0] == "--lib" else "tests/%s.rs" % words[1]
+
+
+def run_git(*args):
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+
+
+def changed_since(rev):
+    """Every file that differs from REV: committed since, staged, or not,
+    and new files git doesn't ignore."""
+    files = set(run_git("diff", "--name-only", rev).split())
+    files |= set(run_git("ls-files", "--others", "--exclude-standard").split())
+    return files
+
+
+def selected(mutations, changed, read=None):
+    """The mutations a change to `changed` could affect, each with why:
+    its snippet is in a changed file; its tests are; its command names one;
+    or its snippet isn't found exactly once any more (it moved, and must be
+    updated)."""
+    read = read or (lambda path: open(os.path.join(ROOT, path)).read())
+    out = []
+    for m in mutations:
+        name, path, old, new, test = m
+        why = None
+        if path in changed:
+            why = "changed " + path
+        elif test_file(test) in changed:
+            why = "changed " + test_file(test)
+        elif test.startswith("sh:") and any(w in changed for w in test[3:].split()):
+            why = "changed what %s runs" % test[3:]
+        else:
+            try:
+                if read(path).count(old) != 1:
+                    why = "its snippet moved"
+            except OSError:
+                why = "its file is gone"
+        if why:
+            out.append((m, why))
+    return out
+
+
+def verdict_of(r, out):
+    if "could not compile" in out or "error[" in out:
+        return "BUILD ERROR"
+    if r.returncode != 0 and "FAILED" in out:
+        failed = [l.split()[1] for l in out.splitlines() if l.startswith("test ") and l.endswith("FAILED")]
+        return "caught by " + ", ".join(failed)
+    if r.returncode == 0:
+        return "NOT CAUGHT"
+    return "other failure: " + out[-500:]
+
+
+def run_sh(command):
+    r = subprocess.run(command, shell=True, cwd=ROOT, capture_output=True, text=True, timeout=TIMEOUT)
+    out = r.stdout + r.stderr
+    reason = next((l.strip() for l in out.splitlines() if l.startswith("error") or l.startswith("the ") or l.startswith("patches/")), "")
+    return "caught by %s: %s" % (command, reason) if r.returncode != 0 else "NOT CAUGHT"
+
+
+def test_env(extra=None):
+    env = dict(os.environ)
+    env["CUTTLEBONE_CORPUS_FULL"] = "1"
+    env.update(extra or {})
+    return env
+
+
+def build(cargo):
+    """Builds a test target, and returns its executable, or None and the
+    output if it doesn't build."""
+    r = subprocess.run(["cargo", "test", "--no-run", "--message-format=json", *cargo],
+                       cwd=ROOT, capture_output=True, text=True, timeout=TIMEOUT)
+    exe = None
+    for line in r.stdout.splitlines():
+        try:
+            m = json.loads(line)
+        except ValueError:
+            continue
+        if m.get("reason") == "compiler-artifact" and m.get("executable") and m["profile"]["test"]:
+            exe = m["executable"]
+    if r.returncode != 0 or not exe:
+        text = "\n".join(json.loads(l).get("message", {}).get("rendered", "") or "" for l in r.stdout.splitlines() if l.startswith("{")) + r.stderr
+        return None, text or "could not compile"
+    return exe, ""
+
+
+def run_copy(work, exe, args):
+    """Runs a mutation's copied test binary."""
+    env = test_env({
+        "CUTTLEBONE_TEST_BIN": os.path.join(work, "cuttlebone"),
+        "CUTTLEBONE_TEST_TMPDIR": os.path.join(work, "tmp"),
+    })
     try:
-        if test.startswith("sh:"):
-            r = subprocess.run(test[3:], shell=True, cwd=ROOT, capture_output=True, text=True, timeout=900)
-            out = r.stdout + r.stderr
-            reason = next((l.strip() for l in out.splitlines() if l.startswith("error") or l.startswith("the ") or l.startswith("patches/")), "")
-            verdict = "caught by %s: %s" % (test[3:], reason) if r.returncode != 0 else "NOT CAUGHT"
-        else:
-            r = subprocess.run("cargo test " + test.split(" ")[0] + " " + test.split(" ")[1] + (" -- " + test.split(" ",2)[2] if test.count(" ") >= 2 else ""),
-                               shell=True, cwd=ROOT, capture_output=True, text=True, timeout=900)
-            out = r.stdout + r.stderr
-        if test.startswith("sh:"):
-            pass
-        elif "could not compile" in out or "error[" in out:
-            verdict = "BUILD ERROR"
-        elif r.returncode != 0 and "FAILED" in out:
-            failed = [l.split()[1] for l in out.splitlines() if l.startswith("test ") and l.endswith("FAILED")]
-            verdict = "caught by " + ", ".join(failed)
-        elif r.returncode == 0:
-            verdict = "NOT CAUGHT"
-        else:
-            verdict = "other failure: " + out[-500:]
+        r = subprocess.run([exe, *args], cwd=ROOT, capture_output=True, text=True, timeout=TIMEOUT, env=env)
+    except subprocess.TimeoutExpired:
+        return "TIMED OUT after %ds" % TIMEOUT
     finally:
-        open(p, "w").write(src)
-    results.append((name, verdict)); print(results[-1], flush=True)
-caught = sum(v.startswith("caught") for _, v in results)
-print("%d of %d caught" % (caught, len(results)))
-sys.exit(0 if results and caught == len(results) else 1)
+        pass
+    verdict = verdict_of(r, r.stdout + r.stderr)
+    shutil.rmtree(work, ignore_errors=True)
+    return verdict
+
+
+def main(argv):
+    since, jobs, serial, listing, words = None, max(1, min(5, (os.cpu_count() or 2) // 2)), False, False, []
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--since":
+            since = args.pop(0)
+        elif a == "--jobs":
+            jobs = int(args.pop(0))
+        elif a == "--serial":
+            serial = True
+        elif a == "--list":
+            listing = True
+        else:
+            words.append(a)
+    chosen = [(m, "all") for m in M]
+    if since:
+        changed = changed_since(since)
+        chosen = selected(M, changed)
+        shared = sorted(f for f in changed if f == "scripts/mutate.py" or f.startswith("tests/common/") or f in ("tests/main.rs", "Cargo.toml"))
+        if shared:
+            print("note: %s changed since %s, so the exhaustive tier must pass too (AGENTS.md)" % (", ".join(shared), since), flush=True)
+    if words:
+        chosen = [(m, why) for m, why in chosen if any(w in m[0] for w in words)]
+    if listing:
+        for m, why in chosen:
+            print("%s  (%s)" % (m[0], why))
+        print("%d of %d mutations" % (len(chosen), len(M)))
+        return 0
+    start = time.time()
+    results = {}
+    lock = threading.Lock()
+
+    def record(name, verdict):
+        with lock:
+            results[name] = verdict
+            print((name, verdict), flush=True)
+
+    pool = ThreadPoolExecutor(max_workers=jobs)
+    futures = []
+    alone = []
+    work_root = os.path.join(ROOT, "target", "mutate")
+    shutil.rmtree(work_root, ignore_errors=True)
+    for i, ((name, path, old, new, test), _) in enumerate(chosen):
+        p = os.path.join(ROOT, path)
+        src = open(p).read()
+        if src.count(old) != 1:
+            record(name, "SKIP: pattern count %d" % src.count(old))
+            continue
+        open(p, "w").write(src.replace(old, new))
+        try:
+            if test.startswith("sh:"):
+                record(name, run_sh(test[3:]))
+                continue
+            cargo, test_args = target(test)
+            if serial or (len(cargo) > 1 and test.split(" ")[1] in IN_PLACE):
+                r = subprocess.run(["cargo", "test", *cargo, "--", *test_args], cwd=ROOT,
+                                   capture_output=True, text=True, timeout=TIMEOUT, env=test_env())
+                record(name, verdict_of(r, r.stdout + r.stderr))
+                continue
+            exe, output = build(cargo)
+            if exe is None:
+                record(name, "BUILD ERROR")
+                continue
+            work = os.path.join(work_root, str(i))
+            os.makedirs(os.path.join(work, "tmp"))
+            copy = os.path.join(work, os.path.basename(exe))
+            shutil.copy2(exe, copy)
+            shutil.copy2(os.path.join(ROOT, "target", "debug", "cuttlebone"), os.path.join(work, "cuttlebone"))
+        finally:
+            open(p, "w").write(src)
+        job = (name, work, copy, test_args)
+        if len(cargo) > 1 and cargo[1] in OWN_BINARIES:
+            alone.append(job)
+        else:
+            futures.append(pool.submit(lambda j: record(j[0], run_copy(*j[1:])), job))
+    for f in futures:
+        f.result()
+    pool.shutdown()
+    for job in alone:
+        record(job[0], run_copy(*job[1:]))
+    ordered = [(m[0], results.get(m[0], "NOT RUN")) for m, _ in chosen]
+    caught = sum(v.startswith("caught") for _, v in ordered)
+    for name, v in ordered:
+        if not v.startswith("caught"):
+            print("%s: %s" % (name, v))
+    print("%d of %d caught in %ds" % (caught, len(ordered), time.time() - start))
+    return 0 if ordered and caught == len(ordered) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

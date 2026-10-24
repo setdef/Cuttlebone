@@ -845,8 +845,10 @@ The worker stays between queries, keeping the checks it did
   is cancelled, or is superseded, and starts a new one for the next query.
   The checks it kept go with it.
 - If the worker panics, aborts, or overflows its stack, the server reports
-  it (`compilerPanic` or `checkCrashed`) and goes on. A compiler panic
-  ends the check it happened in, so nothing half-done is kept.
+  it (`compilerPanic` or `checkCrashed`) and goes on. A check the
+  compiler panicked in isn't kept. A panic while answering from a kept
+  check, which is only ever read, leaves it as it was: the same question
+  is `compilerPanic` again, as it would be from a new check.
 - Every check builds its own compiler state: a kept check is only ever
   read, never checked again.
 - A worker exits by itself (with status 124) once a query has run for

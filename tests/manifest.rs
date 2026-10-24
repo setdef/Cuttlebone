@@ -2,7 +2,6 @@
 //! `inko check` does, but never sync `dep/` (tests/lsp.rs checks that over
 //! stdio, with the data directory and working directory a real editor
 //! would give).
-mod common;
 
 use cuttlebone::position::{Encoding, Position};
 use cuttlebone::query::{self, Request, Session, Unavailable};
@@ -11,7 +10,7 @@ use std::path::{Path, PathBuf};
 /// A project in a fresh temporary directory, with `manifest` as its
 /// inko.pkg, and `dep/` manifests as given.
 fn project(name: &str, manifest: &str, deps: &[(&str, &str)]) -> PathBuf {
-    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let root = crate::common::tmp().join(name);
     let _ = std::fs::remove_dir_all(&root);
 
     std::fs::create_dir_all(root.join("src")).unwrap();

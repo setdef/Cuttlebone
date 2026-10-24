@@ -2,10 +2,9 @@
 //! with the real binary (docs/lsp.md, "Answers in code being edited"): the
 //! lines in the way are blank in a copy, which is checked instead, and
 //! answers hold wherever the blank lines can't change their meaning.
-mod common;
 
-use common::client::at;
-use common::features::Session;
+use crate::common::client::at;
+use crate::common::features::Session;
 use serde_json::{Value, json};
 
 /// The response to `method` at `needle` (plus `offset` characters) in
@@ -20,7 +19,7 @@ fn ask(
 ) -> (Value, Value) {
     let (line, character) = at(text, needle, offset, session.utf8);
     let mut params = json!({
-        "textDocument": { "uri": common::client::uri(&session.file) },
+        "textDocument": { "uri": crate::common::client::uri(&session.file) },
         "position": { "line": line, "character": character },
     });
 

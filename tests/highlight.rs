@@ -1,8 +1,7 @@
 //! textDocument/documentHighlight over LSP, with the real binary, in UTF-16
 //! and UTF-8.
-mod common;
 
-use common::features::Session;
+use crate::common::features::Session;
 use serde_json::{Value, json};
 
 const TEXT: u64 = 1;
@@ -157,7 +156,7 @@ fn a_syntax_error_is_unavailable() {
 
     session.client.change(&file, 2, json!([{ "text": broken }]));
 
-    let (line, character) = common::client::at(&broken, "let mut total", 8, false);
+    let (line, character) = crate::common::client::at(&broken, "let mut total", 8, false);
     let id = session
         .client
         .send_at("textDocument/documentHighlight", &file, line, character);

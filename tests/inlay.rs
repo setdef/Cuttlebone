@@ -1,8 +1,7 @@
 //! textDocument/inlayHint over LSP, with the real binary, in UTF-16 and
 //! UTF-8. Each rule in docs/lsp.md ("textDocument/inlayHint") has a test.
-mod common;
 
-use common::features::Session;
+use crate::common::features::Session;
 use serde_json::{Value, json};
 
 /// The hints in the whole document, as (line, the text before the hint on
@@ -12,7 +11,7 @@ fn hints(session: &mut Session) -> Vec<(u64, String, String, u64)> {
     let id = session.client.send_request(
         "textDocument/inlayHint",
         json!({
-            "textDocument": { "uri": common::client::uri(&session.file) },
+            "textDocument": { "uri": crate::common::client::uri(&session.file) },
             "range": { "start": { "line": 0, "character": 0 }, "end": { "line": end, "character": 0 } },
         }),
     );
@@ -218,7 +217,7 @@ fn only_the_requested_range() {
     let id = session.client.send_request(
         "textDocument/inlayHint",
         json!({
-            "textDocument": { "uri": common::client::uri(&session.file) },
+            "textDocument": { "uri": crate::common::client::uri(&session.file) },
             "range": { "start": { "line": 43, "character": 0 }, "end": { "line": 43, "character": 18 } },
         }),
     );

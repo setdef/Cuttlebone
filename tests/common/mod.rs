@@ -10,6 +10,23 @@ use std::path::{Path, PathBuf};
 /// works with any name, and `query::complete` inserts its own.
 pub const PLACEHOLDER: &str = "someMemberName";
 
+/// Where tests write the projects and files they make: cargo's directory
+/// for them, or `CUTTLEBONE_TEST_TMPDIR`, which the mutation runner sets so
+/// that tests of different mutations, run at once, don't share any.
+pub fn tmp() -> PathBuf {
+    std::env::var_os("CUTTLEBONE_TEST_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")))
+}
+
+/// The server to test: cargo's build of it, or `CUTTLEBONE_TEST_BIN`, which
+/// the mutation runner sets to its copy of a mutation's build.
+pub fn server_bin() -> PathBuf {
+    std::env::var_os("CUTTLEBONE_TEST_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_cuttlebone")))
+}
+
 pub fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")

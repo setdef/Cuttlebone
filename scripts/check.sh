@@ -1,19 +1,38 @@
 #!/bin/sh
-# Every check a commit must pass (AGENTS.md). The pre-commit hook runs it.
+# The checks of each tier (AGENTS.md, "Checks"). The pre-commit hook runs
+# the first.
 #
-# Usage: scripts/check.sh [--full]
+# Usage: scripts/check.sh [--milestone [REV] | --exhaustive]
 #
-# --full adds the mutation runner (scripts/mutate.py), which takes several
-# minutes. Run it before any milestone report.
+#   (none)            every commit: formatting, clippy, the tests (with a
+#                     sample of the edit-replay corpus), the patch, and the
+#                     release build. About a minute.
+#   --milestone [REV] before a milestone report: the above, the whole
+#                     corpus, every test again without kept checks (the
+#                     answers must be the same), the mutation selection's
+#                     own check, and the mutations a change since REV could
+#                     affect. REV is the milestone's first commit; by
+#                     default, the last commit that changed a milestone
+#                     report.
+#   --exhaustive      when the mutation runner or shared test
+#                     infrastructure changes: the milestone tier's checks
+#                     with every mutation.
 set -eu
 
 cd "$(dirname "$0")/.."
 
+tier=commit
+since=
+
 case "${1-}" in
-    "") full=false ;;
-    --full) full=true ;;
+    "") ;;
+    --milestone)
+        tier=milestone
+        since=${2:-$(git log -1 --format=%h -- 'docs/history/MILESTONE-*.md')}
+        ;;
+    --exhaustive) tier=exhaustive ;;
     *)
-        echo "usage: scripts/check.sh [--full]" >&2
+        echo "usage: scripts/check.sh [--milestone [REV] | --exhaustive]" >&2
         exit 2
         ;;
 esac
@@ -23,7 +42,9 @@ start=$(date +%s)
 step() {
     printf '==> %s\n' "$1"
     shift
+    began=$(date +%s)
     "$@"
+    printf '    (%ss)\n' "$(($(date +%s) - began))"
 }
 
 step "formatting" cargo fmt --check
@@ -35,8 +56,18 @@ step "tests" cargo test --quiet
 step "the patch applies to a fresh $(cat UPSTREAM_VERSION)" scripts/check-patch.sh
 step "the release build has no test-only code" scripts/check-release.sh
 
-if [ "$full" = true ]; then
-    step "mutations" python3 scripts/mutate.py
+if [ "$tier" != commit ]; then
+    step "the whole edit-replay corpus" \
+        env CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet --test integration replay::
+    step "every test without kept checks, and the whole corpus" \
+        env CUTTLEBONE_NO_CACHE=1 CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet
+    step "the milestone tier selects every mutation that guards changed code" \
+        python3 scripts/check-selection.py
 fi
+
+case "$tier" in
+    milestone) step "mutations a change since $since could affect" python3 scripts/mutate.py --since "$since" ;;
+    exhaustive) step "every mutation" python3 scripts/mutate.py ;;
+esac
 
 printf '==> passed in %ss\n' "$(($(date +%s) - start))"
