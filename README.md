@@ -29,6 +29,8 @@ Reports, in docs/history/:
   highlight, signature help and inlay hints.
 - [MILESTONE-5.md](docs/history/MILESTONE-5.md): answers in code being
   edited, from repaired copies and the last good check.
+- [MILESTONE-6.md](docs/history/MILESTONE-6.md): one check for many
+  questions, and the guardrails in tiers.
 
 Setting it up in VS Code and Neovim: [editors/](editors/README.md). The rules
 every change follows, for people and coding agents: [AGENTS.md](AGENTS.md).
