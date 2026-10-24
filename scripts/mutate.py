@@ -309,6 +309,7 @@ M = [
  ("queries stop at the first error", "src/check.rs", "    run_with(target, false, false, true, inspect)", "    run_with(target, false, false, false, inspect)", "--test broken a_declaration_error_in_an_import"),
  ("queries get no errors", "src/check.rs", "            .filter(|d| d.is_error())\n", "            .filter(|d| d.is_error() && false)\n", "--test broken a_declaration_error_in_an_import"),
  ("body errors count as declarations'", "src/units.rs", "        return ErrorEffect::Body;\n", "        let _ = ErrorEffect::Body;\n", "--test broken an_error_in_a_body"),
+ ("an error's item names not counted", "src/units.rs", "        effect.names.extend(i.names.iter().cloned());\n\n        if i.kind == Kind::Import {", "\n        if i.kind == Kind::Import {", "--test replay"),
  ("an error's import names not counted", "src/units.rs", "        if i.kind == Kind::Import {\n            effect", "        if i.kind == Kind::Import && false {\n            effect", "--lib units"),
  ("declaration errors not guarded", "src/query.rs", "        if !checked.guarded() {", "        if true {", "--test broken a_declaration_error_in_an_import"),
  ("a guarded check is a good check", "src/query.rs", "        Ok((results, guarded)) => (results, !guarded, guarded, kept),", "        Ok((results, guarded)) => (results, true, guarded, kept),", "--test broken a_declaration_error_in_an_import"),

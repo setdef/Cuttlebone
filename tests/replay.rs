@@ -4,9 +4,10 @@
 //! people edit: a statement typed character by character, lines deleted and
 //! typed again, a method's signature typed before its body, a name in a
 //! declaration deleted and typed again (which breaks the declaration for a
-//! while), in the file asked about or in a module it imports. After each
-//! edit every query is asked at many positions, the way a server sees them
-//! (`query::ask`, which the worker runs too).
+//! while), in the file asked about, in a module it imports, in one that
+//! imports it, or in an unrelated one. After each edit every query is asked
+//! at many positions, the way a server sees them (`query::ask`, which the
+//! worker runs too), and in the fixtures, references too.
 //!
 //! Each scenario ends with the files as they began, so they compile again.
 //! Every answer given mid-edit is then compared with the fresh answer at the
@@ -14,8 +15,10 @@
 //! between that edit and the end are asked about, and lists (highlights,
 //! hints) are compared on that text only.
 //!
-//! An answer from anything but the documents as they are (`Source`) that
-//! disagrees with the final fresh one is **wrong**, and fails the test. A
+//! An answer from anything but the documents as they are (`Source`), or
+//! from the documents as they are past an error in a declaration
+//! (`Source::Guarded`), that disagrees with the final fresh one is
+//! **wrong**, and fails the test. A
 //! fresh answer can disagree too, because the code meant something else
 //! then (after a `let` is deleted, its variable is undefined); those are
 //! counted apart. The test also fails if fewer questions get an answer
@@ -43,6 +46,9 @@ const ENCODING: Encoding = Encoding::Utf16;
 /// answers together.
 const POSITIONS: usize = 40;
 
+/// References are asked at this many of the positions, at most.
+const REFERENCE_POSITIONS: usize = 10;
+
 /// Completion and signature help each check a copy of their own, so they're
 /// asked at fewer positions, and only after every `EVERY`th edit.
 const EDITED_POSITIONS: usize = 2;
@@ -68,6 +74,9 @@ struct Scenario {
     /// Questions are asked after every `every`th edit (and the last): 1
     /// for the full corpus, more for a scenario in the sample.
     every: usize,
+    /// Whether references are asked too. Each step's are a check of the
+    /// whole project, which std is too big to afford at every edit.
+    references: bool,
 }
 
 /// The line containing `needle`: its start, and its end before the `\n`.
@@ -267,6 +276,7 @@ fn scenario(
         file: path.clone(),
         open: vec![(path, text)],
         every: 1,
+        references: !root.join("src/std").is_dir(),
     }
 }
 
@@ -337,6 +347,30 @@ fn scenarios() -> Vec<Scenario> {
             |p, t| retype_word(p, t, "fn pub message -> String", "String"),
         ),
         elsewhere(
+            "navigation: break an impl's trait in an import",
+            navigation(),
+            main,
+            "src/geometry/shapes.inko",
+            |p, t| retype_word(p, t, "impl Area for Circle", "Area"),
+        ),
+        scenario("navigation: rename a type", navigation(), main, |p, t| {
+            retype_word(p, t, "type pub Point {", "Point")
+        }),
+        elsewhere(
+            "navigation: break a module that imports the file",
+            navigation(),
+            "src/alpha.inko",
+            main,
+            |p, t| retype_word(p, t, "fn describe(shape: ref Shape) -> Int", "Shape"),
+        ),
+        elsewhere(
+            "navigation: break an unrelated module",
+            navigation(),
+            "src/qualified.inko",
+            "src/beta.inko",
+            |p, t| retype_word(p, t, "fn pub message -> String", "String"),
+        ),
+        elsewhere(
             "navigation: retype a method in an import",
             navigation(),
             main,
@@ -390,6 +424,7 @@ const REQUESTS: &[&str] = &[
     "inlayHint",
     "inlayHint, whole file",
     "documentHighlight",
+    "references",
 ];
 
 fn request_name(q: Question) -> &'static str {
@@ -401,6 +436,7 @@ fn request_name(q: Question) -> &'static str {
         Question::SignatureHelp => "signatureHelp",
         Question::InlayHints { .. } => "inlayHint",
         Question::Highlight => "documentHighlight",
+        Question::References { .. } => "references",
         other => panic!("not asked: {:?}", other),
     }
 }
@@ -480,22 +516,25 @@ impl Tally {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "| request | asked | fresh | repaired | stale | no answer | fresh, differs at the end | wrong |"
+            "| request | asked | fresh | fresh, past declaration errors | repaired | stale | no answer | fresh, differs at the end | wrong |"
         );
-        let _ = writeln!(out, "|---|---|---|---|---|---|---|---|");
+        let _ = writeln!(out, "|---|---|---|---|---|---|---|---|---|");
 
         for request in REQUESTS {
             let _ = writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                 request,
                 self.asked(request),
                 self.get(request, Verdict::Right(Source::Fresh)),
+                self.get(request, Verdict::Right(Source::Guarded)),
                 self.get(request, Verdict::Right(Source::Repaired)),
                 self.get(request, Verdict::Right(Source::Stale)),
                 self.get(request, Verdict::None),
                 self.wrong(request, Source::Fresh),
-                self.wrong(request, Source::Stale) + self.wrong(request, Source::Repaired),
+                self.wrong(request, Source::Guarded)
+                    + self.wrong(request, Source::Stale)
+                    + self.wrong(request, Source::Repaired),
             );
         }
 
@@ -724,7 +763,13 @@ fn normalize(
                 .collect::<Vec<_>>()
         ),
         Some(Reply::Place(p)) => place(p),
-        Some(Reply::Places(ps)) => ps.iter().map(place).collect::<Vec<_>>().join(", "),
+        // References, compared as highlights are: in the text both have.
+        Some(Reply::Places(ps)) => ps
+            .iter()
+            .filter(|p| keep(&p.file, p.range))
+            .map(place)
+            .collect::<Vec<_>>()
+            .join(", "),
         Some(Reply::Highlights(hs)) => hs
             .iter()
             .filter(|h| keep(file, h.range))
@@ -914,6 +959,19 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
                 character: 0,
             },
         ));
+
+        if scenario.references {
+            let stride = names.len().div_ceil(REFERENCE_POSITIONS).max(1);
+
+            questions.extend(names.iter().step_by(stride).map(|b| {
+                (
+                    Question::References {
+                        include_declaration: true,
+                    },
+                    at(*b),
+                )
+            }));
+        }
 
         if step % EVERY == 0 {
             questions.extend(dots.iter().map(|b| (Question::Complete, at(*b))));
@@ -1124,6 +1182,7 @@ const SAMPLE: &[(&str, usize)] = &[
     ("features: retype a method", 8),
     ("features: break an argument's type", 1),
     ("navigation: break a return type in an import", 2),
+    ("navigation: break a module that imports the file", 2),
     ("std range: delete and retype lines", 1),
 ];
 
@@ -1131,70 +1190,76 @@ const SAMPLE: &[(&str, usize)] = &[
 /// corpus measured. Raise these when coverage improves.
 /// The same as `COVERAGE` and the two below, for the sample.
 const SAMPLE_COVERAGE: &[(&str, usize)] = &[
-    ("hover", 1278),
-    ("definition", 1291),
-    ("typeDefinition", 1278),
+    ("hover", 1492),
+    ("definition", 1505),
+    ("typeDefinition", 1492),
     ("completion", 19),
-    ("signatureHelp", 35),
-    ("inlayHint", 720),
-    ("inlayHint, whole file", 46),
-    ("documentHighlight", 1212),
+    ("signatureHelp", 41),
+    ("inlayHint", 770),
+    ("inlayHint, whole file", 52),
+    ("documentHighlight", 1426),
+    ("references", 233),
 ];
 const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
-    ("hover", 990),
-    ("definition", 1003),
-    ("typeDefinition", 990),
+    ("hover", 1426),
+    ("definition", 1439),
+    ("typeDefinition", 1426),
     ("completion", 19),
-    ("signatureHelp", 29),
-    ("inlayHint", 549),
-    ("inlayHint, whole file", 29),
-    ("documentHighlight", 983),
+    ("signatureHelp", 41),
+    ("inlayHint", 723),
+    ("inlayHint, whole file", 49),
+    ("documentHighlight", 1389),
+    ("references", 238),
 ];
 const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
-    ("hover", 1242),
-    ("definition", 1255),
-    ("typeDefinition", 1242),
+    ("hover", 1434),
+    ("definition", 1447),
+    ("typeDefinition", 1434),
     ("completion", 19),
-    ("signatureHelp", 35),
-    ("inlayHint", 705),
-    ("inlayHint, whole file", 46),
-    ("documentHighlight", 1185),
+    ("signatureHelp", 41),
+    ("inlayHint", 747),
+    ("inlayHint, whole file", 52),
+    ("documentHighlight", 1377),
+    ("references", 233),
 ];
 
 const COVERAGE: &[(&str, usize)] = &[
-    ("hover", 11068),
-    ("definition", 11475),
-    ("typeDefinition", 11154),
-    ("completion", 110),
-    ("signatureHelp", 353),
-    ("inlayHint", 6334),
-    ("inlayHint, whole file", 443),
-    ("documentHighlight", 10019),
+    ("hover", 11904),
+    ("definition", 12311),
+    ("typeDefinition", 11990),
+    ("completion", 115),
+    ("signatureHelp", 382),
+    ("inlayHint", 6652),
+    ("inlayHint, whole file", 483),
+    ("documentHighlight", 10789),
+    ("references", 1249),
 ];
 
 /// What the server answers without older checks, from repaired copies
 /// only.
 const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
-    ("hover", 8819),
-    ("definition", 9190),
-    ("typeDefinition", 8869),
-    ("completion", 104),
-    ("signatureHelp", 258),
-    ("inlayHint", 5061),
-    ("inlayHint, whole file", 303),
-    ("documentHighlight", 8310),
+    ("hover", 10350),
+    ("definition", 10721),
+    ("typeDefinition", 10400),
+    ("completion", 109),
+    ("signatureHelp", 311),
+    ("inlayHint", 5784),
+    ("inlayHint, whole file", 386),
+    ("documentHighlight", 9616),
+    ("references", 1261),
 ];
 
 /// What older checks answer alone, without repaired copies.
 const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
-    ("hover", 9088),
-    ("definition", 9409),
-    ("typeDefinition", 9088),
-    ("completion", 88),
-    ("signatureHelp", 269),
-    ("inlayHint", 5527),
-    ("inlayHint, whole file", 443),
-    ("documentHighlight", 8584),
+    ("hover", 9896),
+    ("definition", 10217),
+    ("typeDefinition", 9896),
+    ("completion", 93),
+    ("signatureHelp", 298),
+    ("inlayHint", 5831),
+    ("inlayHint, whole file", 483),
+    ("documentHighlight", 9351),
+    ("references", 1249),
 ];
 
 #[test]
@@ -1228,7 +1293,7 @@ fn answers_mid_edit_agree_with_the_final_ones() {
         (", without repaired copies", true, false, without_repair),
     ];
 
-    assert_eq!(scenarios.len(), if full { 16 } else { SAMPLE.len() });
+    assert_eq!(scenarios.len(), if full { 20 } else { SAMPLE.len() });
     let tallies: Vec<Vec<(Tally, std::time::Duration)>> = std::thread::scope(|s| {
         let handles: Vec<Vec<_>> = scenarios
             .iter()
