@@ -85,19 +85,65 @@ impl Options {
     }
 }
 
-/// Runs a session on `connection` until the client sends `exit`. Returns
-/// whether `shutdown` came first, which the exit status reports.
-pub fn serve(connection: Connection) -> Result<bool, ProtocolError> {
-    let Some(mut server) = handshake(&connection)? else {
-        return Ok(false);
+/// How a session ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    /// The client sent `exit`, after `shutdown` or not, or closed stdin
+    /// (`false`).
+    Exit { shut_down: bool },
+    /// The client's process, which started the server, is gone, though
+    /// stdin is still open.
+    Orphaned,
+}
+
+/// Runs a session on `connection` until the client sends `exit`.
+/// `client` is the client's process id from the command line
+/// (`--clientProcessId`), for clients that don't send `processId`.
+pub fn serve(connection: Connection, client: Option<u32>) -> Result<Ended, ProtocolError> {
+    let Some(mut server) = handshake(&connection, client)? else {
+        return Ok(Ended::Exit { shut_down: false });
     };
 
     server.run(&connection)
 }
 
+/// The process to watch: the client's, if it started the server, so that
+/// the server exits when it's gone (LSP's `processId`). A process that
+/// isn't the server's parent isn't watched; stdin closing ends the
+/// session then.
+fn watched(client: Option<u32>) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        client.filter(|pid| *pid == std::os::unix::process::parent_id())
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = client;
+        None
+    }
+}
+
+/// Whether the watched process is gone: the server has another parent.
+fn orphaned(parent: u32) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::process::parent_id() != parent
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        false
+    }
+}
+
 /// Answers `initialize` requests until one succeeds, then waits for
 /// `initialized`. Returns `None` if the client exits first.
-fn handshake(connection: &Connection) -> Result<Option<Server>, ProtocolError> {
+fn handshake(
+    connection: &Connection,
+    client: Option<u32>,
+) -> Result<Option<Server>, ProtocolError> {
     loop {
         let (id, params) = match connection.initialize_start() {
             Ok(v) => v,
@@ -121,7 +167,9 @@ fn handshake(connection: &Connection) -> Result<Option<Server>, ProtocolError> {
         };
 
         match Server::new(&params, &raw["capabilities"]) {
-            Ok(server) => {
+            Ok(mut server) => {
+                server.parent = watched(params.process_id.or(client));
+
                 let result = server.capabilities();
 
                 connection.initialize_finish(id, result)?;
@@ -268,6 +316,8 @@ struct Server {
     checks: u64,
     finished: (Sender<Finished>, Receiver<Finished>),
     shut_down: bool,
+    /// The client's process, which started the server (`watched`).
+    parent: Option<u32>,
 }
 
 impl Server {
@@ -295,6 +345,7 @@ impl Server {
             checks: 0,
             finished: crossbeam_channel::unbounded(),
             shut_down: false,
+            parent: None,
         })
     }
 
@@ -356,8 +407,12 @@ impl Server {
         value
     }
 
-    fn run(&mut self, connection: &Connection) -> Result<bool, ProtocolError> {
+    fn run(&mut self, connection: &Connection) -> Result<Ended, ProtocolError> {
         let finished = self.finished.1.clone();
+        let watch = match self.parent {
+            Some(_) => crossbeam_channel::tick(Duration::from_secs(1)),
+            None => crossbeam_channel::never(),
+        };
 
         // A workspace folder that's a project gets its diagnostics without
         // any document open.
@@ -382,12 +437,19 @@ impl Server {
                     // The client closed stdin without `exit`.
                     let Ok(message) = message else {
                         self.cancel_all(connection);
-                        return Ok(false);
+                        return Ok(Ended::Exit { shut_down: false });
                     };
 
                     if let Some(shut_down) = self.handle(connection, message) {
                         self.cancel_all(connection);
-                        return Ok(shut_down);
+                        return Ok(Ended::Exit { shut_down });
+                    }
+                }
+                recv(watch) -> _ => {
+                    if self.parent.is_some_and(orphaned) {
+                        log("the client's process is gone; exiting");
+                        self.cancel_all(connection);
+                        return Ok(Ended::Orphaned);
                     }
                 }
                 recv(finished) -> done => {

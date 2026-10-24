@@ -122,7 +122,7 @@ also fast enough for the latency limits.
 | `tests/crosscheck.rs` | reconstructed types agree with what the compiler stores |
 | `tests/citations.rs` | the upstream lines the code cites still say what it mirrors |
 | `tests/conformance.rs` | LSP 3.18: the checks every test over LSP makes of each message it receives (tests/common/spec.rs: its shape against the spec's meta model, in tests/fixtures/lsp, and what the client's capabilities allow), and what a client with no optional capabilities gets |
-| `tests/lsp.rs` | the real binary as an LSP server over stdio: `--version`, initialize, encodings, documents, hover, completion, status, panics, timeouts, aborts, cancellation, debouncing, side effects |
+| `tests/lsp.rs` | the real binary as an LSP server over stdio: `--version`, initialize, exiting when the client's process is gone, encodings, documents, hover, completion, status, panics, timeouts, aborts, cancellation, debouncing, side effects |
 | `tests/definition.rs` | definition, type definition and references on every kind of name, same-named symbols in different modules, broken code, both encodings |
 | `tests/navigation.rs` | the same over LSP, in UTF-8 and UTF-16, with status reasons, an installed std that isn't `.upstream/`, and a package in `dep/` |
 | `tests/corpus_definition.rs` | every reference in std/src selects its own symbol, and goes to a declaration of the same id and name |

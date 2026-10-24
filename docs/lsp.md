@@ -16,11 +16,18 @@ meta model (tests/common/spec.rs).
 ## Starting it
 
 ```
-cuttlebone            # or: cuttlebone --stdio
+cuttlebone            # or: cuttlebone --stdio [--clientProcessId=PID]
 ```
 
 - stdio is the only transport. `--stdio` is accepted because some clients
-  (such as VS Code's) pass it.
+  (such as VS Code's) pass it, as LSP recommends.
+- **The client's process.** If the client's process started the server
+  and goes away, the server exits (with status 1), even if stdin stays
+  open, as LSP says of `initialize`'s `processId`. It looks once a
+  second. `--clientProcessId=PID` (or `--clientProcessId PID`), which LSP
+  recommends too, gives the id for a client that sends `processId: null`.
+  A process that isn't the server's parent isn't watched: stdin closing
+  ends the session then, as it always does.
 - stderr carries free-form logs: compiler panics, killed checks, worker
   output. Clients may show it or discard it, but shouldn't parse it.
 - `cuttlebone --version` prints `cuttlebone 0.7.0 (Inko 0.21.1)`.

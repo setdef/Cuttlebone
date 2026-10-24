@@ -55,6 +55,10 @@ M = [
  ("no timeout", "src/lsp.rs", "        let query = match &self.running {\n            Some((_, check)) => Some(check.started + self.options.timeout),", "        let query = match &self.running {\n            Some((_, _check)) => None,", "--test lsp a_hung_check"),
  ("timeout doesn't kill", "src/lsp.rs", "        check.kill();\n        log(&format!(\n            \"check for {} timed out", "        std::mem::forget(check);\n        log(&format!(\n            \"check for {} timed out", "--test lsp a_hung_check"),
  ("cancel ignored", "src/lsp.rs", "self.cancel(connection, &id);", "let _ = id;", "--test lsp cancelling"),
+ # The client's process (LSP's processId and --clientProcessId).
+ ("the client's process not watched", "src/lsp.rs", "            Some(_) => crossbeam_channel::tick(Duration::from_secs(1)),", "            Some(_) => crossbeam_channel::never::<Instant>(),", "--test lsp the_server_exits_when"),
+ ("processId ignored", "src/lsp.rs", "                server.parent = watched(params.process_id.or(client));", "                server.parent = watched(client);", "--test lsp the_server_exits_when"),
+ ("--clientProcessId ignored", "src/bin/cuttlebone.rs", "            Some(pid) => client = Some(pid),", "            Some(pid) => client = Some(pid).filter(|_: &u32| false),", "--test lsp the_server_exits_when"),
  # What an answer covers.
  ("hints cover everything asked", "src/query.rs", "            covered: Some(coverage),", "            covered: None,", "--test replay"),
  ("coverage ignores units", "src/query.rs", ".is_some_and(|o| self.safe(o) && self.changes.new_range(o..o) == Some(b..b))", ".is_some_and(|o| self.changes.new_range(o..o) == Some(b..b))", "--test replay"),

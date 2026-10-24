@@ -1352,6 +1352,72 @@ fn the_server_exits_when_its_input_ends() {
     assert_eq!(client.wait(), Some(1));
 }
 
+/// LSP's `processId`: if the client's process, which started the server,
+/// is gone, the server exits, even though stdin is still open (here the
+/// test holds it). The client's process is a script that starts the
+/// server in the background and exits after a second. It gives its id as
+/// `processId`, or else on the command line, as `--clientProcessId`.
+#[test]
+fn the_server_exits_when_the_client_process_is_gone() {
+    for on_the_command_line in [false, true] {
+        let dir = crate::common::tmp().join(format!("parent-{}", on_the_command_line));
+        let script = dir.join("client");
+        let args = if on_the_command_line {
+            "--stdio --clientProcessId=$$"
+        } else {
+            "--stdio"
+        };
+
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n'{}' {} <&0 &\nsleep 1\n",
+                crate::common::server_bin().display(),
+                args
+            ),
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let mut client = Client::launch_program(&script, Launch::default());
+        let pid = client.child.id();
+        let response = client.request(
+            "initialize",
+            json!({
+                "processId": if on_the_command_line { Value::Null } else { json!(pid) },
+                "rootUri": uri(&fixture("members")),
+                "capabilities": crate::common::spec::capable_client(),
+                "initializationOptions": { "inko": fake_inko(upstream_version()), "diagnostics": false },
+            }),
+        );
+
+        assert!(response.get("result").is_some(), "{}", response);
+        client.notify("initialized", json!({}));
+
+        // The server's stdout closes when it exits.
+        let start = Instant::now();
+        let end = client.receive(Duration::from_secs(10));
+
+        assert!(
+            matches!(end, Err(std::sync::mpsc::RecvTimeoutError::Disconnected)),
+            "the server is still running: {:?}",
+            end
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+}
+
 #[test]
 fn shutdown_kills_a_running_check() {
     let root = copy_fixture("members", "fault-shutdown");
