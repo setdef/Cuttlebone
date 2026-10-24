@@ -20,18 +20,22 @@ Usage: scripts/mutate.py [--since REV] [--jobs N | --serial] [--list] [WORD...]
   --list         print what would run, and why, without running anything
   --jobs N       how many mutations' tests run at once (default: half the
                  cores, at most 5)
+  --trees N      how many mutations are built at once
   --serial       build and test each mutation in place, one at a time, as
                  the runner did before milestone 6
   WORD...        only the mutations whose names contain one of the words
 
-The tests of a mutation run from copies of its build (the test binary and
+Mutations are built in several copies of the tree at once (`--trees N`,
+default a third of the cores, at most 3), in target/mutate, each with a
+copy-on-write clone of the tree's build, so only Cuttlebone is built again.
+A mutation's tests then run from copies of its build (the test binary and
 `cuttlebone`), each with a directory of its own for the files tests make
-(`CUTTLEBONE_TEST_TMPDIR`), so the next mutation can be built while they
-run. Tests that read the source tree itself (tests/guardrails.rs,
-tests/citations.rs) and `sh:` commands run in the tree, between builds.
-tests/latency.rs runs alone, after the rest, so that nothing else loads the
-machine. Every mutation replays the whole edit-replay corpus
-(`CUTTLEBONE_CORPUS_FULL`).
+(`CUTTLEBONE_TEST_TMPDIR`), while the copy builds the next. Tests that read
+the source tree with git (tests/guardrails.rs, tests/citations.rs), and
+`sh:` commands, run in the tree itself, and the
+mutations of .upstream (which every copy links to) and tests/latency.rs
+run alone, after the rest. Every mutation replays the whole edit-replay
+corpus (`CUTTLEBONE_CORPUS_FULL`).
 """
 import json, os, shutil, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
@@ -100,7 +104,7 @@ M = [
  ("other files' ranges use the request's lines", "src/query.rs", "range: range(&Lines::with_encoding(text, self.encoding), &location),", "range: range(self.lines, &location),", "--test navigation references_honour"),
  ("no capability for definition", "src/lsp.rs", "definition_provider: Some(lsp::OneOf::Left(true)),", "definition_provider: None,", "--test lsp initialize_advertises"),
  ("includeDeclaration not read", "src/lsp.rs", '.pointer("/context/includeDeclaration")', '.pointer("/context/include_declaration")', "--test navigation references_honour"),
- ("no status for definitions", "src/lsp.rs", "            Outcome::Place(answer) => {\n                let status = status_of(&answer);", "            Outcome::Place(answer) => {\n                let status = (Ok(()), Duration::ZERO, Source::Fresh);", "--test navigation broken_code"),
+ ("no status for definitions", "src/lsp.rs", "            Outcome::Place(answer) => {\n                let status = status_of(&answer);", "            Outcome::Place(answer) => {\n                let status = (Ok(()), Duration::ZERO, Source::Fresh, false);", "--test navigation broken_code"),
  ("type definition answers definition", "src/worker.rs", "Query::TypeDefinition => Question::TypeDefinition,", "Query::TypeDefinition => Question::Definition,", "--test navigation type_definition"),
  # The guardrails (AGENTS.md).
  ("query uses lsp", "src/query.rs", "use crate::check::{Fingerprint, Target, diagnose, project_root, run};\n", "use crate::check::{Fingerprint, Target, diagnose, project_root, run};\nuse crate::lsp as _;\n", "--test guardrails layers"),
@@ -232,11 +236,11 @@ M = [
  ("fingerprints leave out directories", "src/check.rs", "            directories(&dir, &mut paths);", "            let _ = &dir;", "--test cache a_file_created"),
  ("fingerprints compare nothing", "src/check.rs", "self.stamps.iter().all(|(p, s)| Stamp::of(p) == *s)", "self.stamps.iter().all(|(p, _)| Stamp::of(p).is_some())", "--test cache a_file_changed_on_disk"),
  ("fingerprints leave out the change time", "src/check.rs", "(meta.ctime(), meta.ctime_nsec(), meta.ino(), meta.dev())", "(0, 0, 0, 0)", "--test cache a_check_that_read"),
- ("checks kept while what they read changed", "src/query.rs", "            && fingerprint.settled()\n", "", "--test cache a_check_of_a_file_that_may"),
+ ("checks kept while what they read changed", "src/query.rs", "        if keep && self.capacity > 0 && fingerprint.settled() {", "        if keep && self.capacity > 0 {", "--test cache a_check_of_a_file_that_may"),
  ("settled ignores the start", "src/check.rs", "                .is_none_or(|latest| before(latest, self.started))", "                .is_none_or(|latest| before(latest, self.started + Duration::from_secs(3600)))", "--test cache a_check_that_read"),
  ("coarse clocks get no margin", "src/check.rs", "let margin = if fine { Duration::ZERO } else { COARSE };", "let margin = if fine || true { Duration::ZERO } else { COARSE };", "--lib coarse"),
  ("the cache keeps more than its capacity", "src/query.rs", "            if kept.len() > self.capacity {", "            if kept.len() > self.capacity + 1 {", "--test cache the_cache_keeps"),
- ("kept checks not moved to the end when used", "src/query.rs", "                if !matches!(&result, Err(e) if e.code == \"compilerPanic\") {\n                    kept.push(entry);", "                if !matches!(&result, Err(e) if e.code == \"compilerPanic\") {\n                    kept.insert(0, entry);", "--test cache the_cache_keeps"),
+ ("kept checks not moved to the end when used", "src/query.rs", "                kept.push(entry);\n                return (result, true);", "                kept.insert(0, entry);\n                return (result, true);", "--test cache the_cache_keeps"),
  ("completion's copies kept", "src/query.rs", "                    keep: !changed,", "                    keep: true,", "--test cache completions_copies"),
  ("repaired answers marked by the fresh check", "src/query.rs", "                sources[*i] = Source::Repaired;\n                cached[*i] = kept;", "                sources[*i] = Source::Repaired;", "--test cache repaired_and_stale"),
  ("stale answers marked by the fresh check", "src/query.rs", "                    sources[*i] = Source::Stale;\n                    cached[*i] = kept;", "                    sources[*i] = Source::Stale;", "--test cache repaired_and_stale"),
@@ -247,6 +251,9 @@ M = [
  ("shutdown leaves the waiting worker", "src/lsp.rs", "        if let Some(worker) = self.idle.take() {\n            worker.kill();\n        }\n", "", "--test cache shutdown_stops"),
  ("a dead waiting worker sent a job", "src/worker.rs", "        if !sent {\n            self.kill();", "        if false {\n            self.kill();", "--test cache a_waiting_worker_that_died"),
  ("the tests' switch for kept checks in release builds", "src/worker.rs", "    #[cfg(feature = \"fault-injection\")]\n    if std::env::var_os(NO_CACHE_VARIABLE).is_some() {", "    if std::env::var_os(\"CUTTLEBONE_NO_CACHE\").is_some() {", "sh:scripts/check-release.sh"),
+ # The tiers (milestone 6).
+ ("the whole corpus replays the sample", "tests/replay.rs", "            if full {\n                return Some(s);\n            }\n", "", "--test replay"),
+ ("the milestone tier ignores changed snippets' files", "scripts/mutate.py", "        if path in changed:\n            why = \"changed \" + path", "        if False:\n            why = \"changed \" + path", "sh:python3 scripts/check-selection.py"),
  ("no worker deadline between jobs", "src/worker.rs", "        let _ = deadlines.send(job.deadline.map(|d| Instant::now() + d));", "        let _ = deadlines.send(None::<Instant>);", "--test lsp a_hung_worker"),
 ]
 
@@ -262,15 +269,27 @@ TIMEOUT = 900
 
 def target(test):
     """What runs a `--test FILE FILTER` or `--lib FILTER` target: the cargo
-    arguments that build it, and the test binary's own arguments."""
+    arguments that build it, the module its tests are in (`None` for a
+    binary of their own), and the filter."""
     words = test.split(" ", 2)
-    flt = words[2] if len(words) > 2 else ""
     if words[0] == "--lib":
-        return ["--lib"], [words[1]]
+        return ["--lib"], None, words[1]
     name = words[1]
+    flt = words[2] if len(words) > 2 else ""
     if name in OWN_BINARIES:
-        return ["--test", name], [flt] if flt else []
-    return ["--test", INTEGRATION], [name + "::" + flt]
+        return ["--test", name], None, flt
+    return ["--test", INTEGRATION], name, flt
+
+
+def tests_in(exe, module, flt, root=ROOT):
+    """The tests of a test binary that a target means: those in `module`
+    (if any) whose names contain `flt`, as libtest's own filter would in a
+    binary of their own."""
+    r = subprocess.run([exe, "--list", "--format", "terse"], cwd=root, capture_output=True, text=True, timeout=TIMEOUT)
+    names = [l[:-len(": test")] for l in r.stdout.splitlines() if l.endswith(": test")]
+    if module:
+        names = [n for n in names if n.startswith(module + "::")]
+    return [n for n in names if flt in (n.split("::", 1)[1] if module else n)]
 
 
 def test_file(test):
@@ -345,11 +364,11 @@ def test_env(extra=None):
     return env
 
 
-def build(cargo):
-    """Builds a test target, and returns its executable, or None and the
-    output if it doesn't build."""
+def build(cargo, root):
+    """Builds a test target in a tree, and returns its executable, or None
+    and the output if it doesn't build."""
     r = subprocess.run(["cargo", "test", "--no-run", "--message-format=json", *cargo],
-                       cwd=ROOT, capture_output=True, text=True, timeout=TIMEOUT)
+                       cwd=root, capture_output=True, text=True, timeout=TIMEOUT)
     exe = None
     for line in r.stdout.splitlines():
         try:
@@ -364,25 +383,51 @@ def build(cargo):
     return exe, ""
 
 
-def run_copy(work, exe, args):
-    """Runs a mutation's copied test binary."""
-    env = test_env({
-        "CUTTLEBONE_TEST_BIN": os.path.join(work, "cuttlebone"),
-        "CUTTLEBONE_TEST_TMPDIR": os.path.join(work, "tmp"),
-    })
+def run_tests(exe, names, work=None, cwd=ROOT):
+    """Runs the named tests of a test binary: a mutation's copy, with the
+    files tests make in `work`, or the tree's own build."""
+    if not names:
+        return "NO TESTS: the filter matches none"
+    extra = {}
+    if work:
+        extra = {
+            "CUTTLEBONE_TEST_BIN": os.path.join(work, "cuttlebone"),
+            "CUTTLEBONE_TEST_TMPDIR": os.path.join(work, "tmp"),
+        }
     try:
-        r = subprocess.run([exe, *args], cwd=ROOT, capture_output=True, text=True, timeout=TIMEOUT, env=env)
+        r = subprocess.run([exe, "--exact", *names], cwd=cwd, capture_output=True, text=True,
+                           timeout=TIMEOUT, env=test_env(extra))
+        return verdict_of(r, r.stdout + r.stderr)
     except subprocess.TimeoutExpired:
         return "TIMED OUT after %ds" % TIMEOUT
     finally:
-        pass
-    verdict = verdict_of(r, r.stdout + r.stderr)
-    shutil.rmtree(work, ignore_errors=True)
-    return verdict
+        if work:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def make_tree(path):
+    """A copy of the tree at `path` to build mutations in: every file git
+    tracks or doesn't ignore, `.upstream` as a link to the tree's own, and
+    a clone of its build (copy-on-write where the file system can), so
+    only Cuttlebone itself is built again."""
+    shutil.rmtree(path, ignore_errors=True)
+    files = run_git("ls-files", "--cached", "--others", "--exclude-standard").split("\n")
+    for f in files:
+        if not f or not os.path.isfile(os.path.join(ROOT, f)):
+            continue
+        os.makedirs(os.path.join(path, os.path.dirname(f)), exist_ok=True)
+        shutil.copy2(os.path.join(ROOT, f), os.path.join(path, f))
+    os.symlink(os.path.join(ROOT, ".upstream"), os.path.join(path, ".upstream"))
+    os.makedirs(os.path.join(path, "target"))
+    subprocess.run(["cp", "-c", "-R", os.path.join(ROOT, "target", "debug"), os.path.join(path, "target", "debug")],
+                   check=False, capture_output=True)
+    if not os.path.isdir(os.path.join(path, "target", "debug")):
+        shutil.copytree(os.path.join(ROOT, "target", "debug"), os.path.join(path, "target", "debug"), symlinks=True)
 
 
 def main(argv):
-    since, jobs, serial, listing, words = None, max(1, min(5, (os.cpu_count() or 2) // 2)), False, False, []
+    cores = os.cpu_count() or 2
+    since, jobs, trees, serial, listing, words = None, max(1, min(5, cores // 2)), max(1, min(3, cores // 3)), False, False, []
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -390,6 +435,8 @@ def main(argv):
             since = args.pop(0)
         elif a == "--jobs":
             jobs = int(args.pop(0))
+        elif a == "--trees":
+            trees = int(args.pop(0))
         elif a == "--serial":
             serial = True
         elif a == "--list":
@@ -400,7 +447,7 @@ def main(argv):
     if since:
         changed = changed_since(since)
         chosen = selected(M, changed)
-        shared = sorted(f for f in changed if f == "scripts/mutate.py" or f.startswith("tests/common/") or f in ("tests/main.rs", "Cargo.toml"))
+        shared = sorted(f for f in changed if f in ("scripts/mutate.py", "scripts/check-selection.py", "tests/main.rs", "Cargo.toml") or f.startswith("tests/common/"))
         if shared:
             print("note: %s changed since %s, so the exhaustive tier must pass too (AGENTS.md)" % (", ".join(shared), since), flush=True)
     if words:
@@ -419,49 +466,105 @@ def main(argv):
             results[name] = verdict
             print((name, verdict), flush=True)
 
-    pool = ThreadPoolExecutor(max_workers=jobs)
-    futures = []
-    alone = []
-    work_root = os.path.join(ROOT, "target", "mutate")
-    shutil.rmtree(work_root, ignore_errors=True)
-    for i, ((name, path, old, new, test), _) in enumerate(chosen):
-        p = os.path.join(ROOT, path)
+    def apply(root, m):
+        """Applies a mutation in a tree, and returns its file's text, to
+        restore, or None if its snippet isn't there exactly once."""
+        name, path, old, new, test = m
+        p = os.path.join(root, path)
         src = open(p).read()
         if src.count(old) != 1:
             record(name, "SKIP: pattern count %d" % src.count(old))
-            continue
+            return None
         open(p, "w").write(src.replace(old, new))
+        return src
+
+    def in_place(m):
+        """Builds and tests a mutation in the tree itself."""
+        name, path, old, new, test = m
+        src = apply(ROOT, m)
+        if src is None:
+            return
         try:
             if test.startswith("sh:"):
                 record(name, run_sh(test[3:]))
-                continue
-            cargo, test_args = target(test)
-            if serial or (len(cargo) > 1 and test.split(" ")[1] in IN_PLACE):
-                r = subprocess.run(["cargo", "test", *cargo, "--", *test_args], cwd=ROOT,
-                                   capture_output=True, text=True, timeout=TIMEOUT, env=test_env())
-                record(name, verdict_of(r, r.stdout + r.stderr))
-                continue
-            exe, output = build(cargo)
+                return
+            cargo, module, flt = target(test)
+            exe, _ = build(cargo, ROOT)
             if exe is None:
                 record(name, "BUILD ERROR")
-                continue
-            work = os.path.join(work_root, str(i))
-            os.makedirs(os.path.join(work, "tmp"))
-            copy = os.path.join(work, os.path.basename(exe))
-            shutil.copy2(exe, copy)
-            shutil.copy2(os.path.join(ROOT, "target", "debug", "cuttlebone"), os.path.join(work, "cuttlebone"))
+                return
+            record(name, run_tests(exe, tests_in(exe, module, flt), cwd=ROOT))
         finally:
-            open(p, "w").write(src)
-        job = (name, work, copy, test_args)
-        if len(cargo) > 1 and cargo[1] in OWN_BINARIES:
-            alone.append(job)
-        else:
-            futures.append(pool.submit(lambda j: record(j[0], run_copy(*j[1:])), job))
-    for f in futures:
-        f.result()
-    pool.shutdown()
-    for job in alone:
-        record(job[0], run_copy(*job[1:]))
+            open(os.path.join(ROOT, path), "w").write(src)
+
+    if serial:
+        for m, _ in chosen:
+            in_place(m)
+    else:
+        work_root = os.path.join(ROOT, "target", "mutate")
+        shutil.rmtree(work_root, ignore_errors=True)
+        # Run in the tree itself: commands that use its build or its
+        # .upstream, which every copy links to.
+        here = [m for m, _ in chosen if m[4].startswith("sh:") or target(m[4])[1] in IN_PLACE]
+        last = [m for m, _ in chosen if m[1].startswith(".upstream/")]
+        built = [m for m, _ in chosen if m not in here and m not in last]
+        queue = list(enumerate(built))
+        alone = []
+        pool = ThreadPoolExecutor(max_workers=jobs)
+        futures = []
+
+        def builder(k):
+            root = os.path.join(work_root, "trees", str(k))
+            make_tree(root)
+            while True:
+                with lock:
+                    if not queue:
+                        return
+                    i, m = queue.pop(0)
+                name, path, old, new, test = m
+                src = apply(root, m)
+                if src is None:
+                    continue
+                try:
+                    cargo, module, flt = target(test)
+                    began = time.time()
+                    exe, _ = build(cargo, root)
+                    if exe is None:
+                        record(name, "BUILD ERROR")
+                        continue
+                    names = tests_in(exe, module, flt, root)
+                    work = os.path.join(work_root, "runs", str(i))
+                    os.makedirs(os.path.join(work, "tmp"))
+                    copy = os.path.join(work, os.path.basename(exe))
+                    shutil.copy2(exe, copy)
+                    shutil.copy2(os.path.join(root, "target", "debug", "cuttlebone"), os.path.join(work, "cuttlebone"))
+                    if os.environ.get("MUTATE_TIMES"):
+                        print("%s: built and listed in %.1fs" % (name, time.time() - began), flush=True)
+                finally:
+                    open(os.path.join(root, path), "w").write(src)
+                job = (name, copy, names, work, root)
+                if cargo[1:] and cargo[1] in OWN_BINARIES:
+                    with lock:
+                        alone.append(job)
+                else:
+                    with lock:
+                        futures.append(pool.submit(lambda j: record(j[0], run_tests(j[1], j[2], j[3], cwd=j[4])), job))
+
+        threads = [threading.Thread(target=builder, args=(k,)) for k in range(trees)]
+        for t in threads:
+            t.start()
+        for m in here:
+            in_place(m)
+        for t in threads:
+            t.join()
+        for f in list(futures):
+            f.result()
+        pool.shutdown()
+        for job in alone:
+            record(job[0], run_tests(job[1], job[2], job[3], cwd=job[4]))
+        for m in last:
+            in_place(m)
+        shutil.rmtree(work_root, ignore_errors=True)
     ordered = [(m[0], results.get(m[0], "NOT RUN")) for m, _ in chosen]
     caught = sum(v.startswith("caught") for _, v in ordered)
     for name, v in ordered:
@@ -471,5 +574,12 @@ def main(argv):
     return 0 if ordered and caught == len(ordered) else 1
 
 
+def interrupted(signum, frame):
+    raise KeyboardInterrupt
+
+
 if __name__ == "__main__":
+    import signal
+    # So that `finally` restores a mutated file when the run is killed.
+    signal.signal(signal.SIGTERM, interrupted)
     sys.exit(main(sys.argv[1:]))

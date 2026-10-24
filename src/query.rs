@@ -1604,7 +1604,7 @@ fn walker_module(checked: &Checked, file: &Path) -> ModuleId {
 }
 
 /// How many checks a `Cache` keeps by default. Each holds its compiler's
-/// state: about 50 MB for a file that imports all of std.
+/// state: about 33 MB for a file that imports all of std.
 pub const KEPT_CHECKS: usize = 4;
 
 /// Checks kept to answer later questions about the same text, without

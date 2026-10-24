@@ -929,10 +929,12 @@ requests sent at once on a std-sized project are answered in 0.7 s
 what a check read costs about 2 µs a path (150 paths for a file that
 imports all of std).
 
-**Memory.** Each kept check holds its compiler's state: about 50 MB for a
-file that imports all of std, so at most about 200 MB for the 4, in the
-worker. The worker frees a check when it keeps a fifth, and all of them
-when it's killed or exits. Diagnostics checks are never kept: they lower to
+**Memory.** Each kept check holds its compiler's state: about 33 MB for a
+file that imports all of std. On an Apple M1 Max the worker holds 48 MB
+with one such check, 146 MB with 4, and 182 MB at most, while a fifth is
+checked before the oldest goes. A check of a whole project is bigger. The
+worker frees a check when it keeps a fifth, and all of them when it's
+killed or exits. Diagnostics checks are never kept: they lower to
 MIR, which consumes what the queries would need.
 
 ## `shutdown` and `exit`
