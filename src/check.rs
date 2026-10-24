@@ -248,15 +248,22 @@ pub struct Diagnosis {
 /// Checks a target the way `inko check` does (compiler/src/compiler.rs:258-261,
 /// inko/src/command/check.rs:62-70), including lowering to MIR, where some
 /// errors (e.g. moves) and warnings are found, and returns every diagnostic.
-/// Like `run`, it has no side effects.
-pub fn diagnose(target: &Target) -> Result<Diagnosis, String> {
+/// Like `run`, it has no side effects. `inspect` sees the typed HIR before
+/// MIR, if there is any.
+pub fn diagnose(
+    target: &Target,
+    inspect: impl FnOnce(&Database, &[hir::Module]),
+) -> Result<Diagnosis, String> {
     check_required_version(target)?;
 
     let mut compiler = Compiler::new(target.config()?);
     // The compiler is only read after a panic, to collect what it reported
     // before it.
     let res = catch_unwind(AssertUnwindSafe(|| {
-        compiler.check_with(target.file.clone(), |_, _| true)
+        compiler.check_with(target.file.clone(), |db, hir| {
+            inspect(db, hir);
+            true
+        })
     }));
     let diagnostics = compiler
         .diagnostics()

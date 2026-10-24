@@ -5,7 +5,9 @@
 //! Every answer is computed from a fresh type check of the file and what it
 //! imports. Nothing is kept between requests.
 use crate::check::{Target, diagnose, project_root, run};
-use crate::position::{Encoding, HirPosition, Lines, Position, contains};
+use crate::edits::{Changes, Fallback};
+use crate::position::{Encoding, HirPosition, Lines, Position, contains, position_at};
+use crate::units::{Effect, Outline, Unit, effect, names};
 use crate::walker::{
     ArgumentList, Expr, ListArgument, Reference, SymbolId, Walker, declarations,
     expressions_pass_ran, type_symbol,
@@ -14,8 +16,8 @@ use compiler::hir;
 use location::Location;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Once;
@@ -141,14 +143,21 @@ pub struct Answer<T> {
     /// What the answer was computed from.
     #[serde(default)]
     pub source: Source,
+    /// Whether a check of the documents as they are (not an edited copy)
+    /// typed method bodies. The server keeps those documents for later
+    /// answers from older results (`Fallback`).
+    #[serde(default)]
+    pub typed: bool,
 }
 
 impl<T> Answer<T> {
-    fn map<U>(self, f: impl FnOnce(T) -> Option<U>) -> Answer<U> {
+    /// The answer with its result converted.
+    pub fn map<U>(self, f: impl FnOnce(T) -> Option<U>) -> Answer<U> {
         Answer {
             result: self.result.map(|r| r.and_then(f)),
             elapsed: self.elapsed,
             source: self.source,
+            typed: self.typed,
         }
     }
 }
@@ -161,6 +170,35 @@ pub enum Source {
     /// A check of the documents as they are now.
     #[default]
     Fresh,
+    /// The last check of the file that typed method bodies, at a position
+    /// in text that hasn't changed since, in a unit nothing changed the
+    /// meaning of (`units`).
+    Stale,
+}
+
+/// Whether a question may be answered from a source: read-only displays
+/// from older results too; completion, which inserts code, and references,
+/// which a rename relies on, only from the documents as they are
+/// (docs/lsp.md, "Answers in code being edited").
+fn allows(question: Question, source: Source) -> bool {
+    match source {
+        Source::Fresh => true,
+        Source::Stale => matches!(
+            question,
+            Question::Type
+                | Question::Definition
+                | Question::TypeDefinition
+                | Question::Highlight
+                | Question::SignatureHelp
+                | Question::InlayHints { .. }
+        ),
+    }
+}
+
+/// Whether another check may answer where a fresh one couldn't: the code
+/// doesn't parse, or a declaration's error stopped the type checker.
+fn recoverable(reason: &Unavailable) -> bool {
+    reason.code == "noHir" || reason.code == "declarationErrors"
 }
 
 /// A question about a position. `ask` answers several with one check.
@@ -208,6 +246,19 @@ pub fn ask(
     request: &Request,
     questions: &[(Question, Position)],
 ) -> Vec<Answer<Reply>> {
+    ask_with(session, request, None, questions)
+}
+
+/// `ask`, answering from the documents of the file's last check that typed
+/// method bodies (`fallback`) where the documents as they are can't be
+/// checked, if the question allows it (`allows`).
+pub fn ask_with(
+    session: &Session,
+    request: &Request,
+    fallback: Option<&Fallback>,
+    questions: &[(Question, Position)],
+) -> Vec<Answer<Reply>> {
+    let older = fallback.map(|f| (request, f));
     let mut answers: Vec<Option<Answer<Reply>>> = vec![None; questions.len()];
 
     for project in [false, true] {
@@ -227,7 +278,7 @@ pub fn ask(
 
         for (i, answer) in group
             .iter()
-            .zip(pipeline(session, request, project, &items))
+            .zip(pipeline(session, request, project, &items, older))
         {
             answers[*i] = Some(answer);
         }
@@ -235,7 +286,9 @@ pub fn ask(
 
     for (i, (question, position)) in questions.iter().enumerate() {
         if edits_text(*question) {
-            answers[i] = Some(edited_question(session, request, *question, *position));
+            answers[i] = Some(edited_question(
+                session, request, *question, *position, older,
+            ));
         }
     }
 
@@ -546,6 +599,7 @@ pub fn diagnostics_target(session: &Session, file: &Path) -> Option<PathBuf> {
 /// ignored.
 pub fn diagnostics(session: &Session, request: &Request) -> Answer<Diagnostics> {
     let start = Instant::now();
+    let mut typed = false;
     let result = canonical(&request.file).and_then(|path| {
         let mut overlay = HashMap::new();
 
@@ -572,45 +626,49 @@ pub fn diagnostics(session: &Session, request: &Request) -> Answer<Diagnostics> 
         };
 
         // The panic hook records the message on the thread that panicked.
-        guarded(|| diagnose(&target).map(|d| (d, PANIC.with(|p| p.borrow_mut().take()))))
-            .map_err(|message| Unavailable::new("compilerPanic", message))?
-            .map_err(|e| Unavailable::new("compilerError", e))
-            .map(|(diagnosis, panic)| {
-                let incomplete = diagnosis.panicked.then(|| {
-                    Unavailable::new(
-                        "compilerPanic",
-                        panic.unwrap_or_else(|| "the compiler panicked".to_string()),
-                    )
-                });
-                let mut texts: HashMap<PathBuf, String> = HashMap::new();
-                let diagnostics = diagnosis
-                    .diagnostics
-                    .into_iter()
-                    .map(|d| {
-                        let text = texts.entry(d.file.clone()).or_insert_with(|| {
+        guarded(|| {
+            diagnose(&target, |_, modules| typed = expressions_pass_ran(modules))
+                .map(|d| (d, PANIC.with(|p| p.borrow_mut().take())))
+        })
+        .map_err(|message| Unavailable::new("compilerPanic", message))?
+        .map_err(|e| Unavailable::new("compilerError", e))
+        .map(|(diagnosis, panic)| {
+            let incomplete = diagnosis.panicked.then(|| {
+                Unavailable::new(
+                    "compilerPanic",
+                    panic.unwrap_or_else(|| "the compiler panicked".to_string()),
+                )
+            });
+            let mut texts: HashMap<PathBuf, String> = HashMap::new();
+            let diagnostics = diagnosis
+                .diagnostics
+                .into_iter()
+                .map(|d| {
+                    let text =
+                        texts.entry(d.file.clone()).or_insert_with(|| {
                             target.overlay.get(&d.file).cloned().unwrap_or_else(|| {
                                 std::fs::read_to_string(&d.file).unwrap_or_default()
                             })
                         });
-                        let l = d.location;
+                    let l = d.location;
 
-                        Diagnostic {
-                            range: range(&Lines::with_encoding(text, request.encoding), &l),
-                            file: d.file,
-                            error: d.error,
-                            id: d.id,
-                            message: d.message,
-                            lines: [l.line_start, l.line_end],
-                            columns: [l.column_start, l.column_end],
-                        }
-                    })
-                    .collect();
-
-                Some(Diagnostics {
-                    diagnostics,
-                    incomplete,
+                    Diagnostic {
+                        range: range(&Lines::with_encoding(text, request.encoding), &l),
+                        file: d.file,
+                        error: d.error,
+                        id: d.id,
+                        message: d.message,
+                        lines: [l.line_start, l.line_end],
+                        columns: [l.column_start, l.column_end],
+                    }
                 })
+                .collect();
+
+            Some(Diagnostics {
+                diagnostics,
+                incomplete,
             })
+        })
     });
 
     Answer {
@@ -618,6 +676,7 @@ pub fn diagnostics(session: &Session, request: &Request) -> Answer<Diagnostics> 
         elapsed: start.elapsed(),
         // Always from the documents as they are.
         source: Source::Fresh,
+        typed,
     }
 }
 
@@ -807,6 +866,7 @@ fn edited_question(
     request: &Request,
     question: Question,
     position: Position,
+    older: Option<(&Request, &Fallback)>,
 ) -> Answer<Reply> {
     let start = Instant::now();
     let request = Request {
@@ -840,13 +900,20 @@ fn edited_question(
         ),
     };
     let mut answer = match prepared {
-        Ok(copy) => pipeline(session, &copy, false, &[(inspect, position)])
-            .pop()
-            .unwrap(),
+        Ok((copy, changed)) => {
+            let mut answer = pipeline(session, &copy, false, &[(inspect, position)], older)
+                .pop()
+                .unwrap();
+
+            // A copy's check says nothing of the documents as they are.
+            answer.typed &= !changed;
+            answer
+        }
         Err(e) => Answer {
             result: Err(e),
             elapsed: Duration::ZERO,
             source: Source::Fresh,
+            typed: false,
         },
     };
 
@@ -856,11 +923,12 @@ fn edited_question(
 
 /// A copy of a request whose file's text (from the request's contents, or
 /// from disk) is what `edit` makes of it, given the byte offset of the
-/// request's position. If `edit` returns `None`, the text is as it was.
+/// request's position, and whether it changed. If `edit` returns `None`,
+/// the text is as it was.
 fn edited(
     request: &Request,
     edit: impl FnOnce(&str, usize) -> Option<String>,
-) -> Result<Request, Unavailable> {
+) -> Result<(Request, bool), Unavailable> {
     let file = canonical(&request.file)?;
     let text = match request
         .contents
@@ -872,7 +940,9 @@ fn edited(
     };
     let offset = byte_offset(&text, request.position, request.encoding)
         .ok_or_else(|| invalid_position(request.position))?;
-    let copy = edit(&text, offset).unwrap_or(text);
+    let copy = edit(&text, offset);
+    let changed = copy.is_some();
+    let copy = copy.unwrap_or(text);
     let mut contents: HashMap<PathBuf, String> = request
         .contents
         .iter()
@@ -881,12 +951,15 @@ fn edited(
         .collect();
 
     contents.insert(file.clone(), copy);
-    Ok(Request {
-        file,
-        position: request.position,
-        encoding: request.encoding,
-        contents,
-    })
+    Ok((
+        Request {
+            file,
+            position: request.position,
+            encoding: request.encoding,
+            contents,
+        },
+        changed,
+    ))
 }
 
 /// A method's signature, for signature help.
@@ -1245,14 +1318,20 @@ impl Scope<'_> {
 /// walked HIR, in order. With `project` set, it checks the whole project
 /// the file is part of (unless the file is outside its `src/` and
 /// `test/`), not just the file and what it imports.
+///
+/// With `older` (the documents as they are, which `request` may be an
+/// edited copy of, and the last good check's), a question the check can't
+/// answer because the code doesn't parse or a declaration has an error is
+/// answered from the older documents where that's safe (`from_older`).
 fn pipeline(
     session: &Session,
     request: &Request,
     project: bool,
     questions: &[(Question, Position)],
+    older: Option<(&Request, &Fallback)>,
 ) -> Vec<Answer<Reply>> {
     let start = Instant::now();
-    let results = match prepare(session, request) {
+    let (mut results, typed) = match prepare(session, request) {
         Ok((mut target, text)) => {
             let file = target.file.clone().unwrap();
 
@@ -1261,18 +1340,49 @@ fn pipeline(
             }
 
             guarded(|| analyze(&target, &file, &text, request.encoding, questions)).unwrap_or_else(
-                |message| vec![Err(Unavailable::new("compilerPanic", message)); questions.len()],
+                |message| {
+                    (
+                        vec![Err(Unavailable::new("compilerPanic", message)); questions.len()],
+                        false,
+                    )
+                },
             )
         }
-        Err(e) => vec![Err(e); questions.len()],
+        Err(e) => (vec![Err(e); questions.len()], false),
     };
+    let mut sources = vec![Source::Fresh; questions.len()];
+
+    if let Some((now, fallback)) = older {
+        let wanted: Vec<usize> = (0..questions.len())
+            .filter(|i| {
+                matches!(&results[*i], Err(r) if recoverable(r))
+                    && allows(questions[*i].0, Source::Stale)
+            })
+            .collect();
+
+        if !wanted.is_empty() {
+            let asked: Vec<(Question, Position)> = wanted.iter().map(|i| questions[*i]).collect();
+
+            for (i, found) in wanted
+                .iter()
+                .zip(from_older(session, now, fallback, &asked))
+            {
+                if let Some(result) = found {
+                    results[*i] = result;
+                    sources[*i] = Source::Stale;
+                }
+            }
+        }
+    }
 
     results
         .into_iter()
-        .map(|result| Answer {
+        .zip(sources)
+        .map(|(result, source)| Answer {
             result,
             elapsed: start.elapsed(),
-            source: Source::Fresh,
+            source,
+            typed,
         })
         .collect()
 }
@@ -1342,13 +1452,14 @@ fn canonical(path: &Path) -> Result<PathBuf, Unavailable> {
 
 type Results = Vec<Result<Option<Reply>, Unavailable>>;
 
+/// The answers, and whether the check typed method bodies.
 fn analyze(
     target: &Target,
     file: &Path,
     text: &str,
     encoding: Encoding,
     questions: &[(Question, Position)],
-) -> Results {
+) -> (Results, bool) {
     let lines = Lines::with_encoding(text, encoding);
     let ats: Vec<Result<HirPosition, Unavailable>> = questions
         .iter()
@@ -1366,20 +1477,20 @@ fn analyze(
 
     let run = run(target, false, false, |db, modules: &[hir::Module]| {
         if !expressions_pass_ran(modules) {
-            return all(Unavailable::new(
-                "declarationErrors",
-                "an error in a declaration (e.g. an undefined type in a signature) \
-                 stopped the type checker before it typed method bodies",
-            ));
+            return (all(declaration_errors()), false);
         }
 
         let Some(module) = modules.iter().find(|m| m.module_id.file(db) == file) else {
-            return all(Unavailable::new("internal", "the file wasn't type checked"));
+            return (
+                all(Unavailable::new("internal", "the file wasn't type checked")),
+                false,
+            );
         };
         let mut walker = Walker::new(db, module.module_id);
 
         walker.module(module);
-        questions
+
+        let results = questions
             .iter()
             .zip(&ats)
             .map(|((question, _), at)| {
@@ -1399,19 +1510,498 @@ fn analyze(
                     },
                 )
             })
-            .collect()
+            .collect();
+
+        (results, true)
     });
 
     match run {
-        Ok(run) => run.inspected.unwrap_or_else(|| {
-            all(Unavailable::new(
-                "noHir",
-                "the file or a module it imports couldn't be parsed or found, \
-                 so nothing was type checked",
-            ))
-        }),
-        Err(e) => all(Unavailable::new("compilerError", e)),
+        Ok(run) => match run.inspected {
+            Some(inspected) => inspected,
+            None => (
+                all(Unavailable::new(
+                    "noHir",
+                    "the file or a module it imports couldn't be parsed or found, \
+                     so nothing was type checked",
+                )),
+                false,
+            ),
+        },
+        Err(e) => (all(Unavailable::new("compilerError", e)), false),
     }
+}
+
+/// A file as an older check read it, and as it is now.
+struct Version {
+    old: String,
+    new: String,
+    changes: Changes,
+}
+
+/// Answers questions from the documents of an earlier check (`fallback`),
+/// at positions in the documents as they are (`now`): each position is
+/// mapped back, and each range in an answer forward, through the edits
+/// since. An answer is given only where it holds now: the position, and
+/// everything in the answer, is in text that hasn't changed, in a unit no
+/// change since could make mean something else (`units`). `None` where
+/// there's no such answer, and for every question if that check didn't
+/// type method bodies.
+fn from_older(
+    session: &Session,
+    now: &Request,
+    fallback: &Fallback,
+    questions: &[(Question, Position)],
+) -> Vec<Option<Result<Option<Reply>, Unavailable>>> {
+    let nothing = || vec![None; questions.len()];
+    let canonical_keys = |map: &HashMap<PathBuf, String>| -> HashMap<PathBuf, String> {
+        map.iter()
+            .filter_map(|(p, t)| Some((canonical(p).ok()?, t.clone())))
+            .collect()
+    };
+    let Ok(file) = canonical(&now.file) else {
+        return nothing();
+    };
+    let contents = canonical_keys(&fallback.contents);
+    let current = canonical_keys(&now.contents);
+    let text =
+        |map: &HashMap<PathBuf, String>, p: &Path| map.get(p).cloned().or_else(|| read(p).ok());
+    let mut versions: HashMap<PathBuf, Version> = HashMap::new();
+
+    for (path, changes) in &fallback.changes {
+        let Ok(path) = canonical(path) else {
+            continue;
+        };
+
+        if changes.is_none() {
+            continue;
+        }
+
+        let (Some(old), Some(new)) = (text(&contents, &path), text(&current, &path)) else {
+            return nothing();
+        };
+
+        versions.insert(
+            path,
+            Version {
+                old,
+                new,
+                changes: changes.clone(),
+            },
+        );
+    }
+
+    let Some(old) = text(&contents, &file) else {
+        return nothing();
+    };
+    let new = versions
+        .get(&file)
+        .map_or_else(|| old.clone(), |v| v.new.clone());
+    let unchanged = Changes::none(old.len());
+    let changes = versions.get(&file).map_or(&unchanged, |v| &v.changes);
+    let encoding = now.encoding;
+    // Each position in the old text, if its character is unchanged.
+    let positions: Vec<Option<Position>> = questions
+        .iter()
+        .map(|(question, position)| match question {
+            // Hints are computed for the whole file.
+            Question::InlayHints { .. } => Some(Position {
+                line: 0,
+                character: 0,
+            }),
+            _ => {
+                let byte = byte_offset(&new, *position, encoding)?;
+
+                Some(position_at(&old, changes.old_offset(byte)?, encoding))
+            }
+        })
+        .collect();
+    let target = Target {
+        root: root_of(session, &file),
+        file: Some(file.clone()),
+        tests: true,
+        std: session.std.clone(),
+        overlay: contents.clone(),
+    };
+    let lines = Lines::with_encoding(&old, encoding);
+
+    guarded(|| {
+        let run = run(&target, false, false, |db, modules: &[hir::Module]| {
+            if !expressions_pass_ran(modules) {
+                return nothing();
+            }
+
+            let Some(module) = modules.iter().find(|m| m.module_id.file(db) == file) else {
+                return nothing();
+            };
+            let mut walker = Walker::new(db, module.module_id);
+
+            walker.module(module);
+
+            let Some(guard) = Guard::new(&file, &old, &new, changes, &versions, &walker, encoding)
+            else {
+                return nothing();
+            };
+
+            questions
+                .iter()
+                .zip(&positions)
+                .map(|((question, position), old_position)| {
+                    let old_position = (*old_position)?;
+                    let at = lines.to_hir(old_position)?;
+
+                    if !matches!(question, Question::InlayHints { .. })
+                        && !guard.safe(byte_offset(&old, old_position, encoding)?)
+                    {
+                        return None;
+                    }
+
+                    let reply = inspect(
+                        *question,
+                        &Scope {
+                            db,
+                            modules,
+                            file: file.clone(),
+                            module: module.module_id,
+                            walker: &walker,
+                            lines: &lines,
+                            at,
+                            target: &target,
+                            encoding,
+                            texts: RefCell::new(HashMap::new()),
+                        },
+                    )
+                    .ok()?;
+
+                    match (question, reply) {
+                        (Question::InlayHints { end }, Some(Reply::Hints(hints))) => {
+                            guard.hints(hints, *position, *end).map(|h| Ok(Some(h)))
+                        }
+                        (_, reply) => guard.reply(reply).map(Ok),
+                    }
+                })
+                .collect()
+        });
+
+        match run {
+            Ok(run) => run.inspected.unwrap_or_else(nothing),
+            Err(_) => nothing(),
+        }
+    })
+    .unwrap_or_else(|_| nothing())
+}
+
+/// Decides which parts of an older check of a file still hold, and maps
+/// them to the documents as they are.
+struct Guard<'a> {
+    file: &'a Path,
+    old: &'a str,
+    new: &'a str,
+    changes: &'a Changes,
+    versions: &'a HashMap<PathBuf, Version>,
+    outline: Outline,
+    /// The byte of the old text each expression of the walk starts at, and
+    /// its type, `None` if the check couldn't type it.
+    types: Vec<(usize, Option<&'a str>)>,
+    /// What the changes to the file did.
+    effects: Vec<Effect>,
+    /// What the changes to every file did.
+    all: Vec<Effect>,
+    safe: RefCell<HashMap<Unit, bool>>,
+    encoding: Encoding,
+}
+
+impl<'a> Guard<'a> {
+    /// `None` if a changed file's old text doesn't parse, which can't
+    /// happen for a check that typed method bodies.
+    fn new(
+        file: &'a Path,
+        old: &'a str,
+        new: &'a str,
+        changes: &'a Changes,
+        versions: &'a HashMap<PathBuf, Version>,
+        walker: &'a Walker,
+        encoding: Encoding,
+    ) -> Option<Guard<'a>> {
+        let outline = Outline::parse(old)?;
+        let mut effects = Vec::new();
+        let mut all = Vec::new();
+
+        for (path, v) in versions {
+            let other = Outline::parse(&v.old)?;
+
+            for change in v.changes.changed() {
+                if path == file {
+                    effects.push(effect(&other, &v.old, &v.new, &change));
+                }
+
+                all.push(effect(&other, &v.old, &v.new, &change));
+            }
+        }
+
+        let lines = Lines::with_encoding(old, Encoding::Utf8);
+        let starts: Vec<usize> = std::iter::once(0)
+            .chain(old.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+        let types = walker
+            .out
+            .iter()
+            .filter_map(|e| {
+                let p = lines.from_hir(e.location.line_start, e.location.column_start);
+                let byte = starts.get(p.line as usize)? + p.character as usize;
+
+                Some((byte, e.typ.as_deref().filter(|t| !t.contains("<error>"))))
+            })
+            .collect();
+
+        Some(Guard {
+            file,
+            old,
+            new,
+            changes,
+            versions,
+            outline,
+            types,
+            effects,
+            all,
+            safe: RefCell::new(HashMap::new()),
+            encoding,
+        })
+    }
+
+    /// Whether the unit the old text's byte `offset` is in means what it
+    /// did, and meant something then: no change touched it, it mentions
+    /// none of the names a change is about, and the check typed all of it.
+    /// A unit with an error may refer to something that didn't exist then,
+    /// and is being typed now.
+    fn safe(&self, offset: usize) -> bool {
+        self.safe_unit(self.outline.unit_at(offset))
+    }
+
+    fn safe_unit(&self, unit: Unit) -> bool {
+        if let Some(safe) = self.safe.borrow().get(&unit) {
+            return *safe;
+        }
+
+        let safe = self.check_unit(unit);
+
+        self.safe.borrow_mut().insert(unit, safe);
+        safe
+    }
+
+    fn check_unit(&self, unit: Unit) -> bool {
+        {
+            let own = self.outline.own(unit);
+
+            // Only comments and blank lines are between items, and they
+            // mean nothing.
+            if unit == Unit::Between {
+                return true;
+            }
+
+            let touched = self.effects.iter().filter_map(|e| e.old.as_ref()).any(|t| {
+                own.iter().any(|r| {
+                    if t.is_empty() {
+                        r.start < t.start && t.start < r.end
+                    } else {
+                        t.start < r.end && r.start < t.end
+                    }
+                })
+            });
+
+            if touched {
+                return false;
+            }
+
+            let types: Vec<Option<&str>> = self
+                .types
+                .iter()
+                .filter(|(byte, _)| own.iter().any(|r| r.contains(byte)))
+                .map(|(_, typ)| *typ)
+                .collect();
+
+            if types.contains(&None) {
+                return false;
+            }
+
+            let mentioned: HashSet<&str> = own
+                .iter()
+                .flat_map(|r| names(&self.old[r.clone()]))
+                .chain(types.into_iter().flatten().flat_map(names))
+                .collect();
+
+            !mentioned
+                .iter()
+                .any(|n| self.all.iter().any(|e| e.affects(n)))
+        }
+    }
+
+    /// A range of the old text as a range of the new one, if it's
+    /// unchanged and in a safe unit.
+    fn range(&self, range: Range) -> Option<Range> {
+        let encoding = self.encoding;
+        let start = byte_offset(self.old, range.start, encoding)?;
+        let end = byte_offset(self.old, range.end, encoding)?;
+        let mapped = self.changes.new_range(start..end)?;
+
+        Some(Range {
+            start: position_at(self.new, mapped.start, encoding),
+            end: position_at(self.new, mapped.end, encoding),
+        })
+    }
+
+    /// A place in any file, mapped to the file as it is: unchanged files
+    /// stay as they are.
+    fn place(&self, place: Place) -> Option<Place> {
+        let encoding = self.encoding;
+        if place.file == self.file {
+            return Some(Place {
+                range: self.range(place.range)?,
+                file: place.file,
+            });
+        }
+
+        let Some(v) = self.versions.get(&place.file) else {
+            return Some(place);
+        };
+        let start = byte_offset(&v.old, place.range.start, encoding)?;
+        let end = byte_offset(&v.old, place.range.end, encoding)?;
+        let mapped = v.changes.new_range(start..end)?;
+
+        Some(Place {
+            range: Range {
+                start: position_at(&v.new, mapped.start, encoding),
+                end: position_at(&v.new, mapped.end, encoding),
+            },
+            file: place.file,
+        })
+    }
+
+    /// A reply mapped to the documents as they are, or `None` if any of it
+    /// doesn't hold.
+    fn reply(&self, reply: Option<Reply>) -> Option<Option<Reply>> {
+        Some(match reply {
+            None => None,
+            Some(Reply::Type(t)) => Some(Reply::Type(TypeAt {
+                range: self.range(t.range)?,
+                ..t
+            })),
+            Some(Reply::Members(m)) => Some(Reply::Members(MembersAt {
+                receiver_range: self.range(m.receiver_range)?,
+                ..m
+            })),
+            Some(Reply::Place(p)) => Some(Reply::Place(self.place(p)?)),
+            Some(Reply::Places(ps)) => Some(Reply::Places(
+                ps.into_iter()
+                    .map(|p| self.place(p))
+                    .collect::<Option<_>>()?,
+            )),
+            // The changed text may use the symbol where the old text didn't.
+            Some(Reply::Highlights(hs)) if hs.iter().any(|h| self.typed_since(h.range)) => {
+                return None;
+            }
+            Some(Reply::Highlights(hs)) => Some(Reply::Highlights(
+                hs.into_iter()
+                    .map(|h| {
+                        Some(Highlight {
+                            range: self.range(h.range)?,
+                            access: h.access,
+                        })
+                    })
+                    .collect::<Option<_>>()?,
+            )),
+            Some(Reply::Signature(s)) => Some(Reply::Signature(s)),
+            Some(Reply::Hints(hs)) => Some(Reply::Hints(hs)),
+        })
+    }
+
+    /// Whether the name at a range of the old text may have uses the check
+    /// didn't see: in text added to the file since (or the start of the
+    /// name is), or in a unit that isn't safe (`safe`), which the check may
+    /// not have typed.
+    fn typed_since(&self, range: Range) -> bool {
+        let (Some(start), Some(end)) = (
+            byte_offset(self.old, range.start, self.encoding),
+            byte_offset(self.old, range.end, self.encoding),
+        ) else {
+            return true;
+        };
+
+        names(&self.old[start..end]).any(|name| {
+            let added = self
+                .effects
+                .iter()
+                .flat_map(|e| &e.added)
+                .any(|added| name.starts_with(added.as_str()));
+            let unsafe_use = (0..self.outline.items.len())
+                .map(Unit::Item)
+                .filter(|u| self.outline.unit_at_item(*u))
+                .any(|u| {
+                    !self.safe_unit(u)
+                        && self
+                            .outline
+                            .own(u)
+                            .iter()
+                            .any(|r| names(&self.old[r.clone()]).any(|n| n == name))
+                });
+
+            added || unsafe_use
+        })
+    }
+
+    /// The hints that hold, mapped, or `None` if no line from `start` to
+    /// `end` (in the documents as they are) is in a safe unit.
+    fn hints(&self, hints: Vec<Hint>, start: Position, end: Position) -> Option<Reply> {
+        let e = self.encoding;
+        let covered = (start.line..=end.line).any(|line| {
+            let Some(from) = byte_offset(self.new, Position { line, character: 0 }, e) else {
+                return false;
+            };
+            let to = self.new[from..]
+                .find('\n')
+                .map_or(self.new.len(), |i| from + i);
+
+            (from..to)
+                .filter(|b| {
+                    self.new.is_char_boundary(*b)
+                        && !self.new[*b..].starts_with(char::is_whitespace)
+                })
+                .filter_map(|b| self.changes.old_offset(b))
+                .any(|b| self.safe(b))
+        });
+
+        if !covered {
+            return None;
+        }
+
+        Some(Reply::Hints(
+            hints
+                .into_iter()
+                .filter_map(|h| {
+                    let at = Range {
+                        start: h.position,
+                        end: h.position,
+                    };
+
+                    if !self.safe(byte_offset(self.old, h.position, e)?) {
+                        return None;
+                    }
+
+                    Some(Hint {
+                        position: self.range(at)?.start,
+                        ..h
+                    })
+                })
+                .collect(),
+        ))
+    }
+}
+
+fn declaration_errors() -> Unavailable {
+    Unavailable::new(
+        "declarationErrors",
+        "an error in a declaration (e.g. an undefined type in a signature) \
+         stopped the type checker before it typed method bodies",
+    )
 }
 
 thread_local! {

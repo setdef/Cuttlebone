@@ -28,7 +28,7 @@
 mod common;
 
 use cuttlebone::dump::upstream_std;
-use cuttlebone::edits::Changes;
+use cuttlebone::edits::{Changes, Snapshots};
 use cuttlebone::position::{Encoding, Position, position_at};
 use cuttlebone::query::{self, Answer, Question, Reply, Request, Session, Source};
 use std::collections::{BTreeMap, HashMap};
@@ -452,23 +452,21 @@ impl Tally {
         let mut out = String::new();
         let _ = writeln!(
             out,
-            "| request | asked | fresh | no answer | fresh, differs at the end | wrong |"
+            "| request | asked | fresh | stale | no answer | fresh, differs at the end | wrong |"
         );
-        let _ = writeln!(out, "|---|---|---|---|---|---|");
+        let _ = writeln!(out, "|---|---|---|---|---|---|---|");
 
         for request in REQUESTS {
             let _ = writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} |",
                 request,
                 self.asked(request),
                 self.get(request, Verdict::Right(Source::Fresh)),
+                self.get(request, Verdict::Right(Source::Stale)),
                 self.get(request, Verdict::None),
                 self.wrong(request, Source::Fresh),
-                self.asked(request)
-                    - self.get(request, Verdict::Right(Source::Fresh))
-                    - self.get(request, Verdict::None)
-                    - self.wrong(request, Source::Fresh),
+                self.wrong(request, Source::Stale),
             );
         }
 
@@ -723,8 +721,56 @@ fn replay(scenario: &Scenario) -> Tally {
     let file = &scenario.file;
     let mut asked: Vec<Asked> = Vec::new();
     let mut mappings: Vec<Mapping> = Vec::new();
+    // What the server keeps, from a check when the files are opened (as
+    // their diagnostics would be) and each check since.
+    let mut snapshots = Snapshots::default();
+    let ask = |snapshots: &mut Snapshots,
+               docs: &Documents,
+               check: u64,
+               questions: &[(Question, Position)]| {
+        snapshots.sent(check, &docs.texts);
+
+        let fallback = snapshots.fallback(file, None);
+        let answers = query::ask_with(
+            &scenario.session,
+            &docs.request(file),
+            fallback.as_ref(),
+            questions,
+        );
+        let typed = answers.iter().any(|a| a.typed);
+
+        snapshots.finished(
+            check,
+            if typed {
+                std::slice::from_ref(file)
+            } else {
+                &[]
+            },
+        );
+        answers
+    };
+
+    ask(
+        &mut snapshots,
+        &docs,
+        0,
+        &[(
+            Question::Type,
+            Position {
+                line: 0,
+                character: 0,
+            },
+        )],
+    );
 
     for (step, edit) in scenario.edits.iter().enumerate() {
+        snapshots.edited(
+            &edit.file,
+            &docs.texts[&edit.file],
+            edit.start,
+            edit.end,
+            edit.text.len(),
+        );
         docs.apply(edit);
 
         let now = docs.texts[file].clone();
@@ -780,7 +826,7 @@ fn replay(scenario: &Scenario) -> Tally {
             questions.extend(calls.iter().map(|b| (Question::SignatureHelp, at(*b))));
         }
 
-        let answers = query::ask(&scenario.session, &docs.request(file), &questions);
+        let answers = ask(&mut snapshots, &docs, step as u64 + 1, &questions);
         let last = &finals[file];
 
         for ((question, p), answer) in questions.into_iter().zip(answers) {
@@ -912,13 +958,13 @@ fn first_unchanged_on_line(
 /// The questions that got an answer, at least, per request: what the
 /// corpus measured. Raise these when coverage improves.
 const COVERAGE: &[(&str, usize)] = &[
-    ("hover", 5588),
-    ("definition", 5900),
-    ("typeDefinition", 5588),
+    ("hover", 8552),
+    ("definition", 8864),
+    ("typeDefinition", 8552),
     ("completion", 78),
-    ("signatureHelp", 122),
-    ("inlayHint", 2999),
-    ("documentHighlight", 5900),
+    ("signatureHelp", 246),
+    ("inlayHint", 5129),
+    ("documentHighlight", 8039),
 ];
 
 #[test]

@@ -14,10 +14,11 @@
 //! query never waits for one. See `Diagnoser`, and docs/lsp.md,
 //! "Diagnostics".
 use crate::check::{VERSION, upstream_version};
+use crate::edits::Snapshots;
 use crate::position::{Encoding, Position};
 use crate::query::{
-    self, Access, Answer, Diagnostics, HintKind, MemberKind, MembersAt, Place, Session, TypeAt,
-    Unavailable,
+    self, Access, Answer, Diagnostics, HintKind, MemberKind, MembersAt, Place, Session, Source,
+    TypeAt, Unavailable,
 };
 use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query};
 use crossbeam_channel::{Receiver, Sender, select};
@@ -181,6 +182,9 @@ struct Server {
     queue: VecDeque<Pending>,
     running: Option<(Pending, Check)>,
     diagnoser: Diagnoser,
+    /// The documents of each file's last check that typed method bodies,
+    /// and the edits since, for answers from older results.
+    snapshots: Snapshots,
     checks: u64,
     finished: (Sender<Finished>, Receiver<Finished>),
     shut_down: bool,
@@ -212,6 +216,7 @@ impl Server {
             queue: VecDeque::new(),
             running: None,
             diagnoser: Diagnoser::default(),
+            snapshots: Snapshots::default(),
             checks: 0,
             finished: crossbeam_channel::unbounded(),
             shut_down: false,
@@ -441,9 +446,13 @@ impl Server {
                 if let Ok(p) = n.extract::<lsp::DidOpenTextDocumentParams>("textDocument/didOpen") {
                     let uri = p.text_document.uri;
                     let path = uri.to_file_path().ok();
-                    let unsaved = path.as_ref().is_some_and(|path| {
-                        std::fs::read_to_string(path).ok().as_ref() != Some(&p.text_document.text)
-                    });
+                    let disk = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+                    let unsaved = path.is_some() && disk.as_ref() != Some(&p.text_document.text);
+
+                    if let Some(path) = &path {
+                        self.snapshots
+                            .opened(path, disk.as_deref(), &p.text_document.text);
+                    }
 
                     self.documents.insert(
                         uri.clone(),
@@ -467,7 +476,12 @@ impl Server {
 
                     if let Some(doc) = self.documents.get_mut(&uri) {
                         for change in p.content_changes {
-                            apply(&mut doc.text, change, self.encoding);
+                            let before = doc.text.clone();
+                            let (start, end, len) = apply(&mut doc.text, change, self.encoding);
+
+                            if let Some(path) = &doc.path {
+                                self.snapshots.edited(path, &before, start, end, len);
+                            }
                         }
 
                         doc.changed = Some(Instant::now());
@@ -486,6 +500,10 @@ impl Server {
                     && let Some(doc) = self.documents.get_mut(&p.text_document.uri)
                     && doc.text != text
                 {
+                    if let Some(path) = &doc.path {
+                        self.snapshots.replaced(path, &doc.text, &text);
+                    }
+
                     doc.text = text;
 
                     if let Some(path) = doc.path.clone() {
@@ -499,7 +517,12 @@ impl Server {
                     && let Some(path) = doc.path
                 {
                     // The file's text on disk replaces the document's.
-                    let unsaved = std::fs::read_to_string(&path).ok() != Some(doc.text);
+                    let disk = std::fs::read_to_string(&path).ok();
+                    let unsaved = disk.as_ref() != Some(&doc.text);
+
+                    if let Some(disk) = &disk {
+                        self.snapshots.replaced(&path, &doc.text, disk);
+                    }
 
                     self.edited(connection, &path, unsaved, true);
                 }
@@ -663,8 +686,11 @@ impl Server {
                 encoding: self.encoding,
                 contents: self.contents(),
             },
+            fallback: None,
             deadline: Some(self.options.timeout + DEADLINE_MARGIN),
         };
+
+        self.snapshots.sent(self.checks, &job.request.contents);
 
         match Check::start(self.checks, &job, self.finished.0.clone()) {
             Ok(check) => self.diagnoser.running = Some((target, check)),
@@ -811,6 +837,10 @@ impl Server {
 
             let job = self.job(&pending);
 
+            if let Ok(job) = &job {
+                self.snapshots.sent(self.checks, &job.request.contents);
+            }
+
             match job.and_then(|job| Check::start(self.checks, &job, self.finished.0.clone())) {
                 Ok(check) => self.running = Some((pending, check)),
                 Err(reason) => self.answer(connection, pending, Outcome::Failed(reason)),
@@ -834,6 +864,10 @@ impl Server {
         Ok(Job {
             query: pending.query,
             session: self.session.clone(),
+            fallback: self.snapshots.fallback(
+                &file,
+                query::diagnostics_target(&self.session, &file).as_deref(),
+            ),
             request: query::Request {
                 file,
                 position: pending.position,
@@ -864,7 +898,27 @@ impl Server {
                 ));
             }
 
-            return match check.finish(&done) {
+            let outcome = check.finish(&done);
+
+            // A check that typed method bodies is the last good one of every
+            // open document it checked, and of the target, for documents
+            // opened later.
+            let checked: Vec<PathBuf> = if outcome.typed() {
+                self.documents
+                    .values()
+                    .filter_map(|d| d.path.clone())
+                    .filter(|p| {
+                        query::diagnostics_target(&self.session, p).as_ref() == Some(&target)
+                    })
+                    .chain([target.clone()])
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            self.snapshots.finished(done.id, &checked);
+
+            return match outcome {
                 Outcome::Diagnostics(answer) => self.publish(connection, target, answer),
                 Outcome::Failed(reason) => {
                     self.diagnostics_status(connection, &target, Err(reason), Duration::ZERO)
@@ -895,7 +949,13 @@ impl Server {
         }
 
         let outcome = check.finish(&done);
+        let file = self
+            .documents
+            .get(&pending.uri)
+            .and_then(|d| d.path.clone())
+            .filter(|_| outcome.typed());
 
+        self.snapshots.finished(done.id, file.as_slice());
         self.answer(connection, pending, outcome);
     }
 
@@ -1053,7 +1113,7 @@ impl Server {
 
                 (result, status)
             }
-            Outcome::Failed(reason) => (Value::Null, (Err(reason), Duration::ZERO)),
+            Outcome::Failed(reason) => (Value::Null, (Err(reason), Duration::ZERO, Source::Fresh)),
             Outcome::Diagnostics(_) => (
                 Value::Null,
                 (
@@ -1062,17 +1122,22 @@ impl Server {
                         "the worker answered another query",
                     )),
                     Duration::ZERO,
+                    Source::Fresh,
                 ),
             ),
         };
 
         if self.options.status {
-            let (state, elapsed) = status;
+            let (state, elapsed, source) = status;
             let mut params = json!({
                 "id": pending.id,
                 "method": pending.method,
                 "textDocument": { "uri": pending.uri },
-                "status": if state.is_ok() { "fresh" } else { "unavailable" },
+                "status": match (&state, source) {
+                    (Err(_), _) => "unavailable",
+                    (Ok(()), Source::Fresh) => "fresh",
+                    (Ok(()), Source::Stale) => "stale",
+                },
                 "elapsedMs": (elapsed.as_secs_f64() * 10000.0).round() / 10.0,
             });
 
@@ -1115,10 +1180,11 @@ impl Server {
     }
 }
 
-fn status_of<T>(answer: &Answer<T>) -> (Result<(), Unavailable>, Duration) {
+fn status_of<T>(answer: &Answer<T>) -> (Result<(), Unavailable>, Duration, Source) {
     (
         answer.result.as_ref().map(|_| ()).map_err(Clone::clone),
         answer.elapsed,
+        answer.source,
     )
 }
 
@@ -1179,11 +1245,18 @@ fn range(r: query::Range) -> lsp::Range {
     }
 }
 
-/// Applies one change from `didChange` to a document's text.
-fn apply(text: &mut String, change: lsp::TextDocumentContentChangeEvent, encoding: Encoding) {
+/// Applies one change from `didChange` to a document's text. Returns the
+/// bytes it replaced, and how many replaced them.
+fn apply(
+    text: &mut String,
+    change: lsp::TextDocumentContentChangeEvent,
+    encoding: Encoding,
+) -> (usize, usize, usize) {
     let Some(r) = change.range else {
+        let edit = crate::edits::difference(text, &change.text);
+
         *text = change.text;
-        return;
+        return edit;
     };
     let offset = |p: lsp::Position| {
         query::byte_offset(
@@ -1200,6 +1273,7 @@ fn apply(text: &mut String, change: lsp::TextDocumentContentChangeEvent, encodin
     let end = offset(r.end).max(start);
 
     text.replace_range(start..end, &change.text);
+    (start, end, change.text.len())
 }
 
 /// UTF-8 if the client lists it before UTF-16, otherwise UTF-16, which every

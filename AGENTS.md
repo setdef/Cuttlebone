@@ -26,6 +26,7 @@ to get past it.
   tests/ (tests/guardrails.rs).
 - Layering (tests/guardrails.rs has the table):
   - `position`, `walker`, `check`, `edits`: nothing in the crate
+  - `units`: `position` and `edits`
   - `query`: only those
   - `worker`: `query` and below
   - `lsp`: on top

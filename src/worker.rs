@@ -6,10 +6,11 @@
 //! JSON to its stdin and closes it. The worker writes an `Outcome` as JSON to
 //! stdout and exits. Anything on its stderr (such as a panic's message) is
 //! passed on to the server's stderr.
+use crate::edits::Fallback;
 use crate::position::Position;
 use crate::query::{
-    self, Answer, Diagnostics, Highlight, Hint, MembersAt, Place, Request, Session, Signature,
-    TypeAt, Unavailable,
+    self, Answer, Diagnostics, Highlight, Hint, MembersAt, Place, Question, Reply, Request,
+    Session, Signature, TypeAt, Unavailable,
 };
 use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,10 @@ pub struct Job {
     pub query: Query,
     pub session: Session,
     pub request: Request,
+    /// The documents of the file's last check that typed method bodies, for
+    /// answers from older results.
+    #[serde(default)]
+    pub fallback: Option<Fallback>,
     /// How long the worker may live before it exits by itself. The server
     /// kills a worker that takes too long, but if the server dies first
     /// (say from SIGKILL), nothing would stop a hung worker.
@@ -85,32 +90,81 @@ pub enum Outcome {
 impl Job {
     /// Runs the job in this process.
     pub fn run(&self) -> Outcome {
-        match self.query {
-            Query::Type => Outcome::Type(query::type_at(&self.session, &self.request)),
-            Query::Complete => Outcome::Members(query::complete(&self.session, &self.request)),
-            Query::Definition => Outcome::Place(query::definition(&self.session, &self.request)),
-            Query::TypeDefinition => {
-                Outcome::Place(query::type_definition(&self.session, &self.request))
-            }
+        let question = match self.query {
+            Query::Type => Question::Type,
+            Query::Complete => Question::Complete,
+            Query::Definition => Question::Definition,
+            Query::TypeDefinition => Question::TypeDefinition,
             Query::References {
                 include_declaration,
-            } => Outcome::Places(query::references(
-                &self.session,
-                &self.request,
+            } => Question::References {
                 include_declaration,
-            )),
-            Query::Highlight => {
-                Outcome::Highlights(query::highlights(&self.session, &self.request))
-            }
-            Query::SignatureHelp => {
-                Outcome::Signature(query::signature_help(&self.session, &self.request))
-            }
-            Query::InlayHints { end } => {
-                Outcome::Hints(query::inlay_hints(&self.session, &self.request, end))
-            }
+            },
+            Query::Highlight => Question::Highlight,
+            Query::SignatureHelp => Question::SignatureHelp,
+            Query::InlayHints { end } => Question::InlayHints { end },
             Query::Diagnostics => {
-                Outcome::Diagnostics(query::diagnostics(&self.session, &self.request))
+                return Outcome::Diagnostics(query::diagnostics(&self.session, &self.request));
             }
+        };
+        let answer = query::ask_with(
+            &self.session,
+            &self.request,
+            self.fallback.as_ref(),
+            &[(question, self.request.position)],
+        )
+        .pop()
+        .unwrap();
+
+        match self.query {
+            Query::Type => Outcome::Type(answer.map(|r| match r {
+                Reply::Type(t) => Some(t),
+                _ => None,
+            })),
+            Query::Complete => Outcome::Members(answer.map(|r| match r {
+                Reply::Members(m) => Some(m),
+                _ => None,
+            })),
+            Query::Definition | Query::TypeDefinition => Outcome::Place(answer.map(|r| match r {
+                Reply::Place(p) => Some(p),
+                _ => None,
+            })),
+            Query::References { .. } => Outcome::Places(answer.map(|r| match r {
+                Reply::Places(p) => Some(p),
+                _ => None,
+            })),
+            Query::Highlight => Outcome::Highlights(answer.map(|r| match r {
+                Reply::Highlights(h) => Some(h),
+                _ => None,
+            })),
+            Query::SignatureHelp => Outcome::Signature(answer.map(|r| match r {
+                Reply::Signature(s) => Some(s),
+                _ => None,
+            })),
+            Query::InlayHints { .. } | Query::Diagnostics => {
+                Outcome::Hints(answer.map(|r| match r {
+                    Reply::Hints(h) => Some(h),
+                    _ => None,
+                }))
+            }
+        }
+    }
+}
+
+impl Outcome {
+    /// Whether the check typed method bodies of the documents as they
+    /// were sent, so the server may keep them for later answers.
+    pub fn typed(&self) -> bool {
+        match self {
+            Outcome::Type(a) => a.typed,
+            Outcome::Members(a) => a.typed,
+            Outcome::Place(a) => a.typed,
+            Outcome::Places(a) => a.typed,
+            Outcome::Highlights(a) => a.typed,
+            Outcome::Signature(a) => a.typed,
+            Outcome::Hints(a) => a.typed,
+            Outcome::Diagnostics(a) => a.typed,
+            Outcome::Failed(_) => false,
         }
     }
 }

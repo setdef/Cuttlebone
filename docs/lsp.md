@@ -542,8 +542,10 @@ with `paddingRight`:
   (`Option.Some(1)`), whose parameters have generated names
 
 The result is `[]` when there are no hints in the range, and `null` with a
-[status](#status) reason when there's no answer, as for the other queries:
-code that doesn't parse, or an error in a declaration, gives no hints.
+[status](#status) reason when there's no answer, as for the other queries.
+Where code doesn't parse or a declaration has an error, the hints come from
+the last good check, in the parts that still hold
+([Answers in code being edited](#answers-in-code-being-edited)).
 
 ## Diagnostics
 
@@ -693,10 +695,12 @@ a custom notification if the client opts in with
 |---|---|
 | `fresh` | Computed from the documents as they are now. The response holds the answer, which may be `null` when there's nothing at the position. |
 | `unavailable` | Cuttlebone has no answer, and the response is `null`. `reason` says why. A client with heuristics of its own can fall back to them. |
-| `stale` | Reserved. A later version may answer from a stored earlier result when the current code can't be typed, and will mark such answers `stale`. This version never sends it. |
+| `stale` | Computed from an earlier version of the documents: the last that type checked, because the code as it is now can't be (it doesn't parse, or a declaration has an error). The answer holds for the documents as they are: every position and range in it is in text that hasn't changed since, mapped to where that text is now, in code no change since could make mean something else. Only read-only requests give these ([Answers in code being edited](#answers-in-code-being-edited)). |
 
-Clients must treat any status other than `fresh` as having no usable answer.
-They must also ignore fields and codes they don't know.
+A client that doesn't know `stale` must treat it, like any status other
+than `fresh`, as having no usable answer. One that does may show a stale
+answer as it shows a fresh one, or mark it. Clients must also ignore fields
+and codes they don't know.
 
 `reason` has `code`, a stable identifier, and `message`, a description for
 people. `elapsedMs` is how long the check took inside the worker, or 0 if
@@ -717,6 +721,59 @@ there was no check.
 | `checkFailed` | The worker process couldn't be started. |
 | `superseded` | Diagnostics only: an edit to the target cancelled its check, and a new one follows. |
 | `internal` | A bug in Cuttlebone. |
+
+## Answers in code being edited
+
+Code being typed usually doesn't parse, and a declaration being edited
+(say, a type in a signature typed halfway) stops the type checker before
+it types any method body. Then a fresh check has nothing to answer from,
+in that file or any file that imports it. So the server keeps, for each
+file, the open documents as they were at its last check that typed method
+bodies (a query's, or a diagnostics check's), and every edit since. When a
+fresh check can't answer (reason `noHir` or `declarationErrors`), a request
+that allows it is answered from that check instead, with status `stale`.
+
+| Request | Answers from |
+|---|---|
+| hover, definition, type definition, document highlight, signature help, inlay hints | the documents as they are, or else the last good check (`stale`) |
+| completion | the documents as they are only: its items are inserted into the code |
+| references | the documents as they are only: a rename relies on them |
+| diagnostics | the documents as they are, always |
+
+A stale answer is only given where it still holds:
+
+- **Unchanged text.** The position must be in text that hasn't changed
+  since that check, and so must every range in the answer, with the
+  characters on either side of it (an identifier typed onto is a different
+  identifier). The edits are exact: they're the `didChange` ranges. Each
+  range is mapped to where its text is now, in the negotiated encoding.
+- **Unchanged meaning.** A file is split into units: each method, and each
+  other item (a type apart from its methods, a trait, an `impl` block, a
+  constant, an import). A unit's types depend on its own text and the
+  declarations of what it uses, never on another method's body. So the
+  answer is given only if its unit (and, for highlights and inlay hints,
+  the unit of each item in it) wasn't changed itself, and doesn't mention
+  a name that a change outside a method body is about: the method, field,
+  type or import it's in, and the names it removed or added (an added name
+  may be unfinished, so any name it starts counts). A change inside a
+  method's body only affects that method.
+- **No errors there then.** A unit that had an expression the check
+  couldn't type gets no stale answers: it may name something that didn't
+  exist then.
+- **Complete lists.** Document highlights are stale only if the name isn't
+  in changed text, or in a unit with no stale answers, where uses could be
+  missing. Inlay hints are those in units that hold, and the request is
+  unavailable if none of its range is in one.
+
+Everywhere else the answer is `null`, with the fresh check's reason.
+
+**Memory.** The server keeps at most 4 versions of the open documents
+(each shared by every file whose last good check used it; a file whose
+version is dropped has no stale answers until its next good check), plus
+the documents sent with up to 4 running checks. Each changed file's edits
+since a version take at most 1024 runs of unchanged text, 24 bytes each;
+past that, the shortest runs count as changed. Nothing is written to
+disk.
 
 ## Debouncing and cancellation
 
@@ -764,8 +821,10 @@ The server's own subprocesses (`inko --version`, `inko print std`) have a
 
 - **Freshness.** Every query type checks the document and every module it
   imports (including the standard library's prelude) from scratch, with the
-  open documents' text. Nothing is cached, so an answer is never older than
-  the request. Queries don't lower to MIR, which types never depend on.
+  open documents' text, so a `fresh` answer is never older than the
+  request. Only when that check can't answer is an earlier version of the
+  documents checked instead (a second check, from scratch too), for a
+  `stale` answer ([Answers in code being edited](#answers-in-code-being-edited)). Queries don't lower to MIR, which types never depend on.
 - **Cost.** A query on a file that imports all of the standard library (116
   modules) takes about 100 to 120 ms on an Apple M1 Max. One on a typical std
   module takes 30 to 100 ms. References check the whole project instead of

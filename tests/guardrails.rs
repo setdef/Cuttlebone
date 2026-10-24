@@ -14,7 +14,8 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("walker", &[]),
     ("check", &[]),
     ("edits", &[]),
-    ("query", &["position", "walker", "check", "edits"]),
+    ("units", &["position", "edits"]),
+    ("query", &["position", "walker", "check", "edits", "units"]),
     // Helpers for dump-types and the tests; nothing in the crate uses them.
     ("dump", &["walker", "check"]),
     ("worker", &["position", "walker", "check", "edits", "query"]),

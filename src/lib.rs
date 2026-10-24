@@ -17,5 +17,6 @@ pub mod edits;
 pub mod lsp;
 pub mod position;
 pub mod query;
+pub mod units;
 pub mod walker;
 pub mod worker;
