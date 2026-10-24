@@ -31,6 +31,8 @@ Reports, in docs/history/:
   edited, from repaired copies and the last good check.
 - [MILESTONE-6.md](docs/history/MILESTONE-6.md): one check for many
   questions, and the guardrails in tiers.
+- [MILESTONE-7.md](docs/history/MILESTONE-7.md): what an answer covers,
+  versions, LSP 3.18, and a hole in the guardrails.
 
 Each milestone has its own version; what changed in each:
 [CHANGELOG.md](CHANGELOG.md).

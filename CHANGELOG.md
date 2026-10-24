@@ -13,18 +13,23 @@ versions here were given afterwards.
 Milestone 7: what an answer covers, versions, and LSP 3.18.
 [Report](docs/history/MILESTONE-7.md).
 
-- **Coverage.** `cuttlebone/status` says which ranges of an inlay hint
-  request the answer covers (`covered`), so a client can tell "no hints
-  here" from "no answer here".
-- **LSP 3.18.** Conformance checked against 3.18, with every message the
-  tests receive checked against its meta model:
+- **Coverage.** Every inlay hint status says which ranges of the request
+  the answer covers (`covered`), so a client can tell "no hints here"
+  from "no answer here", such as in the method being edited.
+- **LSP 3.18.** Every message the tests receive is checked against the
+  3.18 meta model and the client's capabilities. Changes for clients:
   - a request is answered for the text it was about, even if an edit
-    arrives first, instead of `ContentModified`
+    comes first, instead of `ContentModified`
+  - requests pending at `shutdown` get `null` (reason `shutdown`), not
+    `RequestCancelled`
   - a lone `\r` ends a line
-  - signature help, completion and diagnostics use only what the client's
-    capabilities say it supports, and `activeParameter` is `null` past the
-    last parameter for clients that support it
-  - queries pending at `shutdown` get `null`, not `RequestCancelled`
+  - Markdown hovers, completion's `labelDetails` and Constant kind,
+    signature help's label offsets and the signature's
+    `activeParameter`, and diagnostic tags only for clients that support
+    them; `activeParameter: null` past the last parameter for clients
+    with `noActiveParameterSupport`
+  - the server exits when the client process that started it is gone,
+    and accepts `--clientProcessId`
 - **Versions.** This changelog, and a version per milestone.
 - **Installing:** `cargo install --locked --path .`.
 
