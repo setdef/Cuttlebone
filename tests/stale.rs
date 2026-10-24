@@ -710,3 +710,60 @@ fn a_query_frozen_by_an_edit_answers_from_the_last_good_check() {
         "```inko\nArray[Int]\n```"
     );
 }
+
+/// Before the edit in the method being edited, an older check doesn't
+/// answer: a type there may have come from the text being edited. Here
+/// `values` was an `Array[Int]` because of the `push` being retyped, which
+/// may make it an `Array[String]`. (A repaired copy may answer there, if
+/// the type is complete without the blank lines: tests/repaired.rs.)
+#[test]
+fn an_older_check_does_not_answer_before_the_edit() {
+    let root = crate::common::tmp().join("before-the-edit");
+    let file = root.join("src/main.inko");
+    let text =
+        "type async Main {\n  fn async main {\n    let values = []\n\n    values.push(1)\n  }\n}\n";
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(&file, text).unwrap();
+
+    let mut client = Client::initialized_with(
+        no_repair(),
+        &root,
+        json!({ "statusNotifications": true, "diagnostics": false }),
+        json!({}),
+    );
+    let hover = |client: &mut Client| {
+        let id = client.send_at("textDocument/hover", &file, 2, 8);
+        let response = client.response(id);
+
+        (response, client.status(id).unwrap()["status"].clone())
+    };
+
+    client.open(&file, text);
+
+    // A good check, where `values` is an `Array[Int]`.
+    let (response, status) = hover(&mut client);
+
+    assert_eq!(status, "fresh");
+    assert_eq!(
+        response["result"]["contents"]["value"],
+        "```inko\nArray[Int]\n```"
+    );
+
+    // The `push` is being retyped, and doesn't parse yet.
+    client.change(
+        &file,
+        2,
+        json!([{
+            "range": {
+                "start": { "line": 4, "character": 16 },
+                "end": { "line": 4, "character": 18 },
+            },
+            "text": "'a'",
+        }]),
+    );
+
+    let (response, status) = hover(&mut client);
+
+    assert_eq!(status, "unavailable", "{}", response);
+}

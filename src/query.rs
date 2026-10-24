@@ -2611,17 +2611,10 @@ impl<'a> Guard<'a> {
                 .hints
                 .into_iter()
                 .filter_map(|h| {
-                    let at = Range {
-                        start: h.position,
-                        end: h.position,
-                    };
-
-                    if !self.safe(byte_offset(self.old, h.position, e)?) {
-                        return None;
-                    }
+                    let at = self.hint_at(byte_offset(self.old, h.position, e)?)?;
 
                     Some(Hint {
-                        position: self.range(at)?.start,
+                        position: position_at(self.new, at, e),
                         ..h
                     })
                 })
@@ -2630,11 +2623,20 @@ impl<'a> Guard<'a> {
         }))
     }
 
+    /// Where a hint at a byte of the old text goes in the new one, if it
+    /// holds: in a unit that still means what it did, in text that's
+    /// unchanged with the characters on either side.
+    fn hint_at(&self, old: usize) -> Option<usize> {
+        if !self.safe(old) {
+            return None;
+        }
+
+        self.changes.new_range(old..old).map(|r| r.start)
+    }
+
     /// Where, from `start` to `end` in the documents as they are, a hint
-    /// from this check would be given if it had one: positions in text
-    /// that's unchanged, with the characters on either side, in a unit that
-    /// still means what it did. There, the hints given are all there are.
-    /// As ranges that include their ends.
+    /// from this check would be given if it had one (`hint_at`). There, the
+    /// hints given are all there are. As ranges that include their ends.
     fn coverage(&self, start: Position, end: Position) -> Vec<Range> {
         let e = self.encoding;
         let Some(from) = byte_offset(self.new, start, e) else {
@@ -2643,11 +2645,8 @@ impl<'a> Guard<'a> {
         let to = byte_offset(self.new, end, e)
             .unwrap_or(self.new.len())
             .max(from);
-        let covered = |b: usize| {
-            self.changes
-                .old_offset(b)
-                .is_some_and(|o| self.safe(o) && self.changes.new_range(o..o) == Some(b..b))
-        };
+        let covered =
+            |b: usize| self.changes.old_offset(b).and_then(|o| self.hint_at(o)) == Some(b);
         let mut runs: Vec<(usize, usize)> = Vec::new();
         let mut run: Option<(usize, usize)> = None;
 
