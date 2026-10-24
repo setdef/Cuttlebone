@@ -4,17 +4,17 @@
 //! queries (hover, completion, definition, type definition, references,
 //! document highlight, signature help and inlay hints),
 //! and runs each query in a worker process
-//! (see `worker`) with a timeout, one at a time. Edits and
-//! `$/cancelRequest` cancel queries they make pointless, and a query waits
-//! until its document has been still for a moment (`debounce`) before it
-//! starts.
+//! (see `worker`) with a timeout, one at a time. Each query is answered for
+//! the documents as they were when it arrived, even if an edit comes
+//! first (`Frozen`). `$/cancelRequest` cancels one, and a query waits until
+//! its document has been still for a moment (`debounce`) before it starts.
 //!
 //! Diagnostics have a slot of their own: a full check of a whole project
 //! (`query::diagnostics`) in a second worker, after a longer debounce, so a
 //! query never waits for one. See `Diagnoser`, and docs/lsp.md,
 //! "Diagnostics".
 use crate::check::{VERSION, upstream_version};
-use crate::edits::Snapshots;
+use crate::edits::{Fallback, Snapshots};
 use crate::position::{Encoding, Position, byte_offset};
 use crate::query::{
     self, Access, Answer, Diagnostics, HintKind, MemberKind, MembersAt, Place, Session, Source,
@@ -31,6 +31,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -156,6 +157,20 @@ struct Pending {
     position: Position,
     /// When it may start.
     ready: Instant,
+    /// The documents it's about, if they changed since it arrived.
+    frozen: Option<Frozen>,
+}
+
+/// The documents as they were when a query arrived, kept for it when an
+/// edit (or opening or closing a document) comes before it starts. LSP
+/// says a server shouldn't fail a request because of a change it sees
+/// after it, since the result may still be of use, and the client cancels
+/// what it doesn't need (the spec's "Implementation Considerations").
+struct Frozen {
+    file: Result<PathBuf, Unavailable>,
+    /// Shared by every query frozen at the same edit.
+    contents: Arc<HashMap<PathBuf, String>>,
+    fallback: Option<Arc<Fallback>>,
 }
 
 /// Diagnostics, checked and published per target: a project directory, or
@@ -497,10 +512,22 @@ impl Server {
                 character: params.position.character,
             },
             ready,
+            frozen: None,
         });
     }
 
     fn notification(&mut self, connection: &Connection, n: Notification) {
+        // Queued queries are about the documents as they are now.
+        if matches!(
+            n.method.as_str(),
+            "textDocument/didOpen"
+                | "textDocument/didChange"
+                | "textDocument/didSave"
+                | "textDocument/didClose"
+        ) {
+            self.freeze();
+        }
+
         match n.method.as_str() {
             "textDocument/didOpen" => {
                 if let Ok(p) = n.extract::<lsp::DidOpenTextDocumentParams>("textDocument/didOpen") {
@@ -547,8 +574,6 @@ impl Server {
                         doc.changed = Some(Instant::now());
                     }
 
-                    self.supersede(connection, &uri);
-
                     if let Ok(path) = uri.to_file_path() {
                         self.edited(connection, &path, true, true);
                     }
@@ -594,48 +619,78 @@ impl Server {
                         lsp::NumberOrString::String(s) => RequestId::from(s),
                     };
 
-                    self.cancel(connection, |p| p.id == id, ErrorCode::RequestCanceled);
+                    self.cancel(connection, &id);
                 }
             }
             _ => {}
         }
     }
 
-    /// Cancels the queries on a document that just changed: their positions
-    /// refer to text that's gone.
-    fn supersede(&mut self, connection: &Connection, uri: &Url) {
-        self.cancel(connection, |p| &p.uri == uri, ErrorCode::ContentModified);
+    /// Keeps the documents as they are for every queued query that hasn't
+    /// kept them yet: the documents are about to change, and each query is
+    /// answered for the text it was asked about (`Frozen`). A running
+    /// check already has its documents.
+    fn freeze(&mut self) {
+        if self.queue.iter().all(|p| p.frozen.is_some()) {
+            return;
+        }
+
+        let contents = Arc::new(self.contents());
+        let mut fallbacks: HashMap<PathBuf, Option<Arc<Fallback>>> = HashMap::new();
+
+        for i in 0..self.queue.len() {
+            if self.queue[i].frozen.is_some() {
+                continue;
+            }
+
+            let file = self.file(&self.queue[i]);
+            let fallback = file.as_ref().ok().and_then(|f| {
+                fallbacks
+                    .entry(f.clone())
+                    .or_insert_with(|| self.fallback(f).map(Arc::new))
+                    .clone()
+            });
+
+            self.queue[i].frozen = Some(Frozen {
+                file,
+                contents: contents.clone(),
+                fallback,
+            });
+        }
     }
 
-    /// Cancels the queued and running queries `matches` selects, replying
-    /// with `code`.
-    fn cancel(
-        &mut self,
-        connection: &Connection,
-        matches: impl Fn(&Pending) -> bool,
-        code: ErrorCode,
-    ) {
-        let message = match code {
-            ErrorCode::ContentModified => "the document changed",
-            _ => "cancelled",
-        };
+    /// Cancels the query the client cancelled, queued or running, with
+    /// `RequestCancelled`.
+    fn cancel(&mut self, connection: &Connection, id: &RequestId) {
+        let code = ErrorCode::RequestCanceled;
 
-        if let Some((pending, check)) = self.running.take_if(|(p, _)| matches(p)) {
+        if let Some((pending, check)) = self.running.take_if(|(p, _)| p.id == *id) {
             check.kill();
-            reply_error(connection, pending.id, code, message);
+            reply_error(connection, pending.id, code, "cancelled");
         }
 
-        let (cancelled, kept): (Vec<_>, Vec<_>) = self.queue.drain(..).partition(|p| matches(p));
+        if let Some(i) = self.queue.iter().position(|p| p.id == *id) {
+            let pending = self.queue.remove(i).unwrap();
 
-        self.queue = kept.into();
-
-        for pending in cancelled {
-            reply_error(connection, pending.id, code, message);
+            reply_error(connection, pending.id, code, "cancelled");
         }
     }
 
+    /// Stops everything, for `shutdown` or the end of the session. The
+    /// queries still queued or running get no answer: `null`, with the
+    /// reason in their status. (`RequestCancelled` is for requests the
+    /// client cancelled.)
     fn cancel_all(&mut self, connection: &Connection) {
-        self.cancel(connection, |_| true, ErrorCode::RequestCanceled);
+        let reason = Unavailable::new("shutdown", "the server is shutting down");
+
+        if let Some((pending, check)) = self.running.take() {
+            check.kill();
+            self.answer(connection, pending, Outcome::Failed(reason.clone()));
+        }
+
+        for pending in std::mem::take(&mut self.queue) {
+            self.answer(connection, pending, Outcome::Failed(reason.clone()));
+        }
 
         if let Some((_, check)) = self.diagnoser.running.take() {
             check.kill();
@@ -902,7 +957,12 @@ impl Server {
 
             let job = self.job(&pending);
 
-            if let Ok(job) = &job {
+            // A check of documents edited since can't be a good check for
+            // later answers: the edits since its documents weren't recorded
+            // against them.
+            if let Ok(job) = &job
+                && pending.frozen.is_none()
+            {
                 self.snapshots.sent(self.checks, &job.request.contents);
             }
 
@@ -931,9 +991,9 @@ impl Server {
         Worker::start(self.finished.0.clone())?.run(id, job)
     }
 
-    fn job(&self, pending: &Pending) -> Result<Job, Unavailable> {
-        let file = self
-            .documents
+    /// The file a query is about.
+    fn file(&self, pending: &Pending) -> Result<PathBuf, Unavailable> {
+        self.documents
             .get(&pending.uri)
             .map(|d| d.path.clone())
             .unwrap_or_else(|| pending.uri.to_file_path().ok())
@@ -942,20 +1002,43 @@ impl Server {
                     "notAFile",
                     format!("{} isn't a file, so it can't be type checked", pending.uri),
                 )
-            })?;
+            })
+    }
+
+    /// The documents of a file's last good check, and the edits since.
+    fn fallback(&self, file: &std::path::Path) -> Option<Fallback> {
+        self.snapshots.fallback(
+            file,
+            query::diagnostics_target(&self.session, file).as_deref(),
+        )
+    }
+
+    /// A query's job: for the documents as they are, or as they were when
+    /// it arrived if they changed since (`Frozen`).
+    fn job(&self, pending: &Pending) -> Result<Job, Unavailable> {
+        let (file, contents, fallback) = match &pending.frozen {
+            Some(f) => (
+                f.file.clone()?,
+                (*f.contents).clone(),
+                f.fallback.as_deref().cloned(),
+            ),
+            None => {
+                let file = self.file(pending)?;
+                let fallback = self.fallback(&file);
+
+                (file, self.contents(), fallback)
+            }
+        };
 
         Ok(Job {
             query: pending.query,
             session: self.session.clone(),
-            fallback: self.snapshots.fallback(
-                &file,
-                query::diagnostics_target(&self.session, &file).as_deref(),
-            ),
+            fallback,
             request: query::Request {
                 file,
                 position: pending.position,
                 encoding: self.encoding,
-                contents: self.contents(),
+                contents,
             },
             deadline: Some(self.options.timeout + DEADLINE_MARGIN),
         })

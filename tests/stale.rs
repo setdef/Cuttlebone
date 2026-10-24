@@ -545,3 +545,97 @@ fn definitions_into_an_edited_import_are_mapped() {
         json!({ "line": new_line + 1, "character": new_character })
     );
 }
+
+/// A query whose documents changed before it started is answered for
+/// them (tests/lsp.rs), but that check isn't a good check for later stale
+/// answers: the edits since its documents weren't recorded against them,
+/// so it would answer for text that's gone.
+#[test]
+fn a_check_of_documents_edited_since_is_not_a_good_check() {
+    let root = crate::common::fixture("features");
+    let file = root.join("src/main.inko");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut client = Client::initialized_with(
+        no_repair(),
+        &root,
+        json!({ "statusNotifications": true, "diagnostics": false, "debounceMs": 300 }),
+        json!({}),
+    );
+    let full = |text: &str| json!([{ "text": text }]);
+
+    client.open(&file, &text);
+    client.change(&file, 2, full(&text));
+
+    // The hover waits for the debounce, and an edit comes first, which
+    // changes `numbers` to strings without moving any text.
+    let (line, character) = at(&text, "numbers.size", 0, false);
+    let id = client.send_at("textDocument/hover", &file, line, character);
+    let strings = text.replacen("[1, 2, 3]", "['a','b']", 1);
+
+    client.change(&file, 3, full(&strings));
+    assert_eq!(
+        client.response(id)["result"]["contents"]["value"],
+        "```inko\nArray[Int]\n```"
+    );
+
+    // Now the file doesn't parse, and there's no good check to answer
+    // from: that one was of the integers.
+    let broken = format!("{}\nfn broken {{\n", strings);
+
+    client.change(&file, 4, full(&broken));
+
+    let id = client.send_at("textDocument/hover", &file, line, character);
+    let response = client.response(id);
+
+    assert_eq!(
+        client.status(id).unwrap()["status"],
+        "unavailable",
+        "{}",
+        response
+    );
+}
+
+/// A query frozen by an edit keeps its last good check too.
+#[test]
+fn a_query_frozen_by_an_edit_answers_from_the_last_good_check() {
+    let root = crate::common::fixture("features");
+    let file = root.join("src/main.inko");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut client = Client::initialized_with(
+        no_repair(),
+        &root,
+        json!({ "statusNotifications": true, "diagnostics": false, "debounceMs": 300 }),
+        json!({}),
+    );
+    let full = |text: &str| json!([{ "text": text }]);
+    let (line, character) = at(&text, "numbers.size", 0, false);
+
+    client.open(&file, &text);
+
+    // A good check.
+    let id = client.send_at("textDocument/hover", &file, line, character);
+
+    client.response(id);
+
+    // Broken, and a hover that an edit freezes while it waits.
+    let broken = format!("{}\nfn broken {{\n", text);
+
+    client.change(&file, 2, full(&broken));
+
+    let id = client.send_at("textDocument/hover", &file, line, character);
+
+    client.change(&file, 3, full(&format!("{}\n", broken)));
+
+    let response = client.response(id);
+
+    assert_eq!(
+        client.status(id).unwrap()["status"],
+        "stale",
+        "{}",
+        response
+    );
+    assert_eq!(
+        response["result"]["contents"]["value"],
+        "```inko\nArray[Int]\n```"
+    );
+}

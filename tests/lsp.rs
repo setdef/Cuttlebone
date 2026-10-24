@@ -15,7 +15,6 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-const CONTENT_MODIFIED: i64 = -32801;
 const REQUEST_CANCELLED: i64 = -32800;
 const SERVER_NOT_INITIALIZED: i64 = -32002;
 
@@ -1079,25 +1078,31 @@ fn cancelling_a_queued_request_answers_it_without_a_check() {
         json!({ "checkTimeoutMs": 2000, "diagnostics": false }),
         json!({}),
     );
-    // The first hangs, so the second waits behind it.
+    // The first hangs, so the others wait behind it.
     let first = client.send_at("textDocument/hover", &shapes, 0, 0);
     let second = client.send_at("textDocument/hover", &main, 0, 0);
+    let third = client.send_at("textDocument/hover", &main, 1, 0);
 
     wait_for_a_worker(&client);
-    client.notify("$/cancelRequest", json!({ "id": second }));
+    client.notify("$/cancelRequest", json!({ "id": third }));
 
     let start = Instant::now();
-    let response = client.response(second);
+    let response = client.response(third);
 
     assert_eq!(response["error"]["code"], REQUEST_CANCELLED);
     assert!(start.elapsed() < Duration::from_millis(1000));
-    // The first is still running, until it times out.
+    // The first is still running, until it times out, and the second
+    // still waits.
     assert_eq!(client.workers().len(), 1);
     assert_eq!(client.response(first)["result"], Value::Null);
+    assert!(client.response(second).get("result").is_some());
 }
 
+/// LSP says a server shouldn't fail a request because of an edit it sees
+/// after it: the result may still be of use, and the client cancels what
+/// it doesn't need. So a running check carries on after an edit.
 #[test]
-fn an_edit_cancels_a_running_check_on_that_document() {
+fn an_edit_does_not_cancel_a_running_check() {
     let root = copy_fixture("members", "fault-edit");
     let shapes = root.join("src/shapes.inko");
     let shapes_text = std::fs::read_to_string(&shapes).unwrap();
@@ -1111,28 +1116,72 @@ fn an_edit_cancels_a_running_check_on_that_document() {
         unset: vec![],
         cwd: None,
     };
-    let mut client =
-        Client::initialized_with(launch, &root, json!({ "diagnostics": false }), json!({}));
+    let mut client = Client::initialized_with(
+        launch,
+        &root,
+        json!({ "diagnostics": false, "statusNotifications": true, "checkTimeoutMs": 1000 }),
+        json!({}),
+    );
 
     client.open(&shapes, &shapes_text);
     client.open(&main, &text);
 
-    // A check on another document isn't cancelled by the edit.
     let id = client.send_at("textDocument/hover", &shapes, 0, 0);
 
     wait_for_a_worker(&client);
     client.change(&shapes, 2, json!([{ "text": shapes_text.clone() + "\n" }]));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(client.workers().len(), 1, "the check was killed");
 
+    // It runs until it times out, as it would have without the edit.
     let response = client.response(id);
 
-    assert_eq!(response["error"]["code"], CONTENT_MODIFIED, "{}", response);
-    assert!(client.workers().is_empty());
+    assert_eq!(response["result"], Value::Null, "{}", response);
+    assert_eq!(client.status(id).unwrap()["reason"]["code"], "timeout");
 
     let (line, character) = at(&text, "name.size", 5, false);
     let id = client.send_at("textDocument/hover", &main, line, character);
 
     client.change(&shapes, 3, json!([{ "text": shapes_text }]));
     assert_eq!(hover_type(&client.response(id)), "Int");
+}
+
+/// A request is answered for the documents as they were when it arrived,
+/// even if an edit comes before its check starts.
+#[test]
+fn a_request_is_answered_for_the_text_it_was_about() {
+    let (root, file, text) = members();
+    let mut client = Client::initialized(
+        &root,
+        json!({ "debounceMs": 300, "diagnostics": false, "statusNotifications": true }),
+    );
+    let (line, character) = at(&text, "name.size", 5, false);
+
+    client.open(&file, &text);
+    // The request waits for the debounce after this edit.
+    client.change(&file, 2, json!([{ "text": text.clone() }]));
+
+    let id = client.send_at("textDocument/hover", &file, line, character);
+    let edited = text.replacen("name.size", "name.to_upper", 1);
+
+    client.change(&file, 3, json!([{ "text": edited.clone() }]));
+
+    let response = client.response(id);
+
+    assert_eq!(hover_type(&response), "Int", "{}", response);
+    assert_eq!(
+        response["result"]["range"],
+        json!({
+            "start": { "line": line, "character": character - 5 },
+            "end": { "line": line, "character": character + 4 },
+        })
+    );
+    assert_eq!(client.status(id).unwrap()["status"], "fresh");
+
+    // A request after the edit is about the edited text.
+    let (_, response) = client.hover(&file, line, character);
+
+    assert_eq!(hover_type(&response), "String");
 }
 
 #[test]
@@ -1166,12 +1215,10 @@ fn checks_wait_until_typing_pauses() {
         start.elapsed()
     );
 
-    // An edit during the wait supersedes the request before any check
-    // starts. A running one would have been killed, with its worker; the
-    // worker the earlier hovers left waiting is still there.
+    // An edit during the wait doesn't fail the request: it's answered,
+    // for the text it was about, once its wait is over.
     client.change(&file, 3, json!([{ "text": text.clone() }]));
 
-    let workers = client.workers();
     let start = Instant::now();
     let id = client.send_at("textDocument/hover", &file, line, character);
 
@@ -1180,11 +1227,9 @@ fn checks_wait_until_typing_pauses() {
 
     let response = client.response(id);
 
-    assert_eq!(response["error"]["code"], CONTENT_MODIFIED);
-    assert_eq!(workers.len(), 1);
-    assert_eq!(client.workers(), workers);
+    assert_eq!(hover_type(&response), "Int");
     assert!(
-        start.elapsed() < Duration::from_millis(400),
+        start.elapsed() >= Duration::from_millis(300),
         "{:?}",
         start.elapsed()
     );
@@ -1319,15 +1364,26 @@ fn shutdown_kills_a_running_check() {
         unset: vec![],
         cwd: None,
     };
-    let mut client =
-        Client::initialized_with(launch, &root, json!({ "diagnostics": false }), json!({}));
+    let mut client = Client::initialized_with(
+        launch,
+        &root,
+        json!({ "diagnostics": false, "statusNotifications": true }),
+        json!({}),
+    );
     let id = client.send_at("textDocument/hover", &shapes, 0, 0);
+    let queued = client.send_at("textDocument/hover", &shapes, 1, 0);
 
     wait_for_a_worker(&client);
 
     let shutdown = client.send_request("shutdown", Value::Null);
 
-    assert_eq!(client.response(id)["error"]["code"], REQUEST_CANCELLED);
+    // No answer for either, but not an error: the client didn't cancel
+    // them.
+    for id in [id, queued] {
+        assert_eq!(client.response(id)["result"], Value::Null);
+        assert_eq!(client.status(id).unwrap()["reason"]["code"], "shutdown");
+    }
+
     assert_eq!(client.response(shutdown)["result"], Value::Null);
     assert!(client.workers().is_empty());
 }

@@ -91,7 +91,7 @@ against. Without it, Cargo picks the newest versions Cargo.toml allows.
 - `src/worker.rs`: running queries in a child process, which keeps its
   checks between them.
 - `src/lsp.rs`: the LSP front end: documents, the queue, timeouts,
-  cancellation and debouncing, and diagnostics' own queue.
+  cancellation and debouncing, requests answered for the text they were about, and diagnostics' own queue.
 - `src/dump.rs`: helpers for dump-types and the tests only.
 
 The core (`check.rs`, `edits.rs`, `units.rs`, `query.rs`, `walker.rs`, `position.rs`) doesn't know

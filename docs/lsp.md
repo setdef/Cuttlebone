@@ -698,7 +698,7 @@ a custom notification if the client opts in with
   definition, references, document highlight, signature help and inlay
   hints) that gets a result, just before the
   response, with the request's `id`. Requests
-  answered with an error (cancelled, superseded, invalid) get none.
+  answered with an error (cancelled, invalid) get none.
 - **For diagnostics:** after each diagnostics check, with
   `"method": "textDocument/publishDiagnostics"`, no `id`, and the checked
   target's URI (a project directory, or a file) as `target` instead of
@@ -745,6 +745,7 @@ check, or the lookup in a kept one, or 0 if it never reached the worker.
 | `checkCrashed` | The worker process died without an answer, for example from an abort or a stack overflow. `message` has its exit status or signal. |
 | `checkFailed` | The worker process couldn't be started. |
 | `superseded` | Diagnostics only: an edit to the target cancelled its check, and a new one follows. |
+| `shutdown` | The server got `shutdown` before the query was answered. |
 | `internal` | A bug in Cuttlebone. |
 
 ## Answers in code being edited
@@ -841,14 +842,24 @@ Diagnostics have their own queue and worker ([Scheduling](#scheduling)).
 - **Debouncing.** A query on a document edited less than `debounceMs` ago
   waits until that much time has passed since the edit, so checks don't
   start in the middle of typing.
-- **Newer edits.** A `didChange` cancels the queued and running queries on
-  that document: their positions refer to text that's gone. Each gets a
-  `ContentModified` (-32801) error, and a running check's worker is killed.
-  Queries on other documents carry on.
+- **Newer edits.** A request is answered for the documents as they were
+  when it arrived, even if an edit (or opening, saving or closing a
+  document) comes before its answer. LSP says a server shouldn't fail a
+  request because of a change it sees after it: the result may still be
+  of use to the client, which cancels what it doesn't need (the spec's
+  "Implementation Considerations", and `ContentModified`). So a running
+  check carries on, and a queued query keeps the documents it was asked
+  about, shared by every query queued at the same edit. Its answer's
+  positions and ranges are in that text. No query gets `ContentModified`.
+  Such a check is never the [last good check](#answers-in-code-being-edited)
+  for later answers.
 - **`$/cancelRequest`** answers the request with `RequestCancelled`
   (-32800), whether it's queued or running. A running check's worker is
-  killed.
-- **`shutdown`** cancels everything queued or running in the same way.
+  killed. Clients that cancel requests they no longer need (VS Code's
+  does, as its `staleRequestSupport` says) save the checks.
+- **`shutdown`** stops everything queued or running. Those queries get
+  `null`, with status `unavailable` and reason `shutdown`: the client
+  didn't cancel them, so `RequestCancelled` would be wrong.
 
 Other errors are `MethodNotFound` (-32601) for anything not listed here,
 `InvalidParams` (-32602), and `InvalidRequest` (-32600) for a request after
@@ -861,7 +872,8 @@ The worker stays between queries, keeping the checks it did
 ([Kept checks](#kept-checks)):
 
 - The server kills the worker when a query times out (`checkTimeoutMs`),
-  is cancelled, or is superseded, and starts a new one for the next query.
+  is cancelled, or the server shuts down, and starts a new one for the next
+  query.
   The checks it kept go with it.
 - If the worker panics, aborts, or overflows its stack, the server reports
   it (`compilerPanic` or `checkCrashed`) and goes on. A check the
@@ -958,7 +970,8 @@ MIR, which consumes what the queries would need.
 
 ## `shutdown` and `exit`
 
-- `shutdown` answers `null`.
+- `shutdown` answers `null`, after answering the queries still queued or
+  running with `null` (reason `shutdown`).
 - `exit` ends the process with status 0 after `shutdown`, and 1 without it.
 - If stdin closes without `exit`, the process ends with status 1.
 - Malformed messages (bad framing or JSON) end the session, as lsp-server
