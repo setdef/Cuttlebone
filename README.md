@@ -34,6 +34,8 @@ Reports, in docs/history/:
   questions, and the guardrails in tiers.
 - [MILESTONE-7.md](docs/history/MILESTONE-7.md): what an answer covers,
   versions, LSP 3.18, and a hole in the guardrails.
+- [MILESTONE-8.md](docs/history/MILESTONE-8.md): answers when a
+  declaration has an error.
 
 Each milestone has its own version; what changed in each:
 [CHANGELOG.md](CHANGELOG.md).

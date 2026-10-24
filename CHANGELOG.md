@@ -13,6 +13,17 @@ versions here were given afterwards.
 Milestone 8: answers when a declaration has an error.
 [Report](docs/history/MILESTONE-8.md).
 
+- **Errors in declarations.** An undefined type in a signature, an
+  import of something that doesn't exist and the like no longer leave
+  the project without answers. The type checker runs on past them (a
+  setting in the patch, which `inko check` leaves off), and every query
+  answers, `fresh`, in code the error can't affect. Elsewhere the answer
+  is `null` with reason `declarationErrors`, which now means the error
+  may change it.
+- **References** past such an error are given when no code it may
+  affect mentions the name, in any module, instead of never.
+- **Diagnostics** are unchanged: exactly `inko check`'s.
+
 ## 0.7.0
 
 Milestone 7: what an answer covers, versions, and LSP 3.18.
