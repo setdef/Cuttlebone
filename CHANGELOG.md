@@ -8,6 +8,11 @@ the entry links to the milestone's report, which its last commit adds
 (AGENTS.md, "Versions"). Milestones 1 to 6 were all built as 0.1.0; their
 versions here were given afterwards.
 
+## 0.8.0
+
+Milestone 8: answers when a declaration has an error.
+[Report](docs/history/MILESTONE-8.md).
+
 ## 0.7.0
 
 Milestone 7: what an answer covers, versions, and LSP 3.18.
