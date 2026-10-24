@@ -78,7 +78,7 @@ M = [
  ("other files' ranges use the request's lines", "src/query.rs", "range: range(&Lines::with_encoding(text, self.encoding), &location),", "range: range(self.lines, &location),", "--test navigation references_honour"),
  ("no capability for definition", "src/lsp.rs", "definition_provider: Some(lsp::OneOf::Left(true)),", "definition_provider: None,", "--test lsp initialize_advertises"),
  ("includeDeclaration not read", "src/lsp.rs", '.pointer("/context/includeDeclaration")', '.pointer("/context/include_declaration")', "--test navigation references_honour"),
- ("no status for definitions", "src/lsp.rs", "            Outcome::Place(answer) => {\n                let status = status_of(&answer);", "            Outcome::Place(answer) => {\n                let status = (Ok(()), Duration::ZERO);", "--test navigation broken_code"),
+ ("no status for definitions", "src/lsp.rs", "            Outcome::Place(answer) => {\n                let status = status_of(&answer);", "            Outcome::Place(answer) => {\n                let status = (Ok(()), Duration::ZERO, Source::Fresh);", "--test navigation broken_code"),
  ("type definition answers definition", "src/worker.rs", "Query::TypeDefinition => Question::TypeDefinition,", "Query::TypeDefinition => Question::Definition,", "--test navigation type_definition"),
  # The guardrails (AGENTS.md).
  ("query uses lsp", "src/query.rs", "use crate::check::{Target, diagnose, project_root, run};\n", "use crate::check::{Target, diagnose, project_root, run};\nuse crate::lsp as _;\n", "--test guardrails layers"),
@@ -176,7 +176,7 @@ M = [
  # Repaired copies.
  ("repaired copies answer references", "src/query.rs", "        Source::Repaired => !matches!(question, Question::References { .. }),", "        Source::Repaired => true,", "--test repaired an_edit"),
  ("no repaired copies", "src/query.rs", "    if repair\n        && !wanted.is_empty()", "    if repair && false\n        && !wanted.is_empty()", "--test repaired"),
- ("changed lines aren't blanked alone", "src/query.rs", "            candidates.push(changed.clone());\n        } else {", "        } else {", "--test repaired an_edit"),
+ ("changed lines aren't blanked alone", "src/query.rs", "            candidates.push(changed.clone());\n        } else {", "        } else {", "--test repaired the_changed_line"),
  ("unclosed brackets not looked for", "src/query.rs", "            if let Some(line) = unclosed(&blank(text, &with)) {", "            if let Some(line) = None::<usize>.filter(|_| !with.is_empty() || text.is_empty()) {", "--test repaired a_method_being_edited"),
  ("a bracket of another kind closes", "src/query.rs", "                        Some((o, _)) if o == expected => {}\n                        Some((_, line)) => return Some(line),", "                        Some((_, _)) => {}", "--test replay"),
  ("the parser's lines not blanked", "src/query.rs", "                    match parse_error_line(&blank(text, &lines)) {", "                    match Some(0).filter(|_| false).or(parse_error_line(\"\")) {", "--test replay"),

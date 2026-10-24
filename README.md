@@ -10,7 +10,10 @@ completion after `.` lists members with their signatures, and go to
 definition, go to type definition and find references locate symbols by the
 compiler's own ids. It publishes the same diagnostics as `inko check`,
 highlights a symbol's uses in a file, shows the signature of the call being
-typed, and shows inferred types and parameter names as inlay hints.
+typed, and shows inferred types and parameter names as inlay hints. In
+code being edited, which doesn't parse or has an error in a declaration, it
+answers from a repaired copy of the documents or from the last version
+that type checked, wherever that answer still holds.
 
 Reports, in docs/history/:
 
@@ -24,6 +27,8 @@ Reports, in docs/history/:
   definition and references.
 - [MILESTONE-4.md](docs/history/MILESTONE-4.md): diagnostics, document
   highlight, signature help and inlay hints.
+- [MILESTONE-5.md](docs/history/MILESTONE-5.md): answers in code being
+  edited, from repaired copies and the last good check.
 
 Setting it up in VS Code and Neovim: [editors/](editors/README.md). The rules
 every change follows, for people and coding agents: [AGENTS.md](AGENTS.md).

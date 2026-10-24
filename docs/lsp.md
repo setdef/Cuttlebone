@@ -796,9 +796,9 @@ Everywhere else the answer is `null`, with the fresh check's reason.
 
 **Cost.** A repaired copy or an older version is checked from scratch,
 like the documents as they are, so an answer in broken code can take up to
-three checks: on an Apple M1 Max, in a release build of the tests, a hover
-in a std-sized project takes about 140 ms from a repaired copy, and 240 ms
-when neither may answer (tests/latency.rs holds both to 500 ms). A document
+three checks: on an Apple M1 Max, under `cargo test` (dependencies
+optimized), a hover in a std-sized project takes about 135 ms from a
+repaired copy, and 240 ms when neither may answer (tests/latency.rs holds both to 500 ms). A document
 that doesn't parse is found in about a millisecond, before any type
 checking.
 

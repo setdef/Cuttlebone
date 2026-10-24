@@ -1572,7 +1572,8 @@ fn analyze(
 /// `Fallback` (the copy, and how the documents differ from it). With
 /// `parse`, each document that doesn't parse gets lines blank, the first of
 /// these that parses: the lines changed since the last good check
-/// (`older`), then also the line of the bracket nothing closes (`unclosed`), then also each line the parser stops at in turn.
+/// (`older`), then also the line of the bracket nothing closes (`unclosed`),
+/// then also each line the parser stops at in turn.
 /// Otherwise (a declaration has an error), each changed document gets the
 /// units (as that check's outline has them) of its changes outside method
 /// bodies blank. Blank lines keep every

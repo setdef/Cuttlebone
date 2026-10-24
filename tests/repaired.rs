@@ -305,3 +305,55 @@ fn a_changed_declaration_is_blank_in_the_copy() {
     assert_repaired(&status);
     assert_eq!(hover["contents"]["value"], "```inko\nString\n```");
 }
+
+#[test]
+fn the_changed_line_is_blank_first() {
+    let mut session = Session::new(false);
+    let file = session.file.clone();
+    let text = session.text.clone();
+
+    session.client.open(&file, &text);
+    ask(
+        &mut session,
+        &text,
+        "textDocument/hover",
+        "numbers.size",
+        0,
+        json!({}),
+    );
+
+    // An unfinished expression at the end of `add`, which the parser
+    // reports at the `}` after it. Blanking from there would take `add`'s
+    // end, and with it `reset`; the changed line alone is enough.
+    let (line, _) = at(&text, "    @count += amount", 0, false);
+    let unfinished = "    let x = 1 +\n";
+    let edited = text.replacen(
+        "  }\n\n  fn mut reset",
+        &format!("{}  }}\n\n  fn mut reset", unfinished),
+        1,
+    );
+
+    session.client.change(
+        &file,
+        2,
+        json!([{
+            "range": {
+                "start": { "line": line + 1, "character": 0 },
+                "end": { "line": line + 1, "character": 0 },
+            },
+            "text": unfinished,
+        }]),
+    );
+
+    let (hover, status) = ask(
+        &mut session,
+        &edited,
+        "textDocument/hover",
+        "@count = 0",
+        0,
+        json!({}),
+    );
+
+    assert_repaired(&status);
+    assert_eq!(hover["contents"]["value"], "```inko\nInt\n```");
+}
