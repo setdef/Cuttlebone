@@ -144,10 +144,17 @@ M = [
  ("operators are argument lists", "src/walker.rs", "                if n.parens && !synthetic && !operator {", "                if n.parens && !synthetic {", "--test inlay parameter_names"),
  ("operators get signature help", "src/walker.rs", "                if n.parens && !synthetic && !operator {", "                if n.parens && !synthetic {", "--test signature null_outside"),
  ("enum constructors' generated names", "src/query.rs", "                .filter(|(m, _)| m.kind(db) != MethodKind::Constructor)", "                .filter(|_| true)", "--test inlay parameter_names"),
- ("hints past the range", "src/query.rs", "        hints.retain(|h| request.position <= h.position && h.position <= end);", "        hints.retain(|h| request.position <= h.position);", "--test inlay only_the_requested_range"),
+ ("hints past the range", "src/query.rs", "hints.retain(|h| *position <= h.position && h.position <= *end);", "hints.retain(|h| *position <= h.position);", "--test inlay only_the_requested_range"),
  ("the range's end not read", "src/lsp.rs", "                        line: json_u32(&request.params, \"/range/end/line\"),", "                        line: u32::MAX,", "--test inlay only_the_requested_range"),
  ("parameter hints without padding", "src/lsp.rs", "                                padding_right: Some(h.kind == HintKind::Parameter),", "                                padding_right: None,", "--test inlay only_the_requested_range"),
  ("no inlayHintProvider", "src/lsp.rs", "                inlay_hint_provider: Some(lsp::OneOf::Left(true)),\n", "", "--test lsp initialize_advertises"),
+ # Answers in code being edited (milestone 5).
+ ("an edit's tail starts at the old end", "src/edits.rs", "same.push((old + skip, start + len, n - skip));", "same.push((old + skip, end + len, n - skip));", "--lib edits"),
+ ("text next to an edit counts as unchanged", "src/edits.rs", "        let from = range.start.checked_sub(1);", "        let from = Some(range.start).filter(|_| range.start > 0);", "--lib edits"),
+ ("text added at the start of a file ignored", "src/edits.rs", "        if (from.is_none() && (old, new) != (0, 0))", "        if (from.is_none() && false)", "--lib edits"),
+ ("runs aren't bounded", "src/edits.rs", "        while self.same.len() > MAX_RUNS {", "        while self.same.len() > usize::MAX {", "--lib edits"),
+ ("byte offsets as positions in UTF-16", "src/position.rs", "        character: encoding.len(&before[start..]),", "        character: Encoding::Utf16.len(&before[start..]),", "--lib position"),
+ ("the batch's answers out of order", "src/query.rs", "        for (i, answer) in group\n            .iter()\n            .zip(", "        for (i, answer) in group\n            .iter()\n            .rev()\n            .zip(", "--test replay"),
 ]
 only = sys.argv[1:]
 results = []

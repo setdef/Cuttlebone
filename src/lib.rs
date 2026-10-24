@@ -13,6 +13,7 @@
 pub mod check;
 #[doc(hidden)]
 pub mod dump;
+pub mod edits;
 pub mod lsp;
 pub mod position;
 pub mod query;

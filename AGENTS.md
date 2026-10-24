@@ -25,7 +25,7 @@ to get past it.
   particular editor or client, or name one outside docs/, editors/ and
   tests/ (tests/guardrails.rs).
 - Layering (tests/guardrails.rs has the table):
-  - `position`, `walker`, `check`: nothing in the crate
+  - `position`, `walker`, `check`, `edits`: nothing in the crate
   - `query`: only those
   - `worker`: `query` and below
   - `lsp`: on top

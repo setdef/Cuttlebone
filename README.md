@@ -63,12 +63,14 @@ code. `.cargo/config.toml` assumes Homebrew's `llvm@18`. Set
   grapheme clusters) and editors' (0-based, UTF-16 or UTF-8).
 - `src/check.rs`: running a check, or a full one for diagnostics, with no
   side effects.
+- `src/edits.rs`: which text of an older version of a file is still in
+  the current one, unchanged, from the editor's edits.
 - `src/worker.rs`: running one query in a child process.
 - `src/lsp.rs`: the LSP front end: documents, the queue, timeouts,
   cancellation and debouncing, and diagnostics' own queue.
 - `src/dump.rs`: helpers for dump-types and the tests only.
 
-The core (`check.rs`, `query.rs`, `walker.rs`, `position.rs`) doesn't know
+The core (`check.rs`, `edits.rs`, `query.rs`, `walker.rs`, `position.rs`) doesn't know
 about LSP. tests/guardrails.rs enforces the layering (see AGENTS.md).
 
 ## Tests
@@ -105,6 +107,7 @@ also fast enough for the latency limits.
 | `tests/golden.rs` | `dump-types` output for a few std modules and fixtures, compared with `tests/golden/*.txt`. Run `UPDATE_GOLDEN=1 cargo test` to rewrite them. |
 | `tests/editors.rs` | the Neovim smoke check (below) under `cargo test`, if `nvim` is on `PATH` |
 | `tests/guardrails.rs` | the layering of src/, no editor named in code, nothing named after Inko, no machine-specific paths, and patches/README.md accounting for every patch line |
+| `tests/replay.rs` | the edit-replay corpus, the oracle for code being edited: real files edited as people do, every query asked at many positions after each edit, and each answer compared with the fresh one at the end. Fails on any wrong answer, or less coverage than measured. `-- --nocapture` prints the tables |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |
 
 `scripts/mutate.py` breaks behaviours and rules on purpose, one at a time,

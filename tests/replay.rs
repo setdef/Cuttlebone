@@ -1,0 +1,972 @@
+//! The edit-replay corpus: the oracle for answers in code being edited.
+//!
+//! Real files (fixtures, and std's own modules and tests) are edited the way
+//! people edit: a statement typed character by character, lines deleted and
+//! typed again, a method's signature typed before its body, a name in a
+//! declaration deleted and typed again (which breaks the declaration for a
+//! while), in the file asked about or in a module it imports. After each
+//! edit every query is asked at many positions, the way a server sees them
+//! (`query::ask`, which the worker runs too).
+//!
+//! Each scenario ends with the files as they began, so they compile again.
+//! Every answer given mid-edit is then compared with the fresh answer at the
+//! same position in the final text. Only positions whose text didn't change
+//! between that edit and the end are asked about, and lists (highlights,
+//! hints) are compared on that text only.
+//!
+//! An answer from anything but the documents as they are (`Source`) that
+//! disagrees with the final fresh one is **wrong**, and fails the test. A
+//! fresh answer can disagree too, because the code meant something else
+//! then (after a `let` is deleted, its variable is undefined); those are
+//! counted apart. The test also fails if fewer questions get an answer
+//! than were measured (`COVERAGE`).
+//!
+//! `cargo test --test replay -- --nocapture` prints the tables.
+
+// The tables are this test's report.
+#![allow(clippy::print_stderr)]
+mod common;
+
+use cuttlebone::dump::upstream_std;
+use cuttlebone::edits::Changes;
+use cuttlebone::position::{Encoding, Position, position_at};
+use cuttlebone::query::{self, Answer, Question, Reply, Request, Session, Source};
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+const ENCODING: Encoding = Encoding::Utf16;
+
+/// Positions asked about per edit, at most, for the questions one check
+/// answers together.
+const POSITIONS: usize = 40;
+
+/// Completion and signature help each check a copy of their own, so they're
+/// asked at fewer positions, and only after every `EVERY`th edit.
+const EDITED_POSITIONS: usize = 2;
+const EVERY: usize = 3;
+
+/// An edit: bytes `start..end` of a file replaced by `text`.
+#[derive(Clone, Debug)]
+struct Edit {
+    file: PathBuf,
+    start: usize,
+    end: usize,
+    text: String,
+}
+
+struct Scenario {
+    name: String,
+    session: Session,
+    /// The file the questions are about.
+    file: PathBuf,
+    /// Every file the scenario opens, with its text.
+    open: Vec<(PathBuf, String)>,
+    edits: Vec<Edit>,
+}
+
+/// The line containing `needle`: its start, and its end before the `\n`.
+fn line_of(text: &str, needle: &str) -> (usize, usize) {
+    let at = text
+        .find(needle)
+        .unwrap_or_else(|| panic!("{:?} isn't in the text", needle));
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = at + text[at..].find('\n').unwrap_or(text.len() - at);
+
+    (start, end)
+}
+
+/// Deletes the statement on the line containing `needle` (keeping its
+/// indentation), then types it again, one character at a time.
+fn retype_line(file: &Path, text: &str, needle: &str) -> Vec<Edit> {
+    let (start, end) = line_of(text, needle);
+    let line = &text[start..end];
+    let from = start + (line.len() - line.trim_start().len());
+    let statement = &text[from..end];
+    let mut edits = vec![Edit {
+        file: file.to_path_buf(),
+        start: from,
+        end,
+        text: String::new(),
+    }];
+    let mut at = from;
+
+    for c in statement.chars() {
+        edits.push(Edit {
+            file: file.to_path_buf(),
+            start: at,
+            end: at,
+            text: c.to_string(),
+        });
+        at += c.len_utf8();
+    }
+
+    edits
+}
+
+/// Deletes `count` lines starting at the one containing `needle`, the last
+/// first, then types them again, one line at a time.
+fn retype_lines(file: &Path, text: &str, needle: &str, count: usize) -> Vec<Edit> {
+    let (start, _) = line_of(text, needle);
+    let mut lines = Vec::new();
+    let mut at = start;
+
+    for _ in 0..count {
+        let end = at + text[at..].find('\n').unwrap() + 1;
+
+        lines.push((at, text[at..end].to_string()));
+        at = end;
+    }
+
+    let mut edits: Vec<Edit> = lines
+        .iter()
+        .rev()
+        .map(|(at, line)| Edit {
+            file: file.to_path_buf(),
+            start: *at,
+            end: at + line.len(),
+            text: String::new(),
+        })
+        .collect();
+
+    for (at, line) in &lines {
+        edits.push(Edit {
+            file: file.to_path_buf(),
+            start: *at,
+            end: *at,
+            text: line.clone(),
+        });
+    }
+
+    edits
+}
+
+/// Deletes the method whose first line contains `needle` (up to the line
+/// where its braces balance), then types its signature one character at a
+/// time, and its body one line at a time.
+fn retype_method(file: &Path, text: &str, needle: &str) -> Vec<Edit> {
+    let (start, first_end) = line_of(text, needle);
+    let mut depth = 0;
+    let mut end = start;
+
+    for line in text[start..].split_inclusive('\n') {
+        depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+        end += line.len();
+
+        if depth == 0 {
+            break;
+        }
+    }
+
+    let mut edits = vec![Edit {
+        file: file.to_path_buf(),
+        start,
+        end,
+        text: String::new(),
+    }];
+    let mut at = start;
+
+    for c in text[start..=first_end].chars() {
+        edits.push(Edit {
+            file: file.to_path_buf(),
+            start: at,
+            end: at,
+            text: c.to_string(),
+        });
+        at += c.len_utf8();
+    }
+
+    for line in text[first_end + 1..end].split_inclusive('\n') {
+        edits.push(Edit {
+            file: file.to_path_buf(),
+            start: at,
+            end: at,
+            text: line.to_string(),
+        });
+        at += line.len();
+    }
+
+    edits
+}
+
+/// Deletes `word` (its first occurrence in the line containing `needle`)
+/// one character at a time from its end, then types it again.
+fn retype_word(file: &Path, text: &str, needle: &str, word: &str) -> Vec<Edit> {
+    let (start, end) = line_of(text, needle);
+    let from = start
+        + text[start..end]
+            .find(word)
+            .unwrap_or_else(|| panic!("{:?} isn't in {:?}", word, &text[start..end]));
+    let chars: Vec<(usize, char)> = word.char_indices().collect();
+    let mut edits = Vec::new();
+
+    for (i, c) in chars.iter().rev() {
+        edits.push(Edit {
+            file: file.to_path_buf(),
+            start: from + i,
+            end: from + i + c.len_utf8(),
+            text: String::new(),
+        });
+    }
+
+    for (i, c) in &chars {
+        edits.push(Edit {
+            file: file.to_path_buf(),
+            start: from + i,
+            end: from + i,
+            text: c.to_string(),
+        });
+    }
+
+    edits
+}
+
+fn fixture_session(name: &str) -> (Session, PathBuf) {
+    let root = common::fixture(name);
+
+    (
+        Session {
+            std: upstream_std(),
+            projects: vec![root.clone()],
+        },
+        root,
+    )
+}
+
+fn std_session() -> (Session, PathBuf) {
+    let root = upstream_std().parent().unwrap().to_path_buf();
+
+    (
+        Session {
+            std: upstream_std(),
+            projects: vec![root.clone()],
+        },
+        root,
+    )
+}
+
+/// A scenario editing one file and asking about it.
+fn scenario(
+    name: &str,
+    (session, root): (Session, PathBuf),
+    file: &str,
+    edits: impl FnOnce(&Path, &str) -> Vec<Edit>,
+) -> Scenario {
+    let path = root.join(file);
+    let text = std::fs::read_to_string(&path).unwrap();
+
+    Scenario {
+        name: name.to_string(),
+        session,
+        edits: edits(&path, &text),
+        file: path.clone(),
+        open: vec![(path, text)],
+    }
+}
+
+/// A scenario editing `edited` and asking about `file`, which imports it.
+fn elsewhere(
+    name: &str,
+    (session, root): (Session, PathBuf),
+    file: &str,
+    edited: &str,
+    edits: impl FnOnce(&Path, &str) -> Vec<Edit>,
+) -> Scenario {
+    let mut s = scenario(name, (session, root.clone()), edited, edits);
+    let path = root.join(file);
+
+    s.open
+        .push((path.clone(), std::fs::read_to_string(&path).unwrap()));
+    s.file = path;
+    s
+}
+
+fn scenarios() -> Vec<Scenario> {
+    let features = || fixture_session("features");
+    let navigation = || fixture_session("navigation");
+    let main = "src/main.inko";
+    let set = "src/std/set.inko";
+    let range = "src/std/range.inko";
+    let test_set = "test/std/test_set.inko";
+
+    vec![
+        scenario("features: retype a let", features(), main, |p, t| {
+            retype_line(p, t, "let doubled = numbers.iter")
+        }),
+        scenario("features: retype a call", features(), main, |p, t| {
+            retype_line(p, t, "counter.add(amount: 1")
+        }),
+        scenario(
+            "features: delete and retype lines",
+            features(),
+            main,
+            |p, t| retype_lines(p, t, "total = total + 1", 3),
+        ),
+        scenario("features: retype a method", features(), main, |p, t| {
+            retype_method(p, t, "fn describe(name")
+        }),
+        scenario(
+            "features: break an argument's type",
+            features(),
+            main,
+            |p, t| retype_word(p, t, "fn mut add(amount", "Int"),
+        ),
+        scenario(
+            "features: break a field's type",
+            features(),
+            main,
+            |p, t| retype_word(p, t, "let @label: String", "String"),
+        ),
+        scenario("navigation: retype a let", navigation(), main, |p, t| {
+            retype_line(p, t, "let areas = circles")
+        }),
+        scenario("navigation: break an import", navigation(), main, |p, t| {
+            retype_word(p, t, "import alpha (Error)", "Error")
+        }),
+        elsewhere(
+            "navigation: break a return type in an import",
+            navigation(),
+            main,
+            "src/alpha.inko",
+            |p, t| retype_word(p, t, "fn pub message -> String", "String"),
+        ),
+        elsewhere(
+            "navigation: retype a method in an import",
+            navigation(),
+            main,
+            "src/beta.inko",
+            |p, t| retype_method(p, t, "fn pub message"),
+        ),
+        scenario("std set: retype a method", std_session(), set, |p, t| {
+            retype_method(p, t, "fn pub mut remove(value: ref V)")
+        }),
+        scenario(
+            "std set: break a return type",
+            std_session(),
+            set,
+            |p, t| retype_word(p, t, "fn pub iter -> Iter[V]", "Iter"),
+        ),
+        scenario(
+            "std range: delete and retype lines",
+            std_session(),
+            range,
+            |p, t| retype_lines(p, t, "fn pub inline size -> Int", 4),
+        ),
+        scenario(
+            "std test_set: retype a let",
+            std_session(),
+            test_set,
+            |p, t| retype_line(p, t, "let set = Set.from_array([10, 20, 30])"),
+        ),
+    ]
+}
+
+/// The requests the corpus asks, as the server names them.
+const REQUESTS: &[&str] = &[
+    "hover",
+    "definition",
+    "typeDefinition",
+    "completion",
+    "signatureHelp",
+    "inlayHint",
+    "documentHighlight",
+];
+
+fn request_name(q: Question) -> &'static str {
+    match q {
+        Question::Type => "hover",
+        Question::Definition => "definition",
+        Question::TypeDefinition => "typeDefinition",
+        Question::Complete => "completion",
+        Question::SignatureHelp => "signatureHelp",
+        Question::InlayHints { .. } => "inlayHint",
+        Question::Highlight => "documentHighlight",
+        other => panic!("not asked: {:?}", other),
+    }
+}
+
+/// What happened to one question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Verdict {
+    Right(Source),
+    Wrong(Source),
+    None,
+}
+
+#[derive(Default, Clone)]
+struct Tally {
+    counts: BTreeMap<&'static str, BTreeMap<Verdict, usize>>,
+    /// The first few wrong answers, to show.
+    wrong: Vec<String>,
+    /// The first few fresh answers that differ at the end, to show.
+    differs: Vec<String>,
+}
+
+impl Tally {
+    fn add(&mut self, request: &'static str, verdict: Verdict) {
+        *self
+            .counts
+            .entry(request)
+            .or_default()
+            .entry(verdict)
+            .or_default() += 1;
+    }
+
+    fn merge(&mut self, other: &Tally) {
+        for (request, counts) in &other.counts {
+            for (verdict, n) in counts {
+                *self
+                    .counts
+                    .entry(request)
+                    .or_default()
+                    .entry(*verdict)
+                    .or_default() += n;
+            }
+        }
+
+        self.wrong.extend(other.wrong.iter().cloned());
+        self.differs.extend(other.differs.iter().cloned());
+    }
+
+    fn get(&self, request: &str, verdict: Verdict) -> usize {
+        self.counts
+            .get(request)
+            .and_then(|c| c.get(&verdict))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn asked(&self, request: &str) -> usize {
+        self.counts.get(request).map_or(0, |c| c.values().sum())
+    }
+
+    fn answered(&self, request: &str) -> usize {
+        self.asked(request) - self.get(request, Verdict::None)
+    }
+
+    fn wrong(&self, request: &str, source: Source) -> usize {
+        self.get(request, Verdict::Wrong(source))
+    }
+
+    fn table(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "| request | asked | fresh | no answer | fresh, differs at the end | wrong |"
+        );
+        let _ = writeln!(out, "|---|---|---|---|---|---|");
+
+        for request in REQUESTS {
+            let _ = writeln!(
+                out,
+                "| {} | {} | {} | {} | {} | {} |",
+                request,
+                self.asked(request),
+                self.get(request, Verdict::Right(Source::Fresh)),
+                self.get(request, Verdict::None),
+                self.wrong(request, Source::Fresh),
+                self.asked(request)
+                    - self.get(request, Verdict::Right(Source::Fresh))
+                    - self.get(request, Verdict::None)
+                    - self.wrong(request, Source::Fresh),
+            );
+        }
+
+        out
+    }
+}
+
+/// The open documents, edited as a server would see them.
+struct Documents {
+    texts: HashMap<PathBuf, String>,
+}
+
+impl Documents {
+    fn request(&self, file: &Path) -> Request {
+        Request {
+            file: file.to_path_buf(),
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            encoding: ENCODING,
+            contents: self.texts.clone(),
+        }
+    }
+
+    fn apply(&mut self, edit: &Edit) {
+        self.texts
+            .get_mut(&edit.file)
+            .unwrap()
+            .replace_range(edit.start..edit.end, &edit.text);
+    }
+}
+
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Byte offsets in `text` to ask about: where names start, after a `.`
+/// (for completion) and after a `(` or `, ` (for signature help). Only
+/// those whose text is unchanged at the end (`changes`), spread over the
+/// file, with every one near the edit at `near`.
+fn positions(text: &str, changes: &Changes, near: usize) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let mut names = Vec::new();
+    let mut dots = Vec::new();
+    let mut calls = Vec::new();
+    let mut previous = '\n';
+
+    for (i, c) in text.char_indices() {
+        let unchanged = changes.new_range(i..i + c.len_utf8()).is_some();
+
+        if unchanged && (is_ident(c) || c == '@') && !is_ident(previous) && previous != '@' {
+            names.push(i);
+        }
+
+        if unchanged && previous == '.' && is_ident(c) {
+            dots.push(i);
+        }
+
+        if unchanged && (previous == '(' || (previous == ' ' && text[..i].ends_with(", "))) {
+            calls.push(i);
+        }
+
+        previous = c;
+    }
+
+    let line = |i: usize| text[..i].matches('\n').count();
+    let edited = line(near.min(text.len()));
+    let spread = |all: Vec<usize>, limit: usize| -> Vec<usize> {
+        let (close, far): (Vec<usize>, Vec<usize>) = all
+            .into_iter()
+            .partition(|i| line(*i).abs_diff(edited) <= 3);
+        let room = limit.saturating_sub(close.len()).max(limit / 2);
+        let stride = far.len().div_ceil(room.max(1)).max(1);
+        let mut out: Vec<usize> = close.into_iter().take(limit).collect();
+
+        out.extend(far.into_iter().step_by(stride));
+        out.sort();
+        out
+    };
+
+    (
+        spread(names, POSITIONS),
+        spread(dots, EDITED_POSITIONS),
+        spread(calls, EDITED_POSITIONS),
+    )
+}
+
+/// The end of `position`'s line.
+fn line_end(text: &str, position: Position) -> Position {
+    let line = text.split('\n').nth(position.line as usize).unwrap_or("");
+
+    Position {
+        line: position.line,
+        character: ENCODING.len(line),
+    }
+}
+
+/// A position in one text as one in another, through `changes`.
+fn map_position(old: &str, new: &str, changes: &Changes, p: Position) -> Option<Position> {
+    let byte = query::byte_offset(old, p, ENCODING)?;
+    let mapped = changes.new_range(byte..byte)?;
+
+    Some(position_at(new, mapped.start, ENCODING))
+}
+
+/// A range in one text as one in another.
+fn map_range(old: &str, new: &str, changes: &Changes, r: query::Range) -> Option<query::Range> {
+    let start = query::byte_offset(old, r.start, ENCODING)?;
+    let end = query::byte_offset(old, r.end, ENCODING)?;
+    let mapped = changes.new_range(start..end)?;
+
+    Some(query::Range {
+        start: position_at(new, mapped.start, ENCODING),
+        end: position_at(new, mapped.end, ENCODING),
+    })
+}
+
+/// How the texts at one point of the scenario relate to the final ones.
+struct Mapping {
+    /// Each edited file's text now, its final text, and the changes from
+    /// one to the other.
+    files: HashMap<PathBuf, (String, String, Changes)>,
+}
+
+impl Mapping {
+    /// A range in `file` now, as one in the final text. Files that aren't
+    /// edited stay as they are.
+    fn forward(&self, file: &Path, r: query::Range) -> Option<query::Range> {
+        match self.files.get(file) {
+            Some((now, last, changes)) => map_range(now, last, changes, r),
+            None => Some(r),
+        }
+    }
+
+    /// Whether a range of the final text was there, unchanged, now.
+    fn existed(&self, file: &Path, r: query::Range) -> bool {
+        match self.files.get(file) {
+            Some((_, last, changes)) => {
+                let (Some(start), Some(end)) = (
+                    query::byte_offset(last, r.start, ENCODING),
+                    query::byte_offset(last, r.end, ENCODING),
+                ) else {
+                    return false;
+                };
+
+                changes.old_range(start..end).is_some()
+            }
+            None => true,
+        }
+    }
+}
+
+/// A reply as something to compare: mid-edit (`now`) replies are mapped to
+/// the final text first. Items of a list in text that changed in between
+/// are left out on both sides: `now` drops what doesn't map forward, the
+/// final reply what didn't exist now.
+fn normalize(reply: &Option<Reply>, file: &Path, mapping: &Mapping, now: bool) -> String {
+    let range = |r: query::Range| -> String {
+        if now {
+            match mapping.forward(file, r) {
+                Some(r) => format!("{:?}", r),
+                None => "<changed>".to_string(),
+            }
+        } else {
+            format!("{:?}", r)
+        }
+    };
+    let keep = |f: &Path, r: query::Range| -> bool {
+        if now {
+            mapping.forward(f, r).is_some()
+        } else {
+            mapping.existed(f, r)
+        }
+    };
+    let place = |p: &query::Place| -> String {
+        if now {
+            match mapping.forward(&p.file, p.range) {
+                Some(r) => format!("{}:{:?}", p.file.display(), r),
+                None => "<changed>".to_string(),
+            }
+        } else {
+            format!("{}:{:?}", p.file.display(), p.range)
+        }
+    };
+
+    match reply {
+        None => "null".to_string(),
+        Some(Reply::Type(t)) => format!("{} {}", t.typ, range(t.range)),
+        Some(Reply::Members(m)) => format!(
+            "{} {} {:?}",
+            m.receiver,
+            range(m.receiver_range),
+            m.members
+                .iter()
+                .map(|m| format!("{} {}", m.name, m.signature))
+                .collect::<Vec<_>>()
+        ),
+        Some(Reply::Place(p)) => place(p),
+        Some(Reply::Places(ps)) => ps.iter().map(place).collect::<Vec<_>>().join(", "),
+        Some(Reply::Highlights(hs)) => hs
+            .iter()
+            .filter(|h| keep(file, h.range))
+            .map(|h| format!("{:?} {}", h.access, range(h.range)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        Some(Reply::Signature(s)) => format!("{} {:?} {:?}", s.label, s.parameters, s.active),
+        Some(Reply::Hints(hs)) => hs
+            .iter()
+            .filter(|h| {
+                keep(
+                    file,
+                    query::Range {
+                        start: h.position,
+                        end: h.position,
+                    },
+                )
+            })
+            .map(|h| {
+                let at = query::Range {
+                    start: h.position,
+                    end: h.position,
+                };
+
+                format!("{} {:?} {}", h.label, h.kind, range(at))
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
+/// One question asked mid-edit, waiting for the final answer to compare
+/// with.
+struct Asked {
+    request: &'static str,
+    /// The question at its position in the final text.
+    question: (Question, Position),
+    /// The index of the edit it was asked after, in `mappings`.
+    step: usize,
+    answer: Answer<Reply>,
+    /// `answer`, normalized against the final text.
+    normalized: String,
+    context: String,
+}
+
+/// Runs a scenario: applies each edit, asks every question after it, and
+/// compares the answers with the final ones.
+fn replay(scenario: &Scenario) -> Tally {
+    let mut docs = Documents {
+        texts: scenario.open.iter().cloned().collect(),
+    };
+    let finals: HashMap<PathBuf, String> = docs.texts.clone();
+    let file = &scenario.file;
+    let mut asked: Vec<Asked> = Vec::new();
+    let mut mappings: Vec<Mapping> = Vec::new();
+
+    for (step, edit) in scenario.edits.iter().enumerate() {
+        docs.apply(edit);
+
+        let now = docs.texts[file].clone();
+        let mapping = Mapping {
+            files: scenario
+                .open
+                .iter()
+                .map(|(path, _)| {
+                    let (a, b) = (&docs.texts[path], &finals[path]);
+
+                    (path.clone(), (a.clone(), b.clone(), Changes::between(a, b)))
+                })
+                .collect(),
+        };
+        let changes = &mapping.files[file].2;
+        let near = if &edit.file == file { edit.start } else { 0 };
+        let (names, dots, calls) = positions(&now, changes, near);
+        let at = |byte: usize| position_at(&now, byte, ENCODING);
+        let mut questions: Vec<(Question, Position)> = Vec::new();
+        let mut lines = Vec::new();
+
+        for byte in &names {
+            let p = at(*byte);
+
+            for q in [
+                Question::Type,
+                Question::Definition,
+                Question::TypeDefinition,
+                Question::Highlight,
+            ] {
+                questions.push((q, p));
+            }
+
+            if !lines.contains(&p.line) {
+                lines.push(p.line);
+
+                let start = Position {
+                    line: p.line,
+                    character: 0,
+                };
+
+                questions.push((
+                    Question::InlayHints {
+                        end: line_end(&now, start),
+                    },
+                    start,
+                ));
+            }
+        }
+
+        if step % EVERY == 0 {
+            questions.extend(dots.iter().map(|b| (Question::Complete, at(*b))));
+            questions.extend(calls.iter().map(|b| (Question::SignatureHelp, at(*b))));
+        }
+
+        let answers = query::ask(&scenario.session, &docs.request(file), &questions);
+        let last = &finals[file];
+
+        for ((question, p), answer) in questions.into_iter().zip(answers) {
+            let final_question = match question {
+                Question::InlayHints { .. } => {
+                    let Some(mapped) = map_position(&now, last, changes, p)
+                        .or_else(|| first_unchanged_on_line(&now, last, changes, p))
+                    else {
+                        continue;
+                    };
+                    let start = Position {
+                        line: mapped.line,
+                        character: 0,
+                    };
+
+                    (
+                        Question::InlayHints {
+                            end: line_end(last, start),
+                        },
+                        start,
+                    )
+                }
+                _ => (question, map_position(&now, last, changes, p).unwrap()),
+            };
+            let reply = answer.result.clone().unwrap_or(None);
+
+            asked.push(Asked {
+                step,
+                request: request_name(question),
+                question: final_question,
+                normalized: normalize(&reply, file, &mapping, true),
+                context: format!(
+                    "{} after edit {} ({:?}), {:?} at {:?}: {:?}",
+                    scenario.name, step, edit.text, question, p, answer.source
+                ),
+                answer,
+            });
+        }
+
+        mappings.push(mapping);
+    }
+
+    for (path, text) in &finals {
+        assert_eq!(
+            &docs.texts[path], text,
+            "{} doesn't end as it began",
+            scenario.name
+        );
+    }
+
+    // The final answers, from the final text, which is the original.
+    let mut unique: Vec<(Question, Position)> = Vec::new();
+
+    for a in &asked {
+        if !unique.contains(&a.question) {
+            unique.push(a.question);
+        }
+    }
+
+    let finals_answered = query::ask(&scenario.session, &docs.request(file), &unique);
+    let mut tally = Tally::default();
+
+    for a in &asked {
+        let index = unique.iter().position(|q| *q == a.question).unwrap();
+        let expected = &finals_answered[index];
+
+        assert_eq!(
+            expected.source,
+            Source::Fresh,
+            "the final text has errors: {}",
+            a.context
+        );
+
+        let verdict = match &a.answer.result {
+            Err(_) => Verdict::None,
+            Ok(_) => {
+                let expected = match &expected.result {
+                    Ok(reply) => normalize(reply, file, &mappings[a.step], false),
+                    Err(e) => format!("unavailable: {}", e.code),
+                };
+
+                if expected == a.normalized {
+                    Verdict::Right(a.answer.source)
+                } else {
+                    let shown = format!(
+                        "{}\n  now:   {}\n  final: {}",
+                        a.context, a.normalized, expected
+                    );
+
+                    if a.answer.source != Source::Fresh {
+                        tally.wrong.push(shown);
+                    } else if tally.differs.len() < 3 {
+                        tally.differs.push(shown);
+                    }
+
+                    Verdict::Wrong(a.answer.source)
+                }
+            }
+        };
+
+        tally.add(a.request, verdict);
+    }
+
+    tally
+}
+
+/// For a line whose start changed, the first unchanged position on it.
+fn first_unchanged_on_line(
+    now: &str,
+    last: &str,
+    changes: &Changes,
+    p: Position,
+) -> Option<Position> {
+    let line = now.split('\n').nth(p.line as usize)?;
+
+    (0..ENCODING.len(line)).find_map(|character| {
+        map_position(
+            now,
+            last,
+            changes,
+            Position {
+                line: p.line,
+                character,
+            },
+        )
+    })
+}
+
+/// The questions that got an answer, at least, per request: what the
+/// corpus measured. Raise these when coverage improves.
+const COVERAGE: &[(&str, usize)] = &[
+    ("hover", 5588),
+    ("definition", 5900),
+    ("typeDefinition", 5588),
+    ("completion", 78),
+    ("signatureHelp", 122),
+    ("inlayHint", 2999),
+    ("documentHighlight", 5900),
+];
+
+#[test]
+fn answers_mid_edit_agree_with_the_final_ones() {
+    let scenarios = scenarios();
+    let tallies: Vec<Tally> = std::thread::scope(|s| {
+        let handles: Vec<_> = scenarios
+            .iter()
+            .map(|scenario| s.spawn(|| replay(scenario)))
+            .collect();
+
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut total = Tally::default();
+
+    for (scenario, tally) in scenarios.iter().zip(&tallies) {
+        eprintln!(
+            "\n{} ({} edits)\n\n{}",
+            scenario.name,
+            scenario.edits.len(),
+            tally.table()
+        );
+        total.merge(tally);
+    }
+
+    eprintln!("\nAll scenarios\n\n{}", total.table());
+
+    for differs in &total.differs {
+        eprintln!("FRESH, DIFFERS: {}", differs);
+    }
+
+    for wrong in total.wrong.iter().take(20) {
+        eprintln!("WRONG: {}", wrong);
+    }
+
+    for (request, minimum) in COVERAGE {
+        assert!(
+            total.answered(request) >= *minimum,
+            "{}: {} answered, fewer than the {} measured",
+            request,
+            total.answered(request),
+            minimum
+        );
+    }
+
+    assert!(
+        total.wrong.is_empty(),
+        "{} wrong answers",
+        total.wrong.len()
+    );
+}

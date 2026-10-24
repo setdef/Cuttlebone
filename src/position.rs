@@ -152,6 +152,24 @@ impl<'a> Lines<'a> {
     }
 }
 
+/// The position of a byte offset in `text`: the start of the character
+/// it's in. An offset past the end is the end.
+pub fn position_at(text: &str, offset: usize, encoding: Encoding) -> Position {
+    let mut offset = offset.min(text.len());
+
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+
+    let before = &text[..offset];
+    let start = before.rfind('\n').map_or(0, |i| i + 1);
+
+    Position {
+        line: before.matches('\n').count() as u32,
+        character: encoding.len(&before[start..]),
+    }
+}
+
 /// Whether a location contains a position.
 pub fn contains(location: &Location, at: HirPosition) -> bool {
     let start = (location.line_start, location.column_start);
@@ -170,6 +188,18 @@ mod tests {
 
     fn pos(line: u32, character: u32) -> Position {
         Position { line, character }
+    }
+
+    #[test]
+    fn byte_offsets_as_positions() {
+        let text = "a\né😀b";
+        let b = text.find('b').unwrap();
+
+        assert_eq!(position_at(text, b, Encoding::Utf16), pos(1, 3));
+        assert_eq!(position_at(text, b, Encoding::Utf8), pos(1, 6));
+        // Inside 😀, which starts after é.
+        assert_eq!(position_at(text, b - 1, Encoding::Utf16), pos(1, 1));
+        assert_eq!(position_at(text, 99, Encoding::Utf16), pos(1, 4));
     }
 
     #[test]

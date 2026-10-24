@@ -13,11 +13,15 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("position", &[]),
     ("walker", &[]),
     ("check", &[]),
-    ("query", &["position", "walker", "check"]),
+    ("edits", &[]),
+    ("query", &["position", "walker", "check", "edits"]),
     // Helpers for dump-types and the tests; nothing in the crate uses them.
     ("dump", &["walker", "check"]),
-    ("worker", &["position", "walker", "check", "query"]),
-    ("lsp", &["position", "walker", "check", "query", "worker"]),
+    ("worker", &["position", "walker", "check", "edits", "query"]),
+    (
+        "lsp",
+        &["position", "walker", "check", "edits", "query", "worker"],
+    ),
 ];
 
 /// Editors and clients that code must not name or assume (lowercase, matched

@@ -138,27 +138,171 @@ pub struct Answer<T> {
     /// `Ok(None)` means the check worked but there's nothing at the position.
     pub result: Result<Option<T>, Unavailable>,
     pub elapsed: Duration,
+    /// What the answer was computed from.
+    #[serde(default)]
+    pub source: Source,
+}
+
+impl<T> Answer<T> {
+    fn map<U>(self, f: impl FnOnce(T) -> Option<U>) -> Answer<U> {
+        Answer {
+            result: self.result.map(|r| r.and_then(f)),
+            elapsed: self.elapsed,
+            source: self.source,
+        }
+    }
+}
+
+/// What an answer was computed from (docs/lsp.md, "Status").
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum Source {
+    /// A check of the documents as they are now.
+    #[default]
+    Fresh,
+}
+
+/// A question about a position. `ask` answers several with one check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Question {
+    /// `type_at`.
+    Type,
+    /// `members_at`.
+    Members,
+    /// `complete`.
+    Complete,
+    /// `definition`.
+    Definition,
+    /// `type_definition`.
+    TypeDefinition,
+    /// `references`.
+    References { include_declaration: bool },
+    /// `highlights`.
+    Highlight,
+    /// `signature_help`.
+    SignatureHelp,
+    /// `inlay_hints`, from the position to `end`.
+    InlayHints { end: Position },
+}
+
+/// The answer to a `Question`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Reply {
+    Type(TypeAt),
+    Members(MembersAt),
+    Place(Place),
+    Places(Vec<Place>),
+    Highlights(Vec<Highlight>),
+    Signature(Signature),
+    Hints(Vec<Hint>),
+}
+
+/// Answers questions about positions in the request's file (whose own
+/// `position` is ignored), in order. Questions about the file as it is
+/// share one check, and references another of the whole project.
+/// Completion and signature help each check a copy of their own, edited at
+/// their position.
+pub fn ask(
+    session: &Session,
+    request: &Request,
+    questions: &[(Question, Position)],
+) -> Vec<Answer<Reply>> {
+    let mut answers: Vec<Option<Answer<Reply>>> = vec![None; questions.len()];
+
+    for project in [false, true] {
+        let group: Vec<usize> = (0..questions.len())
+            .filter(|i| {
+                let q = questions[*i].0;
+
+                !edits_text(q) && matches!(q, Question::References { .. }) == project
+            })
+            .collect();
+
+        if group.is_empty() {
+            continue;
+        }
+
+        let items: Vec<(Question, Position)> = group.iter().map(|i| questions[*i]).collect();
+
+        for (i, answer) in group
+            .iter()
+            .zip(pipeline(session, request, project, &items))
+        {
+            answers[*i] = Some(answer);
+        }
+    }
+
+    for (i, (question, position)) in questions.iter().enumerate() {
+        if edits_text(*question) {
+            answers[i] = Some(edited_question(session, request, *question, *position));
+        }
+    }
+
+    answers
+        .into_iter()
+        .zip(questions)
+        .map(|(answer, (question, position))| {
+            let answer = answer.unwrap();
+
+            match question {
+                // Hints are computed for the whole file.
+                Question::InlayHints { end } => answer.map(|reply| match reply {
+                    Reply::Hints(mut hints) => {
+                        hints.retain(|h| *position <= h.position && h.position <= *end);
+                        Some(Reply::Hints(hints))
+                    }
+                    other => Some(other),
+                }),
+                _ => answer,
+            }
+        })
+        .collect()
+}
+
+/// Whether a question checks a copy of the file edited at its position.
+fn edits_text(question: Question) -> bool {
+    matches!(question, Question::Complete | Question::SignatureHelp)
+}
+
+/// Asks one question at the request's position.
+fn ask_one(session: &Session, request: &Request, question: Question) -> Answer<Reply> {
+    ask(session, request, &[(question, request.position)])
+        .pop()
+        .unwrap()
 }
 
 /// The type of the expression at a position.
 pub fn type_at(session: &Session, request: &Request) -> Answer<TypeAt> {
-    answer(session, request, false, |scope| {
-        let Some(expr) = select(&scope.walker.out, scope.at) else {
-            return Ok(None);
-        };
-
-        Ok(Some(TypeAt {
-            typ: typed(expr)?.to_string(),
-            range: range(scope.lines, &expr.location),
-            kind: expr.kind.to_string(),
-        }))
+    ask_one(session, request, Question::Type).map(|r| match r {
+        Reply::Type(t) => Some(t),
+        _ => None,
     })
+}
+
+fn type_at_in(scope: &Scope) -> Result<Option<TypeAt>, Unavailable> {
+    let Some(expr) = select(&scope.walker.out, scope.at) else {
+        return Ok(None);
+    };
+
+    Ok(Some(TypeAt {
+        typ: typed(expr)?.to_string(),
+        range: range(scope.lines, &expr.location),
+        kind: expr.kind.to_string(),
+    }))
 }
 
 /// The members available on the receiver of the call whose name is at a
 /// position, e.g. at `foo` in `value.foo`.
 pub fn members_at(session: &Session, request: &Request) -> Answer<MembersAt> {
-    answer(session, request, false, |scope| {
+    ask_one(session, request, Question::Members).map(|r| match r {
+        Reply::Members(m) => Some(m),
+        _ => None,
+    })
+}
+
+fn members_in(scope: &Scope) -> Result<Option<MembersAt>, Unavailable> {
+    {
         let (db, module, walker, lines, at) =
             (scope.db, scope.module, scope.walker, scope.lines, scope.at);
         let Some(call) = walker
@@ -189,7 +333,7 @@ pub fn members_at(session: &Session, request: &Request) -> Answer<MembersAt> {
             receiver_range: range(lines, &receiver.location),
             members,
         }))
-    })
+    }
 }
 
 /// Where the symbol at a position is declared: a method (for a call, the
@@ -197,7 +341,14 @@ pub fn members_at(session: &Session, request: &Request) -> Answer<MembersAt> {
 /// constant, constructor or module. On a declaration's own name, that
 /// declaration.
 pub fn definition(session: &Session, request: &Request) -> Answer<Place> {
-    answer(session, request, false, |scope| {
+    ask_one(session, request, Question::Definition).map(|r| match r {
+        Reply::Place(p) => Some(p),
+        _ => None,
+    })
+}
+
+fn definition_in(scope: &Scope) -> Result<Option<Place>, Unavailable> {
+    {
         let Some(reference) = symbol_at(
             &scope.walker.references,
             &scope.walker.declarations,
@@ -210,7 +361,7 @@ pub fn definition(session: &Session, request: &Request) -> Answer<Place> {
         Ok(index
             .declaration(reference.symbol)
             .map(|(file, location)| scope.place(&file, location)))
-    })
+    }
 }
 
 /// Where the type of the expression at a position is declared, without
@@ -218,7 +369,14 @@ pub fn definition(session: &Session, request: &Request) -> Answer<Place> {
 /// type name (such as in a signature), that type. `None` for types without
 /// a declaration: closures, C types and `Never`.
 pub fn type_definition(session: &Session, request: &Request) -> Answer<Place> {
-    answer(session, request, false, |scope| {
+    ask_one(session, request, Question::TypeDefinition).map(|r| match r {
+        Reply::Place(p) => Some(p),
+        _ => None,
+    })
+}
+
+fn type_definition_in(scope: &Scope) -> Result<Option<Place>, Unavailable> {
+    {
         let db = scope.db;
         let symbol = match select(&scope.walker.out, scope.at) {
             Some(expr) => {
@@ -249,7 +407,7 @@ pub fn type_definition(session: &Session, request: &Request) -> Answer<Place> {
         Ok(index
             .declaration(symbol)
             .map(|(file, location)| scope.place(&file, location)))
-    })
+    }
 }
 
 /// Every reference to the symbol at a position in the project's own
@@ -264,7 +422,24 @@ pub fn references(
     request: &Request,
     include_declaration: bool,
 ) -> Answer<Vec<Place>> {
-    answer(session, request, true, |scope| {
+    ask_one(
+        session,
+        request,
+        Question::References {
+            include_declaration,
+        },
+    )
+    .map(|r| match r {
+        Reply::Places(p) => Some(p),
+        _ => None,
+    })
+}
+
+fn references_in(
+    scope: &Scope,
+    include_declaration: bool,
+) -> Result<Option<Vec<Place>>, Unavailable> {
+    {
         let Some(reference) = symbol_at(
             &scope.walker.references,
             &scope.walker.declarations,
@@ -308,7 +483,7 @@ pub fn references(
                 .map(|(file, location)| scope.place(&file, location))
                 .collect(),
         ))
-    })
+    }
 }
 
 /// A diagnostic, as `inko check` reports it.
@@ -441,6 +616,8 @@ pub fn diagnostics(session: &Session, request: &Request) -> Answer<Diagnostics> 
     Answer {
         result,
         elapsed: start.elapsed(),
+        // Always from the documents as they are.
+        source: Source::Fresh,
     }
 }
 
@@ -468,7 +645,14 @@ pub struct Highlight {
 /// at a position, by the compiler's ids as for `references`, sorted by
 /// position.
 pub fn highlights(session: &Session, request: &Request) -> Answer<Vec<Highlight>> {
-    answer(session, request, false, |scope| {
+    ask_one(session, request, Question::Highlight).map(|r| match r {
+        Reply::Highlights(h) => Some(h),
+        _ => None,
+    })
+}
+
+fn highlights_in(scope: &Scope) -> Result<Option<Vec<Highlight>>, Unavailable> {
+    {
         let walker = scope.walker;
         let Some(reference) = symbol_at(&walker.references, &walker.declarations, scope.at) else {
             return Ok(None);
@@ -507,7 +691,7 @@ pub fn highlights(session: &Session, request: &Request) -> Answer<Vec<Highlight>
                 })
                 .collect(),
         ))
-    })
+    }
 }
 
 /// The name at a position that refers to or declares a symbol: the
@@ -609,26 +793,65 @@ pub const PLACEHOLDER: &str = "cuttlebone_completion_placeholder";
 /// gives `value.PLACEHOLDER` or `value.siPLACEHOLDER`, which parse as a call
 /// whose receiver keeps its type.
 pub fn complete(session: &Session, request: &Request) -> Answer<MembersAt> {
+    ask_one(session, request, Question::Complete).map(|r| match r {
+        Reply::Members(m) => Some(m),
+        _ => None,
+    })
+}
+
+/// Completion or signature help: a check of a copy of the file, edited at
+/// the position. Completion inserts `PLACEHOLDER`, and signature help a `)`
+/// if the file doesn't parse but does with it.
+fn edited_question(
+    session: &Session,
+    request: &Request,
+    question: Question,
+    position: Position,
+) -> Answer<Reply> {
     let start = Instant::now();
-    let prepared = edited(request, |text, offset| {
-        let mut copy = text.to_string();
+    let request = Request {
+        position,
+        ..request.clone()
+    };
+    let (prepared, inspect) = match question {
+        Question::Complete => (
+            edited(&request, |text, offset| {
+                let mut copy = text.to_string();
 
-        copy.insert_str(offset, PLACEHOLDER);
-        Some(copy)
-    });
+                copy.insert_str(offset, PLACEHOLDER);
+                Some(copy)
+            }),
+            Question::Members,
+        ),
+        _ => (
+            edited(&request, |text, offset| {
+                // Inserting a `)` into code that parses never makes it
+                // parse, so this only saves a parse.
+                if parses(text) {
+                    return None;
+                }
 
-    match prepared {
-        Ok(copy) => {
-            let mut answer = members_at(session, &copy);
+                let mut copy = text.to_string();
 
-            answer.elapsed = start.elapsed();
-            answer
-        }
+                copy.insert(offset, ')');
+                parses(&copy).then_some(copy)
+            }),
+            Question::SignatureHelp,
+        ),
+    };
+    let mut answer = match prepared {
+        Ok(copy) => pipeline(session, &copy, false, &[(inspect, position)])
+            .pop()
+            .unwrap(),
         Err(e) => Answer {
             result: Err(e),
-            elapsed: start.elapsed(),
+            elapsed: Duration::ZERO,
+            source: Source::Fresh,
         },
-    }
+    };
+
+    answer.elapsed = start.elapsed();
+    answer
 }
 
 /// A copy of a request whose file's text (from the request's contents, or
@@ -689,29 +912,10 @@ pub struct Signature {
 /// doesn't parse, so if it doesn't, this inserts a `)` at the position in a
 /// copy of the file, if that makes it parse.
 pub fn signature_help(session: &Session, request: &Request) -> Answer<Signature> {
-    let start = Instant::now();
-    let prepared = edited(request, |text, offset| {
-        // Inserting a `)` into code that parses never makes it parse, so
-        // this only saves a parse.
-        if parses(text) {
-            return None;
-        }
-
-        let mut copy = text.to_string();
-
-        copy.insert(offset, ')');
-        parses(&copy).then_some(copy)
-    });
-    let mut answer = match prepared {
-        Ok(copy) => answer(session, &copy, false, |scope| Ok(signature(scope))),
-        Err(e) => Answer {
-            result: Err(e),
-            elapsed: Duration::ZERO,
-        },
-    };
-
-    answer.elapsed = start.elapsed();
-    answer
+    ask_one(session, request, Question::SignatureHelp).map(|r| match r {
+        Reply::Signature(s) => Some(s),
+        _ => None,
+    })
 }
 
 /// Whether a module's source parses.
@@ -834,7 +1038,15 @@ pub struct Hint {
 ///   written with parentheses to a method that resolved, unless the
 ///   argument is a variable or field with the parameter's name
 pub fn inlay_hints(session: &Session, request: &Request, end: Position) -> Answer<Vec<Hint>> {
-    answer(session, request, false, |scope| {
+    ask_one(session, request, Question::InlayHints { end }).map(|r| match r {
+        Reply::Hints(h) => Some(h),
+        _ => None,
+    })
+}
+
+/// Every inlay hint in the file, sorted by position.
+fn hints_in(scope: &Scope) -> Result<Option<Vec<Hint>>, Unavailable> {
+    {
         let (db, walker, lines) = (scope.db, scope.walker, scope.lines);
         let mut hints = Vec::new();
 
@@ -888,10 +1100,9 @@ pub fn inlay_hints(session: &Session, request: &Request, end: Position) -> Answe
             }
         }
 
-        hints.retain(|h| request.position <= h.position && h.position <= end);
         hints.sort_by_key(|h| h.position);
         Ok(Some(hints))
-    })
+    }
 }
 
 /// The byte offset of a position, or `None` if its line is past the end of
@@ -1030,44 +1241,56 @@ impl Scope<'_> {
     }
 }
 
-type Inspect<'a, T> = dyn FnOnce(&Scope) -> Result<Option<T>, Unavailable> + Send + 'a;
-
-/// Type checks the request's file and passes its walked HIR to `inspect`.
-/// With `project` set, it checks the whole project the file is part of
-/// (unless the file is outside its `src/` and `test/`), not just the file
-/// and what it imports.
-fn answer<T: Send>(
+/// Type checks the request's file and answers each question from its
+/// walked HIR, in order. With `project` set, it checks the whole project
+/// the file is part of (unless the file is outside its `src/` and
+/// `test/`), not just the file and what it imports.
+fn pipeline(
     session: &Session,
     request: &Request,
     project: bool,
-    inspect: impl FnOnce(&Scope) -> Result<Option<T>, Unavailable> + Send,
-) -> Answer<T> {
+    questions: &[(Question, Position)],
+) -> Vec<Answer<Reply>> {
     let start = Instant::now();
-    let inspect: Box<Inspect<T>> = Box::new(inspect);
-    let result = prepare(session, request).and_then(|(mut target, text)| {
-        let file = target.file.clone().unwrap();
+    let results = match prepare(session, request) {
+        Ok((mut target, text)) => {
+            let file = target.file.clone().unwrap();
 
-        if project && in_sources(&target.root, &file) {
-            target.file = None;
-        }
+            if project && in_sources(&target.root, &file) {
+                target.file = None;
+            }
 
-        guarded(move || {
-            analyze(
-                &target,
-                &file,
-                &text,
-                request.position,
-                request.encoding,
-                inspect,
+            guarded(|| analyze(&target, &file, &text, request.encoding, questions)).unwrap_or_else(
+                |message| vec![Err(Unavailable::new("compilerPanic", message)); questions.len()],
             )
-        })
-        .unwrap_or_else(|message| Err(Unavailable::new("compilerPanic", message)))
-    });
+        }
+        Err(e) => vec![Err(e); questions.len()],
+    };
 
-    Answer {
-        result,
-        elapsed: start.elapsed(),
-    }
+    results
+        .into_iter()
+        .map(|result| Answer {
+            result,
+            elapsed: start.elapsed(),
+            source: Source::Fresh,
+        })
+        .collect()
+}
+
+/// Answers a question from a check.
+fn inspect(question: Question, scope: &Scope) -> Result<Option<Reply>, Unavailable> {
+    Ok(match question {
+        Question::Type => type_at_in(scope)?.map(Reply::Type),
+        Question::Members | Question::Complete => members_in(scope)?.map(Reply::Members),
+        Question::Definition => definition_in(scope)?.map(Reply::Place),
+        Question::TypeDefinition => type_definition_in(scope)?.map(Reply::Place),
+        Question::References {
+            include_declaration,
+        } => references_in(scope, include_declaration)?.map(Reply::Places),
+        Question::Highlight => highlights_in(scope)?.map(Reply::Highlights),
+        Question::SignatureHelp => signature(scope).map(Reply::Signature),
+        Question::InlayHints { .. } => hints_in(scope)?.map(Reply::Hints),
+    })
 }
 
 /// Works out what to check, and reads the file's text.
@@ -1117,57 +1340,78 @@ fn canonical(path: &Path) -> Result<PathBuf, Unavailable> {
         .map_err(|e| Unavailable::new("fileNotFound", format!("{}: {}", path.display(), e)))
 }
 
-fn analyze<T>(
+type Results = Vec<Result<Option<Reply>, Unavailable>>;
+
+fn analyze(
     target: &Target,
     file: &Path,
     text: &str,
-    position: Position,
     encoding: Encoding,
-    inspect: Box<Inspect<T>>,
-) -> Result<Option<T>, Unavailable> {
+    questions: &[(Question, Position)],
+) -> Results {
     let lines = Lines::with_encoding(text, encoding);
-    let at = lines
-        .to_hir(position)
-        .ok_or_else(|| invalid_position(position))?;
+    let ats: Vec<Result<HirPosition, Unavailable>> = questions
+        .iter()
+        .map(|(_, position)| {
+            lines
+                .to_hir(*position)
+                .ok_or_else(|| invalid_position(*position))
+        })
+        .collect();
+    let all = |reason: Unavailable| -> Results {
+        ats.iter()
+            .map(|at| Err(at.clone().err().unwrap_or_else(|| reason.clone())))
+            .collect()
+    };
 
     let run = run(target, false, false, |db, modules: &[hir::Module]| {
         if !expressions_pass_ran(modules) {
-            return Err(Unavailable::new(
+            return all(Unavailable::new(
                 "declarationErrors",
                 "an error in a declaration (e.g. an undefined type in a signature) \
                  stopped the type checker before it typed method bodies",
             ));
         }
 
-        let module = modules
-            .iter()
-            .find(|m| m.module_id.file(db) == file)
-            .ok_or_else(|| Unavailable::new("internal", "the file wasn't type checked"))?;
+        let Some(module) = modules.iter().find(|m| m.module_id.file(db) == file) else {
+            return all(Unavailable::new("internal", "the file wasn't type checked"));
+        };
         let mut walker = Walker::new(db, module.module_id);
 
         walker.module(module);
-        inspect(&Scope {
-            db,
-            modules,
-            file: file.to_path_buf(),
-            module: module.module_id,
-            walker: &walker,
-            lines: &lines,
-            at,
-            target,
-            encoding,
-            texts: RefCell::new(HashMap::new()),
-        })
-    })
-    .map_err(|e| Unavailable::new("compilerError", e))?;
+        questions
+            .iter()
+            .zip(&ats)
+            .map(|((question, _), at)| {
+                inspect(
+                    *question,
+                    &Scope {
+                        db,
+                        modules,
+                        file: file.to_path_buf(),
+                        module: module.module_id,
+                        walker: &walker,
+                        lines: &lines,
+                        at: at.clone()?,
+                        target,
+                        encoding,
+                        texts: RefCell::new(HashMap::new()),
+                    },
+                )
+            })
+            .collect()
+    });
 
-    run.inspected.unwrap_or_else(|| {
-        Err(Unavailable::new(
-            "noHir",
-            "the file or a module it imports couldn't be parsed or found, \
-             so nothing was type checked",
-        ))
-    })
+    match run {
+        Ok(run) => run.inspected.unwrap_or_else(|| {
+            all(Unavailable::new(
+                "noHir",
+                "the file or a module it imports couldn't be parsed or found, \
+                 so nothing was type checked",
+            ))
+        }),
+        Err(e) => all(Unavailable::new("compilerError", e)),
+    }
 }
 
 thread_local! {
