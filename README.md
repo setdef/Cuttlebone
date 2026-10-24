@@ -79,7 +79,8 @@ against. Without it, Cargo picks the newest versions Cargo.toml allows.
   (inserting a placeholder for completion), declarations and references,
   and catching compiler panics.
 - `src/position.rs`: converting between the compiler's positions (1-based,
-  grapheme clusters) and editors' (0-based, UTF-16 or UTF-8).
+  grapheme clusters, lines ending at `\n`) and editors' (0-based, UTF-16 or
+  UTF-8, lines ending at `\n`, `\r\n` or `\r`).
 - `src/check.rs`: running a check, or a full one for diagnostics, with no
   side effects.
 - `src/edits.rs`: which text of an older version of a file is still in

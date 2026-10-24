@@ -15,7 +15,7 @@
 //! "Diagnostics".
 use crate::check::{VERSION, upstream_version};
 use crate::edits::Snapshots;
-use crate::position::{Encoding, Position};
+use crate::position::{Encoding, Position, byte_offset};
 use crate::query::{
     self, Access, Answer, Diagnostics, HintKind, MemberKind, MembersAt, Place, Session, Source,
     TypeAt, Unavailable,
@@ -1401,7 +1401,7 @@ fn apply(
         return edit;
     };
     let offset = |p: lsp::Position| {
-        query::byte_offset(
+        byte_offset(
             text,
             Position {
                 line: p.line,

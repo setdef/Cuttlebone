@@ -400,6 +400,84 @@ fn a_session_opens_edits_hovers_completes_and_closes() {
     assert_eq!(hover_type(&response), "String");
 }
 
+/// LSP ends a line at a lone `\r` too, which the compiler doesn't (it's
+/// whitespace there): positions, edits and ranges after one count it.
+#[test]
+fn a_lone_carriage_return_ends_a_line() {
+    let root = crate::common::tmp().join("lone-cr");
+    let file = root.join("src/main.inko");
+    let text = "fn main {\r  let a = [1, 2]\r\n  let b = a.size\r  let c = nope\n}\n";
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(&file, text).unwrap();
+
+    for utf8 in [false, true] {
+        let encodings = if utf8 {
+            json!(["utf-8"])
+        } else {
+            json!(["utf-16"])
+        };
+        let mut client = Client::initialized_with(
+            Launch::default(),
+            &root,
+            json!({ "diagnosticsDebounceMs": 0 }),
+            json!({ "general": { "positionEncodings": encodings } }),
+        );
+
+        client.open(&file, text);
+
+        // `a`, on the line after `fn main {\r`, and its use after `\r\n`.
+        let (_, response) = client.hover(&file, 1, 6);
+
+        assert_eq!(hover_type(&response), "Array[Int]");
+        assert_eq!(
+            response["result"]["range"],
+            json!({ "start": { "line": 1, "character": 6 }, "end": { "line": 1, "character": 7 } })
+        );
+
+        let (_, response) = client.hover(&file, 2, 10);
+
+        assert_eq!(hover_type(&response), "Array[Int]");
+        assert_eq!(
+            response["result"]["range"]["start"],
+            json!({ "line": 2, "character": 10 })
+        );
+
+        // The error after the lone `\r` on `let b`'s line.
+        let published = client.wait_for(|n| {
+            n["method"] == "textDocument/publishDiagnostics"
+                && n["params"]["diagnostics"]
+                    .as_array()
+                    .is_some_and(|d| !d.is_empty())
+        });
+        let diagnostic = &published["params"]["diagnostics"][0];
+
+        assert_eq!(
+            diagnostic["range"],
+            json!({ "start": { "line": 3, "character": 10 }, "end": { "line": 3, "character": 14 } }),
+            "{}",
+            diagnostic
+        );
+
+        // An edit on the line after a lone `\r`: `nope` becomes `b`.
+        client.change(
+            &file,
+            2,
+            json!([{
+                "range": {
+                    "start": { "line": 3, "character": 10 },
+                    "end": { "line": 3, "character": 14 },
+                },
+                "text": "b",
+            }]),
+        );
+
+        let (_, response) = client.hover(&file, 3, 6);
+
+        assert_eq!(hover_type(&response), "Int");
+    }
+}
+
 #[test]
 fn a_full_document_change_replaces_the_text() {
     let (root, file, text) = members();

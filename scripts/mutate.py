@@ -92,7 +92,11 @@ M = [
  ("no capability for completion trigger", "src/lsp.rs", 'trigger_characters: Some(vec![".".to_string()]),', "trigger_characters: None,", "--test lsp initialize_advertises"),
  ("full sync advertised", "src/lsp.rs", "change: Some(lsp::TextDocumentSyncKind::INCREMENTAL),", "change: Some(lsp::TextDocumentSyncKind::FULL),", "--test lsp initialize_advertises"),
  ("no worker deadline", "src/worker.rs", "Err(RecvTimeoutError::Timeout) => std::process::exit(DEADLINE_STATUS),", "Err(RecvTimeoutError::Timeout) => return,", "--test lsp a_hung_worker"),
- ("byte_offset ignores CR", "src/query.rs", "    let line = line.strip_suffix('\\r').unwrap_or(line);\n", "", "--test complete byte_offsets"),
+ ("byte_offset ignores CR", "src/position.rs", "        .find(['\\n', '\\r'])", "        .find(['\\n'])", "--test complete byte_offsets"),
+ ("a lone CR doesn't end a line", "src/position.rs", "        b'\\r' if text.as_bytes().get(end + 1) == Some(&b'\\n') => Some(end + 2),\n        _ => Some(end + 1),", "        b'\\r' if text.as_bytes().get(end + 1) == Some(&b'\\n') => Some(end + 2),\n        b'\\r' => Some(line_end(text, end + 1) + 1),\n        _ => Some(end + 1),", "--test lsp a_lone_carriage"),
+ ("a CR LF is two line ends", "src/position.rs", "        b'\\r' if text.as_bytes().get(end + 1) == Some(&b'\\n') => Some(end + 2),\n", "", "--lib lone_carriage_returns"),
+ ("a position between CR and LF", "src/position.rs", "    if offset > 0 && bytes[offset - 1] == b'\\r' && bytes.get(offset) == Some(&b'\\n') {\n        offset -= 1;\n    }\n", "", "--lib lone_carriage_returns"),
+ ("compiler lines end at a lone CR", "src/position.rs", "                .chain(text.match_indices('\\n').map(|(i, _)| i + 1))", "                .chain(text.match_indices(['\\n', '\\r']).map(|(i, _)| i + 1))", "--test lsp a_lone_carriage"),
  # Definition, type definition and references (milestone 3).
  ("constructor calls aren't constructors", "src/walker.rs", "if id.kind(db) == MethodKind::Constructor", "if id.kind(db) == MethodKind::Constructor && false", "--test definition constructor"),
  ("inherited methods not followed to the trait", "src/walker.rs", "MethodSource::Inherited(_, original) => {\n                        SymbolId::Method(original).canonical(db)\n                    }", "MethodSource::Inherited(_, _original) => self,", "--test definition inherited"),

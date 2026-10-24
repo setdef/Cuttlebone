@@ -2,8 +2,9 @@
 //! the cursor, so a client sends its buffer as it is.
 
 use crate::common::{Project, position_of};
+use cuttlebone::position::byte_offset;
 use cuttlebone::position::{Encoding, Position};
-use cuttlebone::query::{self, PLACEHOLDER, byte_offset};
+use cuttlebone::query::{self, PLACEHOLDER};
 use std::collections::HashMap;
 
 const MAIN: &str = "src/main.inko";

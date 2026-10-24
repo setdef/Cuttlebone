@@ -18,7 +18,7 @@
 //! Every other unit means what it did in the check, so its answers hold.
 //! Comments and blank lines between items change nothing.
 use crate::edits::Change;
-use crate::position::{Encoding, Lines};
+use crate::position::Lines;
 use location::Location;
 use std::collections::HashSet;
 use std::ops::Range;
@@ -73,8 +73,7 @@ impl Outline {
             .parse()
             .ok()?;
         let mut outline = Builder {
-            lines: Lines::with_encoding(text, Encoding::Utf8),
-            starts: line_starts(text),
+            lines: Lines::new(text),
             items: Vec::new(),
         };
 
@@ -174,17 +173,12 @@ impl Outline {
 
 struct Builder<'a> {
     lines: Lines<'a>,
-    starts: Vec<usize>,
     items: Vec<Item>,
 }
 
 impl Builder<'_> {
     fn bytes(&self, l: &Location) -> Range<usize> {
-        let at = |line: u32, column: u32| {
-            let p = self.lines.from_hir(line, column);
-
-            self.starts.get(p.line as usize).copied().unwrap_or(0) + p.character as usize
-        };
+        let at = |line: u32, column: u32| self.lines.offset(line, column).unwrap_or(0);
 
         at(l.line_start, l.column_start)..at(l.line_end, l.column_end + 1)
     }
@@ -339,12 +333,6 @@ impl Builder<'_> {
             }
         }
     }
-}
-
-fn line_starts(text: &str) -> Vec<usize> {
-    std::iter::once(0)
-        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
-        .collect()
 }
 
 /// Keywords, which every unit mentions, and which name nothing.

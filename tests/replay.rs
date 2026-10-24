@@ -31,7 +31,7 @@
 
 use cuttlebone::dump::upstream_std;
 use cuttlebone::edits::{Changes, Snapshots};
-use cuttlebone::position::{Encoding, Position, position_at};
+use cuttlebone::position::{self, Encoding, Position, position_at};
 use cuttlebone::query::{self, Answer, Question, Reply, Request, Session, Source};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -586,7 +586,7 @@ fn line_end(text: &str, position: Position) -> Position {
 
 /// A position in one text as one in another, through `changes`.
 fn map_position(old: &str, new: &str, changes: &Changes, p: Position) -> Option<Position> {
-    let byte = query::byte_offset(old, p, ENCODING)?;
+    let byte = position::byte_offset(old, p, ENCODING)?;
     let mapped = changes.new_range(byte..byte)?;
 
     Some(position_at(new, mapped.start, ENCODING))
@@ -594,8 +594,8 @@ fn map_position(old: &str, new: &str, changes: &Changes, p: Position) -> Option<
 
 /// A range in one text as one in another.
 fn map_range(old: &str, new: &str, changes: &Changes, r: query::Range) -> Option<query::Range> {
-    let start = query::byte_offset(old, r.start, ENCODING)?;
-    let end = query::byte_offset(old, r.end, ENCODING)?;
+    let start = position::byte_offset(old, r.start, ENCODING)?;
+    let end = position::byte_offset(old, r.end, ENCODING)?;
     let mapped = changes.new_range(start..end)?;
 
     Some(query::Range {
@@ -626,8 +626,8 @@ impl Mapping {
         match self.files.get(file) {
             Some((_, last, changes)) => {
                 let (Some(start), Some(end)) = (
-                    query::byte_offset(last, r.start, ENCODING),
-                    query::byte_offset(last, r.end, ENCODING),
+                    position::byte_offset(last, r.start, ENCODING),
+                    position::byte_offset(last, r.end, ENCODING),
                 ) else {
                     return false;
                 };

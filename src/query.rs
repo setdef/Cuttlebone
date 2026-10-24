@@ -7,7 +7,9 @@
 //! a `Cache` kept from an earlier question about the same text.
 use crate::check::{Fingerprint, Target, diagnose, project_root, run};
 use crate::edits::{Changes, Fallback};
-use crate::position::{Encoding, HirPosition, Lines, Position, contains, position_at};
+use crate::position::{
+    Encoding, HirPosition, Lines, Position, byte_offset, contains, line_end, position_at,
+};
 use crate::units::{Effect, Outline, Unit, effect, names};
 use crate::walker::{
     ArgumentList, Expr, ListArgument, Reference, SymbolId, Walker, declarations,
@@ -1205,34 +1207,6 @@ fn hints_in(scope: &Scope) -> Result<Option<Vec<Hint>>, Unavailable> {
     }
 }
 
-/// The byte offset of a position, or `None` if its line is past the end of
-/// the text. A character past the end of its line is the end of the line,
-/// and one inside a character is the start of that character.
-pub fn byte_offset(text: &str, position: Position, encoding: Encoding) -> Option<usize> {
-    let mut start = 0;
-
-    for _ in 0..position.line {
-        start += text[start..].find('\n')? + 1;
-    }
-
-    let line = &text[start..];
-    let line = &line[..line.find('\n').unwrap_or(line.len())];
-    let line = line.strip_suffix('\r').unwrap_or(line);
-    let mut units = 0;
-
-    for (i, c) in line.char_indices() {
-        let width = encoding.len(c.encode_utf8(&mut [0; 4]));
-
-        if position.character < units + width {
-            return Some(start + i);
-        }
-
-        units += width;
-    }
-
-    Some(start + line.len())
-}
-
 fn invalid_position(position: Position) -> Unavailable {
     Unavailable::new(
         "invalidPosition",
@@ -2322,10 +2296,7 @@ impl<'a> Guard<'a> {
             }
         }
 
-        let lines = Lines::with_encoding(old, Encoding::Utf8);
-        let starts: Vec<usize> = std::iter::once(0)
-            .chain(old.match_indices('\n').map(|(i, _)| i + 1))
-            .collect();
+        let lines = Lines::new(old);
         // Completion's placeholder is never a method: the call it's in is
         // never typed, which isn't an error in the code.
         let placeholders: Vec<usize> = old.match_indices(PLACEHOLDER).map(|(i, _)| i).collect();
@@ -2334,11 +2305,7 @@ impl<'a> Guard<'a> {
             .iter()
             .filter_map(|e| {
                 let l = e.location;
-                let byte = |line: u32, column: u32| {
-                    let p = lines.from_hir(line, column);
-
-                    Some(starts.get(p.line as usize)? + p.character as usize)
-                };
+                let byte = |line: u32, column: u32| lines.offset(line, column);
 
                 Some((
                     byte(l.line_start, l.column_start)?,
@@ -2590,9 +2557,7 @@ impl<'a> Guard<'a> {
             let Some(from) = byte_offset(self.new, Position { line, character: 0 }, e) else {
                 return false;
             };
-            let to = self.new[from..]
-                .find('\n')
-                .map_or(self.new.len(), |i| from + i);
+            let to = line_end(self.new, from);
 
             (from..to)
                 .filter(|b| {

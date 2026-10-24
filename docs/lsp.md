@@ -150,9 +150,10 @@ document's text; without it, nothing changes.
   saved yet (an `untitled:` URI, or a path that doesn't exist) isn't type
   checked. A query on one answers `null` (reason `notAFile` or
   `fileNotFound`).
-- **Lines end at `\n` or `\r\n`.** A lone `\r` isn't a line break for
-  Cuttlebone or the compiler, though LSP counts it as one. Positions after a
-  lone `\r` are off, until a later version handles it.
+- **Lines end at `\n`, `\r\n` or a lone `\r`**, as LSP says, in every
+  position and range. The compiler counts only `\n` (a lone `\r` is
+  whitespace to it), and Cuttlebone converts between the two. No position
+  is between a `\r` and its `\n`: the end of a line is before both.
 
 ## `textDocument/hover`
 

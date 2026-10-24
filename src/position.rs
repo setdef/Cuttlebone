@@ -10,6 +10,12 @@
 //! an `Encoding` (UTF-16 or UTF-8, as LSP negotiates), and an end is
 //! exclusive.
 //!
+//! The two count lines differently. The lexer starts a line after each
+//! `\n` only (ast/src/lexer.rs:512-516): a lone `\r` is whitespace in the
+//! line. LSP ends a line at `\n`, `\r\n` or a lone `\r`. So conversions go
+//! through byte offsets: the compiler's line and column to a byte, and the
+//! byte to LSP's line and character, and back.
+//!
 //! The lexer segments each token on its own, and this module segments whole
 //! lines. They only disagree when a grapheme cluster would span two tokens,
 //! which needs a combining character or joiner right after a token boundary,
@@ -58,7 +64,9 @@ pub struct HirPosition {
 
 /// The lines of a source file, for converting positions.
 pub struct Lines<'a> {
-    lines: Vec<&'a str>,
+    text: &'a str,
+    /// Where each of the compiler's lines starts.
+    starts: Vec<usize>,
     encoding: Encoding,
 }
 
@@ -69,53 +77,72 @@ impl<'a> Lines<'a> {
     }
 
     pub fn with_encoding(text: &'a str, encoding: Encoding) -> Self {
-        // The lexer starts a new line after each \n (ast/src/lexer.rs:512-516).
         Lines {
-            lines: text.split('\n').collect(),
+            text,
+            starts: std::iter::once(0)
+                .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+                .collect(),
             encoding,
         }
+    }
+
+    /// The compiler's line `index` (0-based), without its `\n`.
+    fn line(&self, index: usize) -> Option<&'a str> {
+        let start = *self.starts.get(index)?;
+        let end = self
+            .starts
+            .get(index + 1)
+            .map_or(self.text.len(), |next| next - 1);
+
+        Some(&self.text[start..end])
     }
 
     /// The grapheme cluster that contains `position`. A position at or past
     /// the end of a line is the column after its last cluster. Returns
     /// `None` for a line past the end of the file.
     pub fn to_hir(&self, position: Position) -> Option<HirPosition> {
-        let line = self.lines.get(position.line as usize)?;
-        let mut units = 0;
+        let byte = byte_offset(self.text, position, self.encoding)?;
+        let index = self.starts.partition_point(|s| *s <= byte) - 1;
+        let mut at = self.starts[index];
         let mut column = 1;
 
-        for cluster in line.graphemes(true) {
-            let width = self.encoding.len(cluster);
-
-            if position.character < units + width {
+        for cluster in self.line(index).unwrap_or("").graphemes(true) {
+            if byte < at + cluster.len() {
                 break;
             }
 
-            units += width;
+            at += cluster.len();
             column += 1;
         }
 
         Some(HirPosition {
-            line: position.line + 1,
+            line: index as u32 + 1,
             column,
         })
     }
 
-    /// The offset where the cluster at a compiler column starts. A
-    /// column past the end of the line is clamped to the end.
-    pub fn from_hir(&self, line: u32, column: u32) -> Position {
-        let index = line.saturating_sub(1);
-        let text = self.lines.get(index as usize).copied().unwrap_or("");
-        let character = text
+    /// The byte offset where the cluster at a compiler line and column
+    /// starts. A column past the end of the line is clamped to the end.
+    /// `None` for a line past the end of the file.
+    pub fn offset(&self, line: u32, column: u32) -> Option<usize> {
+        let index = line.saturating_sub(1) as usize;
+        let width: usize = self
+            .line(index)?
             .graphemes(true)
             .take(column.saturating_sub(1) as usize)
-            .map(|c| self.encoding.len(c))
+            .map(str::len)
             .sum();
 
-        Position {
-            line: index,
-            character,
-        }
+        Some(self.starts[index] + width)
+    }
+
+    /// The position where the cluster at a compiler column starts. A
+    /// column past the end of the line is clamped to the end, and a line
+    /// past the end of the file to the end of the file.
+    pub fn from_hir(&self, line: u32, column: u32) -> Position {
+        let offset = self.offset(line, column).unwrap_or(self.text.len());
+
+        position_at(self.text, offset, self.encoding)
     }
 
     /// The text from a compiler position (line and column) up to another,
@@ -124,7 +151,7 @@ impl<'a> Lines<'a> {
         let mut out = String::new();
 
         for line in from.0..=to.0 {
-            let Some(text) = self.lines.get(line.saturating_sub(1) as usize) else {
+            let Some(text) = self.line(line.saturating_sub(1) as usize) else {
                 break;
             };
             let first = if line == from.0 { from.1 } else { 1 };
@@ -153,21 +180,77 @@ impl<'a> Lines<'a> {
 }
 
 /// The position of a byte offset in `text`: the start of the character
-/// it's in. An offset past the end is the end.
+/// it's in. An offset past the end is the end, and one between a `\r` and
+/// its `\n` is the end of that line.
 pub fn position_at(text: &str, offset: usize, encoding: Encoding) -> Position {
+    let bytes = text.as_bytes();
     let mut offset = offset.min(text.len());
 
     while !text.is_char_boundary(offset) {
         offset -= 1;
     }
 
-    let before = &text[..offset];
-    let start = before.rfind('\n').map_or(0, |i| i + 1);
+    if offset > 0 && bytes[offset - 1] == b'\r' && bytes.get(offset) == Some(&b'\n') {
+        offset -= 1;
+    }
+
+    let mut line = 0;
+    let mut start = 0;
+
+    while let Some(next) = next_line(text, start).filter(|n| *n <= offset) {
+        line += 1;
+        start = next;
+    }
 
     Position {
-        line: before.matches('\n').count() as u32,
-        character: encoding.len(&before[start..]),
+        line,
+        character: encoding.len(&text[start..offset]),
     }
+}
+
+/// Where the line after the one starting at `start` starts, if there's
+/// one: after the next `\n`, `\r\n` or lone `\r`, LSP's line ends.
+pub fn next_line(text: &str, start: usize) -> Option<usize> {
+    let end = line_end(text, start);
+
+    match text.as_bytes().get(end)? {
+        b'\r' if text.as_bytes().get(end + 1) == Some(&b'\n') => Some(end + 2),
+        _ => Some(end + 1),
+    }
+}
+
+/// Where the line starting at `start` ends: the offset of its line end,
+/// or of the end of the text.
+pub fn line_end(text: &str, start: usize) -> usize {
+    text[start..]
+        .find(['\n', '\r'])
+        .map_or(text.len(), |i| start + i)
+}
+
+/// The byte offset of an LSP position in `text`: the start of the
+/// character it's in. A character past the end of its line is the end of
+/// the line. `None` for a line past the end of the text.
+pub fn byte_offset(text: &str, position: Position, encoding: Encoding) -> Option<usize> {
+    let mut start = 0;
+
+    for _ in 0..position.line {
+        start = next_line(text, start)?;
+    }
+
+    let line = &text[start..line_end(text, start)];
+    let mut units = 0;
+
+    for (i, c) in line.char_indices() {
+        let width = encoding.len(c.encode_utf8(&mut [0; 4]));
+
+        if position.character < units + width {
+            return Some(start + i);
+        }
+
+        units += width;
+    }
+
+    Some(start + line.len())
 }
 
 /// Whether a location contains a position.
@@ -258,6 +341,50 @@ mod tests {
         assert_eq!(lines.to_hir(pos(0, 9)), Some(hir(1, 6)));
         assert_eq!(lines.to_hir(pos(0, 10)), Some(hir(1, 7)));
         assert_eq!(lines.from_hir(1, 7), pos(0, 10));
+    }
+
+    /// LSP ends lines at `\n`, `\r\n` and a lone `\r`; the compiler only
+    /// at `\n`, so a lone `\r` is a column of its line.
+    #[test]
+    fn lone_carriage_returns_end_lines_for_editors_only() {
+        let text = "ab\rcd\r\nef\ngh";
+        let lines = Lines::new(text);
+
+        // `c`: the compiler's line 1, column 4, after `a`, `b` and `\r`.
+        assert_eq!(lines.to_hir(pos(1, 0)), Some(hir(1, 4)));
+        assert_eq!(lines.from_hir(1, 4), pos(1, 0));
+        assert_eq!(lines.offset(1, 4), Some(3));
+        // `e`, after `\r\n`: line 2 for the compiler, 2 for editors.
+        assert_eq!(lines.to_hir(pos(2, 0)), Some(hir(2, 1)));
+        assert_eq!(lines.from_hir(2, 1), pos(2, 0));
+        // `g`.
+        assert_eq!(lines.to_hir(pos(3, 1)), Some(hir(3, 2)));
+        assert_eq!(lines.from_hir(3, 2), pos(3, 1));
+        assert_eq!(lines.to_hir(pos(4, 0)), None);
+        // The end of `cd`'s line is before its `\r\n`, and no position is
+        // between the two.
+        assert_eq!(lines.from_hir(1, 99), pos(1, 2));
+        assert_eq!(position_at(text, 6, Encoding::Utf16), pos(1, 2));
+        assert_eq!(lines.to_hir(pos(1, 99)), Some(hir(1, 6)));
+        assert_eq!(lines.to_hir(pos(0, 99)), Some(hir(1, 3)));
+
+        for (offset, position) in [
+            (0, pos(0, 0)),
+            (2, pos(0, 2)),
+            (3, pos(1, 0)),
+            (7, pos(2, 0)),
+            (10, pos(3, 0)),
+            (12, pos(3, 2)),
+        ] {
+            assert_eq!(position_at(text, offset, Encoding::Utf8), position);
+            assert_eq!(byte_offset(text, position, Encoding::Utf8), Some(offset));
+        }
+
+        assert_eq!(byte_offset(text, pos(1, 99), Encoding::Utf8), Some(5));
+        assert_eq!(byte_offset(text, pos(4, 0), Encoding::Utf8), None);
+        // A file ending in a line break has an empty last line.
+        assert_eq!(byte_offset("a\r", pos(1, 0), Encoding::Utf8), Some(2));
+        assert_eq!(position_at("a\r", 2, Encoding::Utf8), pos(1, 0));
     }
 
     #[test]
