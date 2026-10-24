@@ -143,7 +143,10 @@ also fast enough for the latency limits.
 
 `scripts/mutate.py` breaks behaviours and rules on purpose, one at a time,
 and checks that a test (or clippy, or a check script) fails for each,
-running several mutations' tests at once. `--since REV` runs only those a
+running several mutations' tests at once, in copies of the tree. Before
+any, it runs every test unmutated in such a copy, and stops if one fails
+there (`--control`): a test that fails anyway would count its mutations as
+caught. `--since REV` runs only those a
 change since REV could affect, and `scripts/check-selection.py` shows that
 this selection would have run every mutation guarding code the last three
 milestones changed.

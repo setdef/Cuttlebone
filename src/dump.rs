@@ -146,7 +146,12 @@ pub fn format_expr(expr: &Expr, root: &Path) -> String {
     )
 }
 
-/// The standard library of the pinned upstream release.
+/// The standard library of the pinned upstream release, as a canonical
+/// path: the compiler reads files by their canonical paths, so answers
+/// name them that way, even where `.upstream` is a link (as in the
+/// mutation runner's copies of the tree).
 pub fn upstream_std() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join(".upstream/inko/std/src")
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(".upstream/inko/std/src");
+
+    path.canonicalize().unwrap_or(path)
 }

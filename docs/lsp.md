@@ -487,9 +487,8 @@ parameter the argument at the position is for. `(` and `,` trigger it.
   - none past the last parameter: `null` for a client with
     `signatureInformation.noActiveParameterSupport` (LSP 3.18; the spec's
     text also calls it `signatureHelp.noActiveParameterSupport`, which
-    counts too). For others it's
-    left out, which the spec says means the first, since they have no way
-    to be told there's none.
+    counts too). For others it's left out, which the spec says means the
+    first, since they have no way to be told there's none.
 - **`activeParameter` on the signature** as well as on the result, for a
   client with `signatureInformation.activeParameterSupport`.
 - **While typing.** `counter.add(` and `counter.add(1, ` don't parse. If the
@@ -744,7 +743,9 @@ and codes they don't know.
 
 An inlay hint request asks about a range, and an answer from a repaired
 copy or the last good check may hold for only part of it. Its status says
-which parts, as `covered`, in the negotiated position encoding:
+which parts, as `covered`, in the negotiated position encoding. For a
+request from line 0 to line 99, with the method from line 29 to line 56
+being edited:
 
 ```json
 {"jsonrpc": "2.0", "method": "cuttlebone/status", "params": {

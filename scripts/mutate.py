@@ -12,7 +12,7 @@ for the tests in tests/FILE.rs, `--lib FILTER` for unit tests in src/, or
 `sh:COMMAND` for a command that must fail (for rules that clippy or a check
 script enforces).
 
-Usage: scripts/mutate.py [--since REV] [--jobs N | --serial] [--list] [WORD...]
+Usage: scripts/mutate.py [--since REV] [--jobs N | --serial] [--list] [--control] [WORD...]
 
   (no options)   every mutation: the exhaustive tier (AGENTS.md)
   --since REV    only the mutations a change since REV could affect: the
@@ -23,6 +23,8 @@ Usage: scripts/mutate.py [--since REV] [--jobs N | --serial] [--list] [WORD...]
   --trees N      how many mutations are built at once
   --serial       build and test each mutation in place, one at a time, as
                  the runner did before milestone 6
+  --control      only check that every test passes unmutated in a copy of
+                 the tree, which every run of mutations in copies does first
   WORD...        only the mutations whose names contain one of the words
 
 Mutations are built in several copies of the tree at once (`--trees N`,
@@ -152,6 +154,7 @@ M = [
  ("a binary named after Inko", "Cargo.toml", 'name = "dump-types"', 'name = "inko-dump-types"', "--test guardrails named_after"),
  ("an unjustified patch line", "patches/upstream.patch", "+    pub overlay: IndexMap<PathBuf, Vec<u8>>,\n", "+    pub overlay: IndexMap<PathBuf, Vec<u8>>,\n+    pub unjustified: bool,\n", "--test guardrails patches_readme"),
  ("a path from one machine", "AGENTS.md", "Never modify any checkout of Inko's own repository.", "Never modify ~/src/inko.", "--test guardrails paths"),
+ ("std's path not canonical in the tests", "src/dump.rs", "    path.canonicalize().unwrap_or(path)", "    path", "sh:scripts/mutate.py --control"),
  ("a version without a changelog entry", "CHANGELOG.md", "versions here were given afterwards.\n", "versions here were given afterwards.\n\n## 0.99.0\n\n[Report](docs/history/MILESTONE-99.md)\n", "--test guardrails the_version_has"),
  ("a changelog entry without its report", "CHANGELOG.md", "[Report](docs/history/MILESTONE-6.md)", "[Report](docs/history/MILESTONE-5.md)", "--test guardrails the_version_has"),
  ("docs show another version", "docs/lsp.md", "- `cuttlebone --version` prints `cuttlebone ", "- `cuttlebone --version` prints `cuttlebone 0.0.1` or `cuttlebone ", "--test guardrails docs_show"),
@@ -466,6 +469,35 @@ def make_tree(path):
         shutil.copytree(os.path.join(ROOT, "target", "debug"), os.path.join(path, "target", "debug"), symlinks=True)
 
 
+def control():
+    """Runs the tests, unmutated, as the runner runs a mutation's: built in
+    a copy of the tree, from copies of the build. Returns the tests that
+    fail, apart from those the runner runs in the tree itself. A test that
+    fails there without a mutation would count every mutation it's named
+    for as caught, proving nothing: before milestone 7, the tests that
+    compared paths in std did, since `.upstream` is a link in a copy."""
+    root = os.path.join(ROOT, "target", "mutate-control")
+    make_tree(root)
+    failed = []
+    try:
+        for cargo in (["--test", INTEGRATION], ["--lib"]):
+            exe, out = build(cargo, root)
+            if exe is None:
+                return ["%s doesn't build: %s" % (" ".join(cargo), out[-500:])]
+            names = [n for n in tests_in(exe, None, "", root) if n.split("::")[0] not in IN_PLACE]
+            work = os.path.join(root, "run")
+            os.makedirs(os.path.join(work, "tmp"), exist_ok=True)
+            copy = os.path.join(work, os.path.basename(exe))
+            shutil.copy2(exe, copy)
+            shutil.copy2(os.path.join(root, "target", "debug", "cuttlebone"), os.path.join(work, "cuttlebone"))
+            verdict = run_tests(copy, names, work, cwd=root)
+            if verdict != "NOT CAUGHT":
+                failed.append("%s: %s" % (" ".join(cargo), verdict))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    return failed
+
+
 def main(argv):
     cores = os.cpu_count() or 2
     since, jobs, trees, serial, listing, words = None, max(1, min(5, cores // 2)), max(1, min(3, cores // 3)), False, False, []
@@ -482,6 +514,11 @@ def main(argv):
             serial = True
         elif a == "--list":
             listing = True
+        elif a == "--control":
+            failed = control()
+            for f in failed:
+                print("fails without a mutation, in a copy of the tree: %s" % f, flush=True)
+            return 1 if failed else 0
         else:
             words.append(a)
     chosen = [(m, "all") for m in M]
@@ -544,6 +581,14 @@ def main(argv):
     else:
         work_root = os.path.join(ROOT, "target", "mutate")
         shutil.rmtree(work_root, ignore_errors=True)
+        if any(not m[4].startswith("sh:") and target(m[4])[1] not in IN_PLACE for m, _ in chosen):
+            failed = control()
+            if failed:
+                for f in failed:
+                    print("fails without a mutation, in a copy of the tree: %s" % f, flush=True)
+                print("so its mutations would prove nothing; fix it first")
+                return 1
+            print("control: every test passes unmutated in a copy of the tree (%.0fs)" % (time.time() - start), flush=True)
         # Run in the tree itself: commands that use its build or its
         # .upstream, which every copy links to.
         here = [m for m, _ in chosen if m[4].startswith("sh:") or target(m[4])[1] in IN_PLACE]

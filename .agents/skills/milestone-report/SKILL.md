@@ -19,7 +19,10 @@ description: Write a Cuttlebone milestone or session report in docs/history/. Us
      must agree)
    - the mutations, and that all were caught
    - decisions to revisit, and remaining unknowns
-3. Link the report from README.md's list of reports.
+3. Link the report from README.md's list of reports, and make CHANGELOG.md's
+   entry for this version (which the milestone's first commit added, with
+   the version bump; AGENTS.md, "Versions") say what the milestone changed
+   for clients. Its link to the report now resolves.
 4. Use repository-relative links and paths only.
 5. Say in the report which tiers passed, on which commit, and how long
    each took.
