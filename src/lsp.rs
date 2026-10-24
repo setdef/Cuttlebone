@@ -1175,6 +1175,8 @@ impl Server {
     }
 
     fn answer(&mut self, connection: &Connection, pending: Pending, outcome: Outcome) {
+        // What an answer for a range covers of it (docs/lsp.md, "Status").
+        let mut covered: Option<Vec<query::Range>> = None;
         let (result, status) = match outcome {
             Outcome::Type(answer) => {
                 let status = status_of(&answer);
@@ -1236,9 +1238,25 @@ impl Server {
             }
             Outcome::Hints(answer) => {
                 let status = status_of(&answer);
+
+                if let (Ok(answer), Query::InlayHints { end }) = (&answer.result, pending.query) {
+                    let asked = query::Range {
+                        start: pending.position,
+                        end,
+                    };
+
+                    covered = Some(
+                        answer
+                            .as_ref()
+                            .and_then(|h| h.covered.clone())
+                            .unwrap_or_else(|| vec![asked]),
+                    );
+                }
+
                 let result = match answer.result {
                     Ok(Some(hints)) => serde_json::to_value(
                         hints
+                            .hints
                             .into_iter()
                             .map(|h| lsp::InlayHint {
                                 position: lsp::Position {
@@ -1310,6 +1328,15 @@ impl Server {
 
             if let Err(reason) = state {
                 params["reason"] = json!({ "code": reason.code, "message": reason.message });
+            }
+
+            // Every answer for a range says what it covers: none of it,
+            // with no answer.
+            if let Query::InlayHints { .. } = pending.query {
+                let ranges: Vec<lsp::Range> =
+                    covered.unwrap_or_default().into_iter().map(range).collect();
+
+                params["covered"] = json!(ranges);
             }
 
             let _ = connection

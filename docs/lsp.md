@@ -562,8 +562,12 @@ with `paddingRight`:
 The result is `[]` when there are no hints in the range, and `null` with a
 [status](#status) reason when there's no answer, as for the other queries.
 Where code doesn't parse or a declaration has an error, the hints come from
-the last good check, in the parts that still hold
-([Answers in code being edited](#answers-in-code-being-edited)).
+a repaired copy or the last good check, in the parts that still hold
+([Answers in code being edited](#answers-in-code-being-edited)). Then the
+answer covers only part of the range, and the status's
+[`covered`](#what-an-answer-covers) says which: elsewhere, such as in the
+method being edited, a client can't take "no hints" to mean there are
+none.
 
 ## Diagnostics
 
@@ -727,6 +731,46 @@ than `fresh`, as having no usable answer. One that does may show a stale
 answer as it shows a fresh one, or mark it. Clients must also ignore fields
 and codes they don't know.
 
+### What an answer covers
+
+An inlay hint request asks about a range, and an answer from a repaired
+copy or the last good check may hold for only part of it. Its status says
+which parts, as `covered`, in the negotiated position encoding:
+
+```json
+{"jsonrpc": "2.0", "method": "cuttlebone/status", "params": {
+  "id": 9, "method": "textDocument/inlayHint",
+  "textDocument": {"uri": "file:///home/me/hello/src/main.inko"},
+  "status": "stale",
+  "covered": [
+    {"start": {"line": 0, "character": 0}, "end": {"line": 29, "character": 2}},
+    {"start": {"line": 56, "character": 1}, "end": {"line": 99, "character": 0}}
+  ],
+  "elapsedMs": 0.4
+}}
+```
+
+- **In a covered range**, the answer's hints are all there are: a position
+  there with no hint has none. Each range includes its end, as the
+  request's range does, and lies within the request's.
+- **Outside them**, the answer has no hints, and says nothing about
+  whether there are any. A client with guesses of its own can show those
+  there.
+- **Every inlay hint status has `covered`.** A `fresh` answer from the
+  documents as they are covers the whole request: `[request's range]`. An
+  answer with no result (`unavailable`) covers nothing: `[]`. A `repaired`
+  or `stale` answer covers what holds: positions in text unchanged since
+  the check, with the characters on either side, in a unit no change
+  since made mean something else (the same rule that decides which hints
+  are given).
+- **A client that ignores `covered`** sees what it did before: the hints
+  given, and nothing else.
+
+Other requests' answers are whole or none: hover, definition, type
+definition and signature help are about one position, and document
+highlights and references are given only when complete, so they don't
+have `covered`.
+
 `reason` has `code`, a stable identifier, and `message`, a description for
 people. `elapsedMs` is how long the answer took inside the worker: the
 check, or the lookup in a kept one, or 0 if it never reached the worker.
@@ -813,7 +857,9 @@ they are:
 - **Complete lists.** Document highlights are given only if the name isn't
   in changed text, or in a unit (or part of one) with no answers, where
   uses could be missing. Inlay hints are those in units that hold, and the
-  request is unavailable if none of its range is in one.
+  request is unavailable if none of its range is in one. The status says
+  which parts of the range the hints cover
+  ([What an answer covers](#what-an-answer-covers)).
 
 Everywhere else the answer is `null`, with the fresh check's reason.
 
@@ -985,7 +1031,7 @@ channels don't solve the problem:
 
 | Extension | What it's for | Why not the spec |
 |---|---|---|
-| [`cuttlebone/status`](#status), opted into with `statusNotifications` | Why a request has no answer, whether an answer is `stale` or `repaired`, `cached`, how long it took; why a diagnostics check didn't publish | **Reasons:** the spec's channel is an error response, `RequestFailed` (-32803) with `data`, which would tie the reason to its request. But clients show those errors to people, and "no answer here" is routine: the code doesn't parse while it's typed. VS Code's client (vscode-languageclient 11.0.0, `handleFailedRequest` in lib/common/client.js) treats every error other than `RequestCancelled`, `ServerCancelled` and `ContentModified` as a failure, and shows it in an error notification ("Request textDocument/hover failed.") with its default `revealOutputChannelOn` (`Error`). Neovim 0.12.6 shows an `ERROR` message for an error to `documentHighlight` (its default handler, runtime/lua/vim/lsp/handlers.lua) and `signatureHelp` (buf.lua), and a `WARN` for completion; only hover, inlay hints and definitions are logged quietly. A reason as an error would mean popups while typing, so the result is `null` and the reason goes here. **Staleness, coverage, cost:** results have no field for where an answer came from or what it covers. **Diagnostics:** `publishDiagnostics` has no way to say a check didn't finish. |
+| [`cuttlebone/status`](#status), opted into with `statusNotifications` | Why a request has no answer, whether an answer is `stale` or `repaired`, `cached`, how long it took, [what it covers](#what-an-answer-covers); why a diagnostics check didn't publish | **Reasons:** the spec's channel is an error response, `RequestFailed` (-32803) with `data`, which would tie the reason to its request. But clients show those errors to people, and "no answer here" is routine: the code doesn't parse while it's typed. VS Code's client (vscode-languageclient 11.0.0, `handleFailedRequest` in lib/common/client.js) treats every error other than `RequestCancelled`, `ServerCancelled` and `ContentModified` as a failure, and shows it in an error notification ("Request textDocument/hover failed.") with its default `revealOutputChannelOn` (`Error`). Neovim 0.12.6 shows an `ERROR` message for an error to `documentHighlight` (its default handler, runtime/lua/vim/lsp/handlers.lua) and `signatureHelp` (buf.lua), and a `WARN` for completion; only hover, inlay hints and definitions are logged quietly. A reason as an error would mean popups while typing, so the result is `null` and the reason goes here. **Staleness, cost:** results have no field for where an answer came from. **Coverage:** an `InlayHint[]` result has nowhere to say which parts of the range it covers. The spec's nearest mechanisms don't say it either: partial results (`partialResultToken` and `$/progress`) stream more of a result, which must still end up whole; `workspace/inlayHint/refresh` asks the client to request every hint again, without saying where an answer was missing; an error, or a per-hint `data`, can't mark a range with no hints in it. **Diagnostics:** `publishDiagnostics` has no way to say a check didn't finish. |
 | `experimental.cuttlebone` in the server's capabilities | Which Inko and standard library the session checks with, and whether status notifications and diagnostics are on | `experimental` is the spec's place for what isn't in it. `serverInfo` has only the server's name and version, and no capability says what a server checks against. |
 | `initializationOptions` (`inko`, `checkTimeoutMs`, `debounceMs`, `statusNotifications`, `diagnostics`, `diagnosticsDebounceMs`) | Settings | `initializationOptions` is the spec's field for them, and their names are the server's to define. `workspace/configuration` would only arrive after `initialize`, which needs `inko` to accept or refuse the session. |
 | `data` in `initialize`'s refusal: `code`, `cuttlebone`, `supported`, `installed`, beside `retry` | A stable code for why the session was refused, and the versions involved | The spec's `InitializeError` has only `retry`; `data` is where a response error carries more. `RequestFailed` is the spec's code for a request that failed, since `InitializeErrorCodes` has only the deprecated `unknownProtocolVersion`. |

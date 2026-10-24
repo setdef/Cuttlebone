@@ -251,7 +251,7 @@ pub enum Reply {
     Places(Vec<Place>),
     Highlights(Vec<Highlight>),
     Signature(Signature),
-    Hints(Vec<Hint>),
+    Hints(Hints),
 }
 
 /// Answers questions about positions in the request's file (whose own
@@ -331,7 +331,21 @@ pub fn ask_with(
                 // Hints are computed for the whole file.
                 Question::InlayHints { end } => answer.map(|reply| match reply {
                     Reply::Hints(mut hints) => {
-                        hints.retain(|h| *position <= h.position && h.position <= *end);
+                        let inside = |p: Position| *position <= p && p <= *end;
+
+                        hints.hints.retain(|h| inside(h.position));
+
+                        if let Some(covered) = &mut hints.covered {
+                            *covered = covered
+                                .iter()
+                                .filter(|r| r.start <= *end && *position <= r.end)
+                                .map(|r| Range {
+                                    start: r.start.max(*position),
+                                    end: r.end.min(*end),
+                                })
+                                .collect();
+                        }
+
                         Some(Reply::Hints(hints))
                     }
                     other => Some(other),
@@ -1129,6 +1143,18 @@ pub struct Hint {
     pub kind: HintKind,
 }
 
+/// Inlay hints, and the ranges of the request they cover.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hints {
+    pub hints: Vec<Hint>,
+    /// Where these are all the hints there are, each range including its
+    /// end, within the request's: `None` for all of it, as from a check of
+    /// the documents as they are. From another check, only the parts that
+    /// still hold (`Guard::coverage`): elsewhere there may be hints the
+    /// answer doesn't have, and it has none.
+    pub covered: Option<Vec<Range>>,
+}
+
 /// Inlay hints between the request's position and `end` (both included),
 /// sorted by position:
 ///
@@ -1139,7 +1165,7 @@ pub struct Hint {
 /// - the parameter's name before each positional argument of a call
 ///   written with parentheses to a method that resolved, unless the
 ///   argument is a variable or field with the parameter's name
-pub fn inlay_hints(session: &Session, request: &Request, end: Position) -> Answer<Vec<Hint>> {
+pub fn inlay_hints(session: &Session, request: &Request, end: Position) -> Answer<Hints> {
     ask_one(session, request, Question::InlayHints { end }).map(|r| match r {
         Reply::Hints(h) => Some(h),
         _ => None,
@@ -1452,7 +1478,12 @@ fn inspect(question: Question, scope: &Scope) -> Result<Option<Reply>, Unavailab
         } => references_in(scope, include_declaration)?.map(Reply::Places),
         Question::Highlight => highlights_in(scope)?.map(Reply::Highlights),
         Question::SignatureHelp => signature(scope).map(Reply::Signature),
-        Question::InlayHints { .. } => hints_in(scope)?.map(Reply::Hints),
+        Question::InlayHints { .. } => hints_in(scope)?.map(|hints| {
+            Reply::Hints(Hints {
+                hints,
+                covered: None,
+            })
+        }),
     })
 }
 
@@ -2549,9 +2580,10 @@ impl<'a> Guard<'a> {
         })
     }
 
-    /// The hints that hold, mapped, or `None` if no line from `start` to
-    /// `end` (in the documents as they are) is in a safe unit.
-    fn hints(&self, hints: Vec<Hint>, start: Position, end: Position) -> Option<Reply> {
+    /// The hints that hold, mapped, with the parts of `start` to `end` (in
+    /// the documents as they are) where they're all there are
+    /// (`coverage`), or `None` if no line of it is in a safe unit.
+    fn hints(&self, hints: Hints, start: Position, end: Position) -> Option<Reply> {
         let e = self.encoding;
         let covered = (start.line..=end.line).any(|line| {
             let Some(from) = byte_offset(self.new, Position { line, character: 0 }, e) else {
@@ -2568,12 +2600,15 @@ impl<'a> Guard<'a> {
                 .any(|b| self.safe(b))
         });
 
-        if !covered {
+        let coverage = self.coverage(start, end);
+
+        if !covered || coverage.is_empty() {
             return None;
         }
 
-        Some(Reply::Hints(
-            hints
+        Some(Reply::Hints(Hints {
+            hints: hints
+                .hints
                 .into_iter()
                 .filter_map(|h| {
                     let at = Range {
@@ -2591,7 +2626,47 @@ impl<'a> Guard<'a> {
                     })
                 })
                 .collect(),
-        ))
+            covered: Some(coverage),
+        }))
+    }
+
+    /// Where, from `start` to `end` in the documents as they are, a hint
+    /// from this check would be given if it had one: positions in text
+    /// that's unchanged, with the characters on either side, in a unit that
+    /// still means what it did. There, the hints given are all there are.
+    /// As ranges that include their ends.
+    fn coverage(&self, start: Position, end: Position) -> Vec<Range> {
+        let e = self.encoding;
+        let Some(from) = byte_offset(self.new, start, e) else {
+            return Vec::new();
+        };
+        let to = byte_offset(self.new, end, e)
+            .unwrap_or(self.new.len())
+            .max(from);
+        let covered = |b: usize| {
+            self.changes
+                .old_offset(b)
+                .is_some_and(|o| self.safe(o) && self.changes.new_range(o..o) == Some(b..b))
+        };
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut run: Option<(usize, usize)> = None;
+
+        for b in (from..=to).filter(|b| self.new.is_char_boundary(*b)) {
+            match (covered(b), &mut run) {
+                (true, Some((_, last))) => *last = b,
+                (true, None) => run = Some((b, b)),
+                (false, Some(_)) => runs.extend(run.take()),
+                (false, None) => {}
+            }
+        }
+
+        runs.extend(run);
+        runs.into_iter()
+            .map(|(a, b)| Range {
+                start: position_at(self.new, a, e),
+                end: position_at(self.new, b, e),
+            })
+            .collect()
     }
 }
 

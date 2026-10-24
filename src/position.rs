@@ -194,6 +194,18 @@ pub fn position_at(text: &str, offset: usize, encoding: Encoding) -> Position {
         offset -= 1;
     }
 
+    let before = &text[..offset];
+
+    // Most text has no `\r`, and then only `\n` ends lines.
+    if !before.as_bytes().contains(&b'\r') {
+        let start = before.rfind('\n').map_or(0, |i| i + 1);
+
+        return Position {
+            line: before.matches('\n').count() as u32,
+            character: encoding.len(&before[start..]),
+        };
+    }
+
     let mut line = 0;
     let mut start = 0;
 
@@ -222,9 +234,11 @@ pub fn next_line(text: &str, start: usize) -> Option<usize> {
 /// Where the line starting at `start` ends: the offset of its line end,
 /// or of the end of the text.
 pub fn line_end(text: &str, start: usize) -> usize {
-    text[start..]
-        .find(['\n', '\r'])
-        .map_or(text.len(), |i| start + i)
+    // Two searches for one byte each are much faster than one for either.
+    let rest = &text[start..];
+    let line = rest.find('\n').map_or(rest, |i| &rest[..i]);
+
+    start + line.find('\r').unwrap_or(line.len())
 }
 
 /// The byte offset of an LSP position in `text`: the start of the

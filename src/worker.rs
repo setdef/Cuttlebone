@@ -12,7 +12,7 @@
 use crate::edits::Fallback;
 use crate::position::Position;
 use crate::query::{
-    self, Answer, Cache, Diagnostics, Highlight, Hint, MembersAt, Place, Question, Reply, Request,
+    self, Answer, Cache, Diagnostics, Highlight, Hints, MembersAt, Place, Question, Reply, Request,
     Session, Signature, TypeAt, Unavailable,
 };
 use crossbeam_channel::{RecvTimeoutError, Sender};
@@ -105,7 +105,7 @@ pub enum Outcome {
     Places(Answer<Vec<Place>>),
     Highlights(Answer<Vec<Highlight>>),
     Signature(Answer<Signature>),
-    Hints(Answer<Vec<Hint>>),
+    Hints(Answer<Hints>),
     Diagnostics(Answer<Diagnostics>),
     /// The worker didn't produce an answer: it timed out, crashed or
     /// couldn't be started.

@@ -365,34 +365,105 @@ fn hints_in_the_method_being_edited_are_left_out() {
     let text = session.text.clone();
 
     session.client.open(&file, &text);
-    ask(
-        &mut session,
-        &text,
-        "textDocument/hover",
-        "numbers.size",
-        0,
-        json!({}),
-    );
 
-    // `main` has every hint.
-    let changes = insert_before(&session, "    match Option.Some", "    let broken = (\n");
+    let range = |start: (u32, u32), end: (u32, u32)| {
+        json!({
+            "start": { "line": start.0, "character": start.1 },
+            "end": { "line": end.0, "character": end.1 },
+        })
+    };
+    let whole = json!({ "range": range((0, 0), (99, 0)) });
 
-    session.client.change(&file, 2, changes);
-
+    // A fresh answer covers all of what was asked.
     let (hints, status) = ask(
         &mut session,
         &text,
         "textDocument/inlayHint",
         "type Counter",
         0,
-        json!({ "range": {
-            "start": { "line": 0, "character": 0 },
-            "end": { "line": 99, "character": 0 },
-        }}),
+        whole.clone(),
+    );
+
+    assert_eq!(status["status"], "fresh");
+    assert!(!hints.as_array().unwrap().is_empty());
+    assert_eq!(status["covered"], json!([range((0, 0), (99, 0))]));
+
+    // `main` has every hint.
+    let changes = insert_before(&session, "    match Option.Some", "    let broken = (\n");
+    let edited = text.replacen(
+        "    match Option.Some",
+        "    let broken = (\n    match Option.Some",
+        1,
+    );
+
+    session.client.change(&file, 2, changes);
+
+    let (hints, status) = ask(
+        &mut session,
+        &edited,
+        "textDocument/inlayHint",
+        "type Counter",
+        0,
+        whole,
     );
 
     assert_eq!(status["status"], "stale");
     assert_eq!(hints, json!([]));
+
+    // So the answer doesn't cover `main`: there, "no hints" isn't known.
+    // It covers the rest, from the start.
+    let covered: Vec<&Value> = status["covered"].as_array().unwrap().iter().collect();
+    let position = |needle: &str| {
+        let (line, character) = at(&edited, needle, 0, false);
+
+        (line as u64, character as u64)
+    };
+    let inside = |p: (u64, u64)| {
+        covered.iter().any(|r| {
+            let at = |v: &Value| {
+                (
+                    v["line"].as_u64().unwrap(),
+                    v["character"].as_u64().unwrap(),
+                )
+            };
+
+            at(&r["start"]) <= p && p <= at(&r["end"])
+        })
+    };
+
+    assert_eq!(covered[0]["start"], json!({ "line": 0, "character": 0 }));
+    assert!(inside(position("fn describe")));
+    assert!(inside(position("fn pair")));
+    assert!(!inside(position("let numbers")), "{:?}", covered);
+    assert!(!inside(position("let broken")), "{:?}", covered);
+
+    // Only what was asked.
+    let (_, status) = ask(
+        &mut session,
+        &edited,
+        "textDocument/inlayHint",
+        "type Counter",
+        0,
+        json!({ "range": range((2, 3), (5, 0)) }),
+    );
+
+    assert_eq!(status["status"], "stale");
+    assert_eq!(status["covered"], json!([range((2, 3), (5, 0))]));
+
+    // A range in `main` only has no answer, and covers nothing.
+    let (line, _) = at(&edited, "let numbers", 0, false);
+    let (hints, status) = ask(
+        &mut session,
+        &edited,
+        "textDocument/inlayHint",
+        "let numbers",
+        0,
+        json!({ "range": range((line, 0), (line + 1, 0)) }),
+    );
+
+    assert_eq!(status["status"], "unavailable");
+    assert_eq!(hints, Value::Null);
+    assert_eq!(status["covered"], json!([]));
 }
 
 #[test]

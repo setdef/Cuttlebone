@@ -388,6 +388,7 @@ const REQUESTS: &[&str] = &[
     "completion",
     "signatureHelp",
     "inlayHint",
+    "inlayHint, whole file",
     "documentHighlight",
 ];
 
@@ -419,6 +420,12 @@ struct Tally {
     wrong: Vec<String>,
     /// The first few fresh answers that differ at the end, to show.
     differs: Vec<String>,
+    /// Inlay hint answers that cover only part of what they were asked.
+    partial: usize,
+    /// Hints the final text has, in text that was there then, where those
+    /// answers say they don't cover: where milestone 5's answers looked
+    /// like "no hints here".
+    uncovered: usize,
 }
 
 impl Tally {
@@ -445,6 +452,8 @@ impl Tally {
 
         self.wrong.extend(other.wrong.iter().cloned());
         self.differs.extend(other.differs.iter().cloned());
+        self.partial += other.partial;
+        self.uncovered += other.uncovered;
     }
 
     fn get(&self, request: &str, verdict: Verdict) -> usize {
@@ -621,6 +630,23 @@ impl Mapping {
         }
     }
 
+    /// A range of the final text as one now, if it was there, unchanged.
+    fn backward(&self, file: &Path, r: query::Range) -> Option<query::Range> {
+        match self.files.get(file) {
+            Some((now, last, changes)) => {
+                let start = position::byte_offset(last, r.start, ENCODING)?;
+                let end = position::byte_offset(last, r.end, ENCODING)?;
+                let mapped = changes.old_range(start..end)?;
+
+                Some(query::Range {
+                    start: position_at(now, mapped.start, ENCODING),
+                    end: position_at(now, mapped.end, ENCODING),
+                })
+            }
+            None => Some(r),
+        }
+    }
+
     /// Whether a range of the final text was there, unchanged, now.
     fn existed(&self, file: &Path, r: query::Range) -> bool {
         match self.files.get(file) {
@@ -639,11 +665,24 @@ impl Mapping {
     }
 }
 
+/// Whether a position is in one of `covered`'s ranges, ends included.
+fn within(covered: &[query::Range], p: Position) -> bool {
+    covered.iter().any(|r| r.start <= p && p <= r.end)
+}
+
 /// A reply as something to compare: mid-edit (`now`) replies are mapped to
 /// the final text first. Items of a list in text that changed in between
 /// are left out on both sides: `now` drops what doesn't map forward, the
-/// final reply what didn't exist now.
-fn normalize(reply: &Option<Reply>, file: &Path, mapping: &Mapping, now: bool) -> String {
+/// final reply what didn't exist now. Hints are compared where the
+/// mid-edit answer says it covers (`covered`, ranges now), on both sides:
+/// there, it must have exactly the final text's.
+fn normalize(
+    reply: &Option<Reply>,
+    file: &Path,
+    mapping: &Mapping,
+    now: bool,
+    covered: Option<&[query::Range]>,
+) -> String {
     let range = |r: query::Range| -> String {
         if now {
             match mapping.forward(file, r) {
@@ -694,15 +733,20 @@ fn normalize(reply: &Option<Reply>, file: &Path, mapping: &Mapping, now: bool) -
             .join(", "),
         Some(Reply::Signature(s)) => format!("{} {:?} {:?}", s.label, s.parameters, s.active),
         Some(Reply::Hints(hs)) => hs
+            .hints
             .iter()
             .filter(|h| {
-                keep(
-                    file,
-                    query::Range {
-                        start: h.position,
-                        end: h.position,
-                    },
-                )
+                let at = query::Range {
+                    start: h.position,
+                    end: h.position,
+                };
+                let then = if now {
+                    Some(at)
+                } else {
+                    mapping.backward(file, at)
+                };
+
+                keep(file, at) && covered.is_none_or(|c| then.is_some_and(|r| within(c, r.start)))
             })
             .map(|h| {
                 let at = query::Range {
@@ -727,6 +771,11 @@ struct Asked {
     /// Which of `mappings` the answer's text maps to the end through.
     step: usize,
     answer: Answer<Reply>,
+    /// For inlay hints from another check, the parts of the request the
+    /// answer covers (its own `covered`), and the whole request.
+    covered: Option<(Vec<query::Range>, query::Range)>,
+    /// A hint given outside what the answer says it covers.
+    outside: bool,
     /// `answer`, normalized against the final text.
     normalized: String,
     context: String,
@@ -855,6 +904,17 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
             }
         }
 
+        // The whole file, as clients ask for hints.
+        questions.push((
+            Question::InlayHints {
+                end: position_at(&now, now.len(), ENCODING),
+            },
+            Position {
+                line: 0,
+                character: 0,
+            },
+        ));
+
         if step % EVERY == 0 {
             questions.extend(dots.iter().map(|b| (Question::Complete, at(*b))));
             questions.extend(calls.iter().map(|b| (Question::SignatureHelp, at(*b))));
@@ -864,7 +924,14 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
         let last = &finals[file];
 
         for ((question, p), answer) in questions.into_iter().zip(answers) {
+            let whole = matches!(question, Question::InlayHints { end } if end == position_at(&now, now.len(), ENCODING) && p == Position { line: 0, character: 0 });
             let final_question = match question {
+                Question::InlayHints { .. } if whole => (
+                    Question::InlayHints {
+                        end: position_at(last, last.len(), ENCODING),
+                    },
+                    p,
+                ),
                 Question::InlayHints { .. } => {
                     let Some(mapped) = map_position(&now, last, changes, p)
                         .or_else(|| first_unchanged_on_line(&now, last, changes, p))
@@ -886,12 +953,37 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
                 _ => (question, map_position(&now, last, changes, p).unwrap()),
             };
             let reply = answer.result.clone().unwrap_or(None);
+            let covered = match (&reply, question) {
+                (Some(Reply::Hints(h)), Question::InlayHints { end }) => h
+                    .covered
+                    .clone()
+                    .map(|c| (c, query::Range { start: p, end })),
+                _ => None,
+            };
+            let outside = match (&reply, &covered) {
+                (Some(Reply::Hints(h)), Some((c, _))) => {
+                    h.hints.iter().any(|h| !within(c, h.position))
+                }
+                _ => false,
+            };
 
             asked.push(Asked {
                 step: mappings.len(),
-                request: request_name(question),
+                request: if whole {
+                    "inlayHint, whole file"
+                } else {
+                    request_name(question)
+                },
                 question: final_question,
-                normalized: normalize(&reply, file, &mapping, true),
+                normalized: normalize(
+                    &reply,
+                    file,
+                    &mapping,
+                    true,
+                    covered.as_ref().map(|c| c.0.as_slice()),
+                ),
+                covered,
+                outside,
                 context: format!(
                     "{} after edit {} ({:?}), {:?} at {:?}: {:?}",
                     scenario.name, step, edit.text, question, p, answer.source
@@ -934,15 +1026,45 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
             a.context
         );
 
+        let covered = a.covered.as_ref().map(|c| c.0.as_slice());
+
+        // The final hints in text that was there, where the answer doesn't
+        // cover.
+        if let (Some((c, asked)), Ok(Some(Reply::Hints(h)))) = (&a.covered, &expected.result) {
+            if c.as_slice() != [*asked] {
+                tally.partial += 1;
+            }
+
+            tally.uncovered += h
+                .hints
+                .iter()
+                .filter_map(|h| {
+                    mappings[a.step].backward(
+                        file,
+                        query::Range {
+                            start: h.position,
+                            end: h.position,
+                        },
+                    )
+                })
+                .filter(|r| !within(c, r.start))
+                .count();
+        }
+
         let verdict = match &a.answer.result {
             Err(_) => Verdict::None,
             Ok(_) => {
                 let expected = match &expected.result {
-                    Ok(reply) => normalize(reply, file, &mappings[a.step], false),
+                    Ok(reply) => normalize(reply, file, &mappings[a.step], false, covered),
                     Err(e) => format!("unavailable: {}", e.code),
                 };
 
-                if expected == a.normalized {
+                if a.outside {
+                    tally
+                        .wrong
+                        .push(format!("{}\n  a hint outside what it covers", a.context));
+                    Verdict::Wrong(a.answer.source)
+                } else if expected == a.normalized {
                     Verdict::Right(a.answer.source)
                 } else {
                     let shown = format!(
@@ -1015,6 +1137,7 @@ const SAMPLE_COVERAGE: &[(&str, usize)] = &[
     ("completion", 19),
     ("signatureHelp", 35),
     ("inlayHint", 720),
+    ("inlayHint, whole file", 46),
     ("documentHighlight", 1212),
 ];
 const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
@@ -1024,6 +1147,7 @@ const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("completion", 19),
     ("signatureHelp", 29),
     ("inlayHint", 549),
+    ("inlayHint, whole file", 29),
     ("documentHighlight", 983),
 ];
 const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
@@ -1033,6 +1157,7 @@ const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("completion", 19),
     ("signatureHelp", 35),
     ("inlayHint", 705),
+    ("inlayHint, whole file", 46),
     ("documentHighlight", 1185),
 ];
 
@@ -1043,6 +1168,7 @@ const COVERAGE: &[(&str, usize)] = &[
     ("completion", 110),
     ("signatureHelp", 353),
     ("inlayHint", 6334),
+    ("inlayHint, whole file", 443),
     ("documentHighlight", 10019),
 ];
 
@@ -1055,6 +1181,7 @@ const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("completion", 104),
     ("signatureHelp", 258),
     ("inlayHint", 5061),
+    ("inlayHint, whole file", 303),
     ("documentHighlight", 8310),
 ];
 
@@ -1066,6 +1193,7 @@ const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("completion", 88),
     ("signatureHelp", 269),
     ("inlayHint", 5527),
+    ("inlayHint, whole file", 443),
     ("documentHighlight", 8584),
 ];
 
@@ -1142,7 +1270,13 @@ fn answers_mid_edit_agree_with_the_final_ones() {
     }
 
     for ((name, ..), total) in modes.iter().zip(&totals) {
-        eprintln!("\nAll scenarios{}\n\n{}", name, total.table());
+        eprintln!(
+            "\nAll scenarios{}\n\n{}\ninlay hint answers covering part of what they were asked: {}, hints of the final text, in text that was there, where they don't cover: {}",
+            name,
+            total.table(),
+            total.partial,
+            total.uncovered
+        );
     }
 
     for differs in &totals[0].differs {
