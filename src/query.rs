@@ -5,12 +5,12 @@
 //! Every answer is computed from a type check of the file and what it
 //! imports, with the documents' text exactly as it is: a new check, or one
 //! a `Cache` kept from an earlier question about the same text.
-use crate::check::{Fingerprint, Target, diagnose, project_root, run};
+use crate::check::{Fingerprint, Reported, Target, diagnose, project_root, run, run_after_errors};
 use crate::edits::{Changes, Fallback};
 use crate::position::{
     Encoding, HirPosition, Lines, Position, byte_offset, contains, line_end, position_at,
 };
-use crate::units::{Effect, Outline, Unit, effect, names};
+use crate::units::{Effect, ErrorEffect, Outline, Unit, effect, error_effect, names};
 use crate::walker::{
     ArgumentList, Expr, ListArgument, Reference, SymbolId, Walker, declarations,
     expressions_pass_ran, inferred, type_symbol,
@@ -185,6 +185,11 @@ pub enum Source {
     /// in text that hasn't changed since, in a unit nothing changed the
     /// meaning of (`units`).
     Stale,
+    /// A check of the documents as they are, which an error in a
+    /// declaration didn't stop from typing method bodies, at a position in
+    /// a unit the error can't change the meaning of (`units`). Shown as
+    /// `fresh`.
+    Guarded,
     /// A check of the documents as they are, but with the lines that keep
     /// them from parsing (or a changed declaration's) blank (`repaired_copy`), in
     /// a unit the blank lines don't change the meaning of. Shown as
@@ -198,7 +203,7 @@ pub enum Source {
 /// (docs/lsp.md, "Answers in code being edited").
 fn allows(question: Question, source: Source) -> bool {
     match source {
-        Source::Fresh => true,
+        Source::Fresh | Source::Guarded => true,
         // Only what's blank changed, but references must find every use.
         Source::Repaired => !matches!(question, Question::References { .. }),
         Source::Stale => matches!(
@@ -1326,18 +1331,11 @@ impl Scope<'_, '_> {
             };
         }
 
-        let mut texts = self.checked.texts.borrow_mut();
-        let text = texts.entry(file.to_path_buf()).or_insert_with(|| {
-            self.target
-                .overlay
-                .get(file)
-                .cloned()
-                .unwrap_or_else(|| std::fs::read_to_string(file).unwrap_or_default())
-        });
+        let text = self.checked.text(file);
 
         Place {
             file: file.to_path_buf(),
-            range: range(&Lines::with_encoding(text, self.encoding), &location),
+            range: range(&Lines::with_encoding(&text, self.encoding), &location),
         }
     }
 
@@ -1381,7 +1379,7 @@ fn pipeline(
     repair: bool,
 ) -> Vec<Answer<Reply>> {
     let start = Instant::now();
-    let (mut results, typed, kept) = match prepare(session, request) {
+    let (mut results, typed, guarded, kept) = match prepare(session, request) {
         Ok((mut target, text)) => {
             let file = target.file.clone().unwrap();
 
@@ -1393,15 +1391,21 @@ fn pipeline(
                 cache,
                 &target,
                 keep,
-                &file,
-                &text,
+                (&file, &text),
                 request.encoding,
                 questions,
+                older.map_or(Some(Vec::new()), |(now, f)| declaration_changes(now, f)),
             )
         }
-        Err(e) => (vec![Err(e); questions.len()], false, false),
+        Err(e) => (vec![Err(e); questions.len()], false, false, false),
     };
-    let mut sources = vec![Source::Fresh; questions.len()];
+    let mut sources: Vec<Source> = results
+        .iter()
+        .map(|r| match r {
+            Ok(_) if guarded => Source::Guarded,
+            _ => Source::Fresh,
+        })
+        .collect();
     // Whether the check each answer came from was kept from before.
     let mut cached = vec![kept; questions.len()];
     let wanted: Vec<usize> = (0..questions.len())
@@ -1536,17 +1540,19 @@ fn canonical(path: &Path) -> Result<PathBuf, Unavailable> {
 
 type Results = Vec<Result<Option<Reply>, Unavailable>>;
 
-/// The answers, whether the check typed method bodies, and whether it was
-/// kept from an earlier request (`Cache`).
+/// The answers, whether the check typed method bodies (with no error in a
+/// declaration), whether it had such an error, so that its answers are
+/// only those it can't affect (`Source::Guarded`), and whether it was kept
+/// from an earlier request (`Cache`).
 fn analyze(
     cache: &Cache,
     target: &Target,
     keep: bool,
-    file: &Path,
-    text: &str,
+    (file, text): (&Path, &str),
     encoding: Encoding,
     questions: &[(Question, Position)],
-) -> (Results, bool, bool) {
+    changed: Option<Vec<(PathBuf, Effect)>>,
+) -> (Results, bool, bool, bool) {
     let lines = Lines::with_encoding(text, encoding);
     let ats: Vec<Result<HirPosition, Unavailable>> = questions
         .iter()
@@ -1573,34 +1579,174 @@ fn analyze(
             return Err(Unavailable::new("internal", "the file wasn't type checked"));
         };
         let module = walker_module(checked, &file);
+        let scope = |at: HirPosition| Scope {
+            db: checked.db,
+            modules: checked.modules,
+            checked,
+            file: file.clone(),
+            module,
+            walker: &walker,
+            lines: &lines,
+            at,
+            target: checked.target,
+            encoding,
+        };
 
-        Ok(asked
-            .iter()
-            .zip(&positions)
-            .map(|((question, _), at)| {
-                inspect(
-                    *question,
-                    &Scope {
-                        db: checked.db,
-                        modules: checked.modules,
-                        checked,
-                        file: file.clone(),
-                        module,
-                        walker: &walker,
-                        lines: &lines,
-                        at: at.clone()?,
-                        target: checked.target,
-                        encoding,
-                    },
-                )
-            })
-            .collect::<Results>())
+        if !checked.guarded() {
+            return Ok((
+                asked
+                    .iter()
+                    .zip(&positions)
+                    .map(|((question, _), at)| inspect(*question, &scope(at.clone()?)))
+                    .collect::<Results>(),
+                false,
+            ));
+        }
+
+        // A declaration has an error: answer only where neither it nor
+        // what changed in declarations since the last good check (which
+        // may be why) can matter.
+        let mut errors = checked
+            .declaration_errors()
+            .ok_or_else(declaration_errors)?
+            .to_vec();
+
+        errors.extend(changed.ok_or_else(declaration_errors)?);
+
+        let errors = errors.as_slice();
+        let own = Version {
+            old: text.clone(),
+            new: text.clone(),
+            changes: Changes::none(text.len()),
+        };
+        let versions = HashMap::new();
+        let guard = Guard::new(&file, &own, &versions, &walker, encoding, false, errors)
+            .ok_or_else(declaration_errors)?;
+
+        Ok((
+            asked
+                .iter()
+                .zip(&positions)
+                .map(|((question, position), at)| {
+                    let scope = scope(at.clone()?);
+                    let offset = byte_offset(&text, *position, encoding)
+                        .ok_or_else(|| invalid_position(*position))?;
+                    let found = through(&guard, *question, *position, offset, &scope)
+                        .unwrap_or_else(|| Err(declaration_errors()))?;
+
+                    if matches!(question, Question::References { .. })
+                        && found.is_some()
+                        && hidden(&scope, errors)
+                    {
+                        return Err(declaration_errors());
+                    }
+
+                    Ok(found)
+                })
+                .collect::<Results>(),
+            true,
+        ))
     });
 
     match found.and_then(|r| r) {
-        Ok(results) => (results, true, kept),
-        Err(reason) => (all(reason), false, kept),
+        Ok((results, guarded)) => (results, !guarded, guarded, kept),
+        Err(reason) => (all(reason), false, false, kept),
     }
+}
+
+/// What the changes since the last good check (`fallback`, to `now`) do,
+/// as names (`Effect::affects`; a change in a method's body has none): what
+/// they changed is part of the documents as they are. `None` if a changed
+/// file's text then can't be read or doesn't parse, which can't happen
+/// for a check that typed method bodies.
+fn declaration_changes(now: &Request, fallback: &Fallback) -> Option<Vec<(PathBuf, Effect)>> {
+    let canonical_keys = |map: &HashMap<PathBuf, String>| -> HashMap<PathBuf, String> {
+        map.iter()
+            .filter_map(|(p, t)| Some((canonical(p).ok()?, t.clone())))
+            .collect()
+    };
+    let (old, new) = (
+        canonical_keys(&fallback.contents),
+        canonical_keys(&now.contents),
+    );
+    let mut out = Vec::new();
+
+    for (path, changes) in &fallback.changes {
+        let Ok(path) = canonical(path) else {
+            continue;
+        };
+        let text =
+            |map: &HashMap<PathBuf, String>| map.get(&path).cloned().or_else(|| read(&path).ok());
+        let (before, after) = (text(&old)?, text(&new)?);
+        let outline = Outline::parse(&before)?;
+
+        for change in changes.changed() {
+            // Its range is in the text then, not the text checked.
+            let e = Effect {
+                old: None,
+                ..effect(&outline, &before, &after, &change)
+            };
+
+            out.push((path.clone(), e));
+        }
+    }
+
+    Some(out)
+}
+
+/// Whether an error in a declaration could hide a reference to the symbol
+/// at the scope's position: whether a unit of the project's modules that
+/// isn't safe, because of the check's errors in declarations
+/// (`Guard::safe`), mentions its name. Such a unit may refer to it once
+/// the error is fixed, or does now through what the error left untyped.
+fn hidden(scope: &Scope, errors: &[(PathBuf, Effect)]) -> bool {
+    let Some(reference) = symbol_at(
+        &scope.walker.references,
+        &scope.walker.declarations,
+        scope.at,
+    ) else {
+        return true;
+    };
+    let text = scope.checked.text(&scope.file);
+    let lines = Lines::new(&text);
+    let l = &reference.location;
+    let (Some(start), Some(end)) = (
+        lines.offset(l.line_start, l.column_start),
+        lines.offset(l.line_end, l.column_end + 1),
+    ) else {
+        return true;
+    };
+    let name = text[start..end].to_string();
+
+    scope.modules.iter().any(|module| {
+        let file = module.module_id.file(scope.db);
+
+        if file != scope.file && !scope.in_project(&file) {
+            return false;
+        }
+
+        let Some(walker) = scope.checked.walker(&file) else {
+            return true;
+        };
+        let text = scope.checked.text(&file);
+        let own = Version {
+            old: text.clone(),
+            new: text.clone(),
+            changes: Changes::none(text.len()),
+        };
+        let versions = HashMap::new();
+
+        Guard::new(
+            &file,
+            &own,
+            &versions,
+            &walker,
+            scope.encoding,
+            false,
+            errors,
+        )
+        .is_none_or(|guard| guard.mentioned_unsafely(&name))
+    })
 }
 
 /// The module of a file the check walked.
@@ -1625,6 +1771,10 @@ pub struct Cache {
     capacity: usize,
     /// The least recently used first.
     kept: RefCell<Vec<Kept>>,
+    /// For testing only (`stopping_at_errors`): checks of files whose path
+    /// ends with this (and of whole projects) stop at the first pass with
+    /// an error, as they do after a panic in a later pass.
+    stopping: Option<String>,
 }
 
 struct Kept {
@@ -1651,7 +1801,18 @@ impl Cache {
         Cache {
             capacity,
             kept: RefCell::new(Vec::new()),
+            stopping: None,
         }
+    }
+
+    /// For testing only: the cache, with checks of files whose path ends
+    /// with `suffix` (and of whole projects) stopping at the first pass
+    /// that reports an error, as `inko check`'s do. That's what a check
+    /// does when a pass after an error panics (`start_check`), so the
+    /// answers a check that stops can't give can be tested.
+    pub fn stopping_at_errors(mut self, suffix: String) -> Cache {
+        self.stopping = Some(suffix);
+        self
     }
 
     /// How many checks it holds.
@@ -1692,7 +1853,13 @@ impl Cache {
             }
         }
 
-        let (state, fingerprint) = match start_check(target.clone()) {
+        let stop = self.stopping.as_ref().is_some_and(|suffix| {
+            target
+                .file
+                .as_ref()
+                .is_none_or(|f| f.to_string_lossy().ends_with(suffix.as_str()))
+        });
+        let (state, fingerprint) = match start_check(target.clone(), stop) {
             Ok(started) => started,
             Err(reason) => return (Err(reason), false),
         };
@@ -1724,6 +1891,7 @@ impl Cache {
 /// dropped.
 fn start_check(
     target: Target,
+    stop: bool,
 ) -> Result<(Result<Sender<Task>, Unavailable>, Fingerprint), Unavailable> {
     install_panic_hook();
 
@@ -1734,27 +1902,48 @@ fn start_check(
         .name("check".to_string())
         .stack_size(STACK_SIZE)
         .spawn(move || {
-            let checking = catch_unwind(AssertUnwindSafe(|| {
-                run(&target, false, false, |db, modules: &[hir::Module]| {
-                    let fingerprint = Fingerprint::take(
-                        &target,
-                        modules.iter().map(|m| m.module_id.file(db)),
-                        started,
-                    );
+            // Serves the questions sent to a check that typed method
+            // bodies, until the cache lets it go.
+            let serve = |db: &Database, modules: &[hir::Module], errors: &[Reported]| {
+                let fingerprint = Fingerprint::take(
+                    &target,
+                    modules.iter().map(|m| m.module_id.file(db)),
+                    started,
+                );
 
-                    if !expressions_pass_ran(modules) {
-                        let _ = ready.send(Ok((false, fingerprint)));
-                        return;
-                    }
+                if !expressions_pass_ran(modules) {
+                    let _ = ready.send(Ok((false, fingerprint)));
+                    return;
+                }
 
-                    let checked = Checked::new(db, modules, &target);
-                    let _ = ready.send(Ok((true, fingerprint)));
+                let checked = Checked::new(db, modules, &target, errors.to_vec());
+                let _ = ready.send(Ok((true, fingerprint)));
 
-                    while let Ok(task) = queue.recv() {
-                        task(&checked);
-                    }
-                })
-            }));
+                while let Ok(task) = queue.recv() {
+                    task(&checked);
+                }
+            };
+            // As `inko check` runs the passes: stopping at the first that
+            // reports an error. Its bodies are typed only if there's none.
+            let stopping = || {
+                catch_unwind(AssertUnwindSafe(|| {
+                    run(&target, false, false, |db, modules: &[hir::Module]| {
+                        serve(db, modules, &[])
+                    })
+                }))
+            };
+            let checking = if stop {
+                stopping()
+            } else {
+                // A pass after an error may panic on what the error left
+                // undefined, where the compiler would have stopped (see
+                // patches/README.md). Then it's checked again, stopping
+                // there.
+                match catch_unwind(AssertUnwindSafe(|| run_after_errors(&target, serve))) {
+                    Err(_) => stopping(),
+                    other => other,
+                }
+            };
             let failure = match checking {
                 Ok(Ok(run)) if run.inspected.is_some() => return,
                 Ok(Ok(_)) => Unavailable::new(
@@ -1823,10 +2012,19 @@ struct Checked<'db> {
     /// `Scope::place`: the check's own modules, so the fingerprint covers
     /// the ones read from disk.
     texts: RefCell<HashMap<PathBuf, String>>,
+    /// The errors the check reported.
+    errors: Vec<Reported>,
+    /// What its errors in declarations do (`declaration_errors`).
+    declarations: OnceCell<Option<Vec<(PathBuf, Effect)>>>,
 }
 
 impl<'db> Checked<'db> {
-    fn new(db: &'db Database, modules: &'db [hir::Module], target: &'db Target) -> Self {
+    fn new(
+        db: &'db Database,
+        modules: &'db [hir::Module],
+        target: &'db Target,
+        errors: Vec<Reported>,
+    ) -> Self {
         Checked {
             db,
             modules,
@@ -1839,7 +2037,66 @@ impl<'db> Checked<'db> {
             walkers: RefCell::new(HashMap::new()),
             index: OnceCell::new(),
             texts: RefCell::new(HashMap::new()),
+            errors,
+            declarations: OnceCell::new(),
         }
+    }
+
+    /// A checked file's text, as the check read it.
+    fn text(&self, file: &Path) -> String {
+        self.texts
+            .borrow_mut()
+            .entry(file.to_path_buf())
+            .or_insert_with(|| {
+                self.target
+                    .overlay
+                    .get(file)
+                    .cloned()
+                    .unwrap_or_else(|| std::fs::read_to_string(file).unwrap_or_default())
+            })
+            .clone()
+    }
+
+    /// What the check's errors in declarations do (`units::error_effect`),
+    /// by file: empty if it has none, and `None` if one can't be placed in
+    /// a declaration, which leaves nothing safe to answer.
+    fn declaration_errors(&self) -> Option<&[(PathBuf, Effect)]> {
+        self.declarations
+            .get_or_init(|| {
+                let mut outlines: HashMap<PathBuf, Option<(String, Outline)>> = HashMap::new();
+                let mut out = Vec::new();
+
+                for error in &self.errors {
+                    let entry = outlines.entry(error.file.clone()).or_insert_with(|| {
+                        let text = self.text(&error.file);
+
+                        Outline::parse(&text).map(|o| (text, o))
+                    });
+                    let (text, outline) = entry.as_ref()?;
+                    let lines = Lines::new(text);
+                    let l = &error.location;
+                    let start = lines.offset(l.line_start, l.column_start)?;
+                    let end = lines
+                        .offset(l.line_end, l.column_end + 1)
+                        .unwrap_or(text.len())
+                        .max(start);
+
+                    match error_effect(outline, text, start..end) {
+                        ErrorEffect::Body => {}
+                        ErrorEffect::Declaration(effect) => out.push((error.file.clone(), effect)),
+                        ErrorEffect::Unknown => return None,
+                    }
+                }
+
+                Some(out)
+            })
+            .as_deref()
+    }
+
+    /// Whether it has an error in a declaration, so that some of what it
+    /// typed may depend on a declaration that will be different.
+    fn guarded(&self) -> bool {
+        !self.declaration_errors().is_some_and(|e| e.is_empty())
     }
 
     /// The walked HIR of a checked file, walked the first time it's asked
@@ -2228,7 +2485,11 @@ fn from_older(
             new: new.clone(),
             changes: changes.clone(),
         };
-        let Some(guard) = Guard::new(&file, &own, &versions, &walker, encoding, repaired) else {
+        let Some(errors) = checked.declaration_errors() else {
+            return nothing();
+        };
+        let Some(guard) = Guard::new(&file, &own, &versions, &walker, encoding, repaired, errors)
+        else {
             return nothing();
         };
 
@@ -2238,41 +2499,55 @@ fn from_older(
             .map(|((question, position), old_position)| {
                 let old_position = (*old_position)?;
                 let at = lines.to_hir(old_position)?;
+                let scope = Scope {
+                    db: checked.db,
+                    modules: checked.modules,
+                    checked,
+                    file: file.clone(),
+                    module,
+                    walker: &walker,
+                    lines: &lines,
+                    at,
+                    target: checked.target,
+                    encoding,
+                };
 
-                if !matches!(question, Question::InlayHints { .. })
-                    && !guard.safe(byte_offset(&old, old_position, encoding)?)
-                {
-                    return None;
-                }
-
-                let reply = inspect(
+                through(
+                    &guard,
                     *question,
-                    &Scope {
-                        db: checked.db,
-                        modules: checked.modules,
-                        checked,
-                        file: file.clone(),
-                        module,
-                        walker: &walker,
-                        lines: &lines,
-                        at,
-                        target: checked.target,
-                        encoding,
-                    },
+                    *position,
+                    byte_offset(&old, old_position, encoding)?,
+                    &scope,
                 )
-                .ok()?;
-
-                match (question, reply) {
-                    (Question::InlayHints { end }, Some(Reply::Hints(hints))) => {
-                        guard.hints(hints, *position, *end).map(|h| Ok(Some(h)))
-                    }
-                    (_, reply) => guard.reply(reply).map(Ok),
-                }
             })
             .collect()
     });
 
     (found.unwrap_or_else(|_| vec![None; count]), kept)
+}
+
+/// Answers a question from a check through `guard`, at `offset` in the
+/// checked text (`position` in the documents as they are): `None` where
+/// the answer doesn't hold.
+fn through(
+    guard: &Guard,
+    question: Question,
+    position: Position,
+    offset: usize,
+    scope: &Scope,
+) -> Found {
+    if !matches!(question, Question::InlayHints { .. }) && !guard.safe(offset) {
+        return None;
+    }
+
+    let reply = inspect(question, scope).ok()?;
+
+    match (question, reply) {
+        (Question::InlayHints { end }, Some(Reply::Hints(hints))) => {
+            guard.hints(hints, position, end).map(|h| Ok(Some(h)))
+        }
+        (_, reply) => guard.reply(reply).map(Ok),
+    }
 }
 
 /// Decides which parts of an older check of a file still hold, and maps
@@ -2301,7 +2576,8 @@ struct Guard<'a> {
 
 impl<'a> Guard<'a> {
     /// `None` if a changed file's old text doesn't parse, which can't
-    /// happen for a check that typed method bodies.
+    /// happen for a check that typed method bodies. The check's errors in
+    /// declarations (`errors`) count as changes in those files.
     fn new(
         file: &'a Path,
         own: &'a Version,
@@ -2309,6 +2585,7 @@ impl<'a> Guard<'a> {
         walker: &'a Walker,
         encoding: Encoding,
         repaired: bool,
+        errors: &[(PathBuf, Effect)],
     ) -> Option<Guard<'a>> {
         let (old, new, changes) = (own.old.as_str(), own.new.as_str(), &own.changes);
         let outline = Outline::parse(old)?;
@@ -2325,6 +2602,14 @@ impl<'a> Guard<'a> {
 
                 all.push(effect(&other, &v.old, &v.new, &change));
             }
+        }
+
+        for (path, e) in errors {
+            if path == file {
+                effects.push(e.clone());
+            }
+
+            all.push(e.clone());
         }
 
         let lines = Lines::new(old);
@@ -2557,27 +2842,50 @@ impl<'a> Guard<'a> {
             return true;
         };
 
-        names(&self.old[start..end]).any(|name| {
+        let text = &self.old[start..end];
+
+        // An operator, such as `+`, is a name too, of a method.
+        if names(text).next().is_none() {
+            return !self.changes.is_none() || self.mentioned_unsafely(text);
+        }
+
+        names(text).any(|name| {
             let added = self
                 .effects
                 .iter()
                 .flat_map(|e| &e.added)
                 .any(|added| name.starts_with(added.as_str()));
-            let unsafe_use = (0..self.outline.items.len())
-                .map(Unit::Item)
-                .filter(|u| self.outline.unit_at_item(*u))
-                .any(|u| {
-                    let limit = self.limit(u);
 
-                    self.outline
-                        .own(u)
-                        .iter()
-                        .filter(|r| r.end > limit)
-                        .any(|r| names(&self.old[r.start.max(limit)..r.end]).any(|n| n == name))
-                });
-
-            added || unsafe_use
+            added || self.mentioned_unsafely(name)
         })
+    }
+
+    /// Whether a unit that isn't safe (`limit`) mentions `name` where it
+    /// isn't safe: the check may not have seen a use of it there. A name
+    /// that isn't an identifier (an operator) is looked for as text.
+    fn mentioned_unsafely(&self, name: &str) -> bool {
+        let operator = names(name).next().is_none();
+
+        (0..self.outline.items.len())
+            .map(Unit::Item)
+            .filter(|u| self.outline.unit_at_item(*u))
+            .any(|u| {
+                let limit = self.limit(u);
+
+                self.outline
+                    .own(u)
+                    .iter()
+                    .filter(|r| r.end > limit)
+                    .any(|r| {
+                        let text = &self.old[r.start.max(limit)..r.end];
+
+                        if operator {
+                            text.contains(name)
+                        } else {
+                            names(text).any(|n| n == name)
+                        }
+                    })
+            })
     }
 
     /// The hints that hold, mapped, with the parts of `start` to `end` (in

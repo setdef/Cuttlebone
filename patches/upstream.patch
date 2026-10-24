@@ -1,18 +1,18 @@
 diff --git a/compiler/src/compiler.rs b/compiler/src/compiler.rs
-index 42fad9f..946847c 100644
+index 42fad9f..1f6edea 100644
 --- a/compiler/src/compiler.rs
 +++ b/compiler/src/compiler.rs
 @@ -257,7 +257,17 @@ impl Compiler {
      /// doesn't modify anything on disk.
      pub fn check(&mut self, file: Option<PathBuf>) -> Result<(), CompileError> {
          self.prepare()?;
-+        self.check_with(file, |_, _| true)
++        self.check_with(file, |_, _, _| true)
 +    }
  
 +    /// Type checks like `check` but without `prepare` (which syncs `dep/`),
-+    /// and passes the typed HIR to `inspect` before MIR, even if type checking
-+    /// fails. Returning `false` from `inspect` skips lowering to MIR.
-+    pub fn check_with<F: FnOnce(&types::Database, &[hir::Module]) -> bool>(
++    /// and passes the typed HIR and diagnostics to `inspect` before MIR, even if
++    /// type checking fails. Returning `false` from `inspect` skips lowering to MIR.
++    pub fn check_with<F: FnOnce(&types::Database, &[hir::Module], &[&crate::diagnostics::Diagnostic]) -> bool>(
 +        &mut self,
 +        file: Option<PathBuf>,
 +        inspect: F,
@@ -27,7 +27,7 @@ index 42fad9f..946847c 100644
 +        let typed = self.check_types(&mut hir);
  
 -        self.check_types(&mut hir)?;
-+        if !inspect(&self.state.db, &hir) {
++        if !inspect(&self.state.db, &hir, &self.state.diagnostics.iter().collect::<Vec<_>>()) {
 +            return typed;
 +        }
 +
@@ -35,7 +35,62 @@ index 42fad9f..946847c 100644
  
          let res = self.compile_mir(hir).map(|_| ());
  
-@@ -797,6 +812,10 @@ LLVM module timings:
+@@ -579,31 +594,32 @@ LLVM module timings:
+     ) -> Result<(), CompileError> {
+         let state = &mut self.state;
+         let start = Instant::now();
+-        let res = DefineTypes::run_all(state, modules)
+-            && CollectExternImports::run_all(state, modules)
+-            && DefineModuleMethodNames::run_all(state, modules)
+-            && DefineImportedTypes::run_all(state, modules)
+-            && InsertPrelude::run_all(state, modules)
+-            && DefineTypeParameters::run_all(state, modules)
+-            && DefineTypeParameterRequirements::run_all(state, modules)
+-            && DefineTraitRequirements::run_all(state, modules)
+-            && CheckTraitRequirements::run_all(state, modules)
+-            && ImplementTraits::run_all(state, modules)
+-            && CheckTraitImplementations::run_all(state, modules)
+-            && CheckTypeParameters::run_all(state, modules)
+-            && DefineConstructors::run_all(state, modules)
+-            && DefineFields::run_all(state, modules)
+-            && check_recursive_types(state, modules)
+-            && DefineMethods::run_all(state, modules)
+-            && CheckMainMethod::run(state)
+-            && ImplementTraitMethods::run_all(state, modules)
+-            && define_constants(state, modules)
+-            && Expressions::run_all(state, modules)
+-            && check_unused_imports(state, modules);
++        let all = state.config.check_after_errors;
++        let res = (DefineTypes::run_all(state, modules) || all)
++            && (CollectExternImports::run_all(state, modules) || all)
++            && (DefineModuleMethodNames::run_all(state, modules) || all)
++            && (DefineImportedTypes::run_all(state, modules) || all)
++            && (InsertPrelude::run_all(state, modules) || all)
++            && (DefineTypeParameters::run_all(state, modules) || all)
++            && (DefineTypeParameterRequirements::run_all(state, modules) || all)
++            && (DefineTraitRequirements::run_all(state, modules) || all)
++            && (CheckTraitRequirements::run_all(state, modules) || all)
++            && (ImplementTraits::run_all(state, modules) || all)
++            && (CheckTraitImplementations::run_all(state, modules) || all)
++            && (CheckTypeParameters::run_all(state, modules) || all)
++            && (DefineConstructors::run_all(state, modules) || all)
++            && (DefineFields::run_all(state, modules) || all)
++            && (check_recursive_types(state, modules) || all)
++            && (DefineMethods::run_all(state, modules) || all)
++            && (CheckMainMethod::run(state) || all)
++            && (ImplementTraitMethods::run_all(state, modules) || all)
++            && (define_constants(state, modules) || all)
++            && (Expressions::run_all(state, modules) || all)
++            && (check_unused_imports(state, modules) || all);
+ 
+         self.timings.type_check = start.elapsed();
+ 
+-        if res { Ok(()) } else { Err(CompileError::Invalid) }
++        if res && !state.diagnostics.has_errors() { Ok(()) } else { Err(CompileError::Invalid) }
+     }
+ 
+     fn specialize_mir(&mut self, mir: &mut Mir) {
+@@ -797,6 +813,10 @@ LLVM module timings:
          sync_if_needed(&self.state.config.dependencies)?;
          Ok(())
      }
@@ -47,24 +102,28 @@ index 42fad9f..946847c 100644
  
  #[cfg(test)]
 diff --git a/compiler/src/config.rs b/compiler/src/config.rs
-index 0b0d735..7730a39 100644
+index 0b0d735..a984a43 100644
 --- a/compiler/src/config.rs
 +++ b/compiler/src/config.rs
-@@ -343,6 +343,9 @@ pub struct Config {
+@@ -343,6 +343,12 @@ pub struct Config {
  
      /// If code generation is enabled.
      pub generate_code: bool,
 +
 +    /// Source code to parse instead of these files' contents on disk.
 +    pub overlay: IndexMap<PathBuf, Vec<u8>>,
++
++    /// Run every type checking pass, even after one reports an error.
++    pub check_after_errors: bool,
  }
  
  impl Config {
-@@ -381,6 +384,7 @@ impl Config {
+@@ -381,6 +387,8 @@ impl Config {
              escape_stats: false,
              escapes: None,
              generate_code: true,
 +            overlay: IndexMap::new(),
++            check_after_errors: false,
          })
      }
  
@@ -1545,3 +1604,70 @@ index c190a9f..2ddc365 100644
              Ok(result) => result,
              Err(e) => {
                  self.state.diagnostics.error(
+diff --git a/compiler/src/type_check/define_types.rs b/compiler/src/type_check/define_types.rs
+index 93bc328..2f68cad 100644
+--- a/compiler/src/type_check/define_types.rs
++++ b/compiler/src/type_check/define_types.rs
+@@ -479,8 +479,11 @@ impl<'a> CheckTraitImplementations<'a> {
+     }
+ 
+     fn implement_trait(&mut self, node: &hir::ImplementTrait) {
+-        let type_ins = node.type_instance.unwrap();
+-        let trait_ins = node.trait_instance.unwrap();
++        let (Some(type_ins), Some(trait_ins)) =
++            (node.type_instance, node.trait_instance)
++        else {
++            return;
++        };
+         let mut checker = CheckTypeSignature::new(self.state, self.module);
+ 
+         checker.check_type_name(&node.trait_name);
+diff --git a/compiler/src/type_check/expressions.rs b/compiler/src/type_check/expressions.rs
+index 0bdece2..d0dc1a9 100644
+--- a/compiler/src/type_check/expressions.rs
++++ b/compiler/src/type_check/expressions.rs
+@@ -853,7 +853,7 @@ impl<'a> Expressions<'a> {
+     }
+ 
+     fn define_instance_method(&mut self, node: &mut hir::DefineInstanceMethod) {
+-        let method = node.method_id.unwrap();
++        let Some(method) = node.method_id else { return };
+         let bounds = method.bounds(self.db()).clone();
+         let stype = method.receiver_id(self.db());
+         let receiver = method.receiver(self.db());
+@@ -965,11 +965,11 @@ impl<'a> Expressions<'a> {
+ 
+         for req in nodes {
+             let mut conflicts_with = None;
+-            let req_id = req
+-                .resolved_type
+-                .as_trait_instance(self.db())
+-                .unwrap()
+-                .instance_of();
++            let Some(req_ins) = req.resolved_type.as_trait_instance(self.db())
++            else {
++                continue;
++            };
++            let req_id = req_ins.instance_of();
+             let methods = req_id
+                 .required_methods(self.db())
+                 .into_iter()
+diff --git a/compiler/src/type_check/methods.rs b/compiler/src/type_check/methods.rs
+index 63ba327..b4aa1be 100644
+--- a/compiler/src/type_check/methods.rs
++++ b/compiler/src/type_check/methods.rs
+@@ -1221,9 +1221,12 @@ impl<'a> ImplementTraitMethods<'a> {
+     }
+ 
+     fn implement_trait(&mut self, node: &mut hir::ImplementTrait) {
+-        let trait_ins = node.trait_instance.unwrap();
++        let (Some(trait_ins), Some(type_ins)) =
++            (node.trait_instance, node.type_instance)
++        else {
++            return;
++        };
+         let trait_id = trait_ins.instance_of();
+-        let type_ins = node.type_instance.unwrap();
+         let type_id = type_ins.instance_of();
+ 
+         for method in trait_id.default_methods(self.db()) {

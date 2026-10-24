@@ -3,7 +3,7 @@
 //! lines in the way are blank in a copy, which is checked instead, and
 //! answers hold wherever the blank lines can't change their meaning.
 
-use crate::common::client::at;
+use crate::common::client::{Launch, at};
 use crate::common::features::Session;
 use serde_json::{Value, json};
 
@@ -253,7 +253,16 @@ fn a_type_the_blank_lines_could_infer_isnt_answered() {
 
 #[test]
 fn a_changed_declaration_is_blank_in_the_copy() {
-    let mut session = Session::new(false);
+    // Checks that stop at the first pass with an error (a fault only test
+    // builds have), as after a panic in a later pass: the check of the
+    // documents as they are then types no method body.
+    let mut session = Session::launched(
+        false,
+        Launch {
+            env: vec![("CUTTLEBONE_FAULT", "stop:.inko".to_string())],
+            ..Launch::default()
+        },
+    );
     let file = session.file.clone();
     let text = session.text.clone();
 

@@ -121,10 +121,10 @@ pub struct Run<R> {
 }
 
 /// Refuses a project that requires a newer Inko than the one linked, as
-/// `Compiler::prepare` does (compiler/src/compiler.rs:795-810) for `inko
+/// `Compiler::prepare` does (compiler/src/compiler.rs:796-811) for `inko
 /// check`. `prepare` reads the manifests relative to the working directory
 /// (compiler/src/pkg/manifest.rs:11-34), and then syncs `dep/` if `inko.pkg`
-/// changed (compiler/src/compiler.rs:812), which can download packages, and
+/// changed (compiler/src/compiler.rs:813), which can download packages, and
 /// which first creates and locks the packages directory under the user's
 /// data directory even when nothing changed (compiler/src/pkg/sync.rs:22-31,
 /// compiler/src/pkg/util.rs:11-23). Queries mustn't have side effects, so
@@ -190,17 +190,52 @@ pub fn run<R>(
     print_diagnostics: bool,
     inspect: impl FnOnce(&Database, &[hir::Module]) -> R,
 ) -> Result<Run<R>, String> {
+    run_with(target, mir, print_diagnostics, false, |db, hir, _| {
+        inspect(db, hir)
+    })
+}
+
+/// `run`, without lowering to MIR, but with every type checking pass run
+/// even after an error: an error in a declaration no longer keeps method
+/// bodies from being typed (docs/lsp.md, "Errors in declarations").
+/// `inspect` also gets the errors reported, since some of the typed HIR
+/// may depend on a declaration that has one. Diagnostics then differ
+/// from `inko check`'s (more errors in bodies), so they come from
+/// `diagnose`, which runs the passes as `inko check` does.
+pub fn run_after_errors<R>(
+    target: &Target,
+    inspect: impl FnOnce(&Database, &[hir::Module], &[Reported]) -> R,
+) -> Result<Run<R>, String> {
+    run_with(target, false, false, true, inspect)
+}
+
+fn run_with<R>(
+    target: &Target,
+    mir: bool,
+    print_diagnostics: bool,
+    after_errors: bool,
+    inspect: impl FnOnce(&Database, &[hir::Module], &[Reported]) -> R,
+) -> Result<Run<R>, String> {
     check_required_version(target)?;
 
-    let mut compiler = Compiler::new(target.config()?);
+    let mut config = target.config()?;
+
+    config.check_after_errors = after_errors;
+
+    let mut compiler = Compiler::new(config);
     let start = Instant::now();
     let mut type_check = Duration::ZERO;
     let mut modules = 0;
     let mut inspected = None;
-    let res = compiler.check_with(target.file.clone(), |db, hir| {
+    let res = compiler.check_with(target.file.clone(), |db, hir, diagnostics| {
         type_check = start.elapsed();
         modules = hir.len();
-        inspected = Some(inspect(db, hir));
+        let errors: Vec<Reported> = diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| reported(d))
+            .collect();
+        inspected = Some(inspect(db, hir, &errors));
         mir
     });
     let total = start.elapsed();
@@ -237,6 +272,16 @@ pub struct Reported {
     pub location: Location,
 }
 
+fn reported(d: &compiler::diagnostics::Diagnostic) -> Reported {
+    Reported {
+        file: d.file().clone(),
+        error: d.is_error(),
+        id: d.id().to_string(),
+        message: d.message().to_string(),
+        location: *d.location(),
+    }
+}
+
 /// What a full check reported.
 pub struct Diagnosis {
     /// Errors and warnings, in the order the compiler reported them.
@@ -261,21 +306,12 @@ pub fn diagnose(
     // The compiler is only read after a panic, to collect what it reported
     // before it.
     let res = catch_unwind(AssertUnwindSafe(|| {
-        compiler.check_with(target.file.clone(), |db, hir| {
+        compiler.check_with(target.file.clone(), |db, hir, _| {
             inspect(db, hir);
             true
         })
     }));
-    let diagnostics = compiler
-        .diagnostics()
-        .map(|d| Reported {
-            file: d.file().clone(),
-            error: d.is_error(),
-            id: d.id().to_string(),
-            message: d.message().to_string(),
-            location: *d.location(),
-        })
-        .collect();
+    let diagnostics = compiler.diagnostics().map(reported).collect();
 
     match res {
         Ok(Err(CompileError::Internal(e))) => Err(e),

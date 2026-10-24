@@ -1373,7 +1373,7 @@ impl Server {
                 "textDocument": { "uri": pending.uri },
                 "status": match (&state, source) {
                     (Err(_), _) => "unavailable",
-                    (Ok(()), Source::Fresh | Source::Repaired) => "fresh",
+                    (Ok(()), Source::Fresh | Source::Guarded | Source::Repaired) => "fresh",
                     (Ok(()), Source::Stale) => "stale",
                 },
                 "elapsedMs": (elapsed.as_secs_f64() * 10000.0).round() / 10.0,

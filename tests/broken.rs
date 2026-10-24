@@ -5,6 +5,7 @@
 use crate::common::{PLACEHOLDER, Project};
 use cuttlebone::check::Target;
 use cuttlebone::dump::{Status, check, upstream_std};
+use cuttlebone::query::{self, Source};
 use cuttlebone::walker::Origin;
 
 const MAIN: &str = "src/main.inko";
@@ -82,13 +83,13 @@ fn an_unknown_method_in_a_body_only_loses_that_call() {
 }
 
 #[test]
-fn an_undefined_type_in_a_signature_leaves_no_body_typed() {
+fn an_undefined_type_in_a_signature_stops_inko_check_but_not_queries() {
     let text = broken("-> String {", "-> Strin {");
     let all = statuses(Some(&text));
 
-    // The pass chain stops before method bodies, so the only "types" left
-    // are the ones Cuttlebone would reconstruct itself, which is why
-    // queries refuse to answer in this state.
+    // As `inko check` runs them (and dump-types), the pass chain stops
+    // before method bodies, so the only "types" left are the ones
+    // Cuttlebone would reconstruct itself.
     assert!(
         all.iter()
             .filter(|(_, o, _)| *o == Origin::Stored)
@@ -99,9 +100,16 @@ fn an_undefined_type_in_a_signature_leaves_no_body_typed() {
             .any(|(_, o, typed)| *o != Origin::Stored && *typed)
     );
 
+    // Queries run every pass, and answer in what doesn't use `describe`.
     let p = Project::new("broken");
 
-    for needle in ["values.size", "break", "Stdout.new", "loop {"] {
+    for (needle, typ) in [("values.size", "ref Array[Int]"), ("loop {", "Nil")] {
+        let found = p.type_at(MAIN, Some(&text), needle, 0).unwrap().unwrap();
+
+        assert_eq!(found.typ, typ, "at {:?}", needle);
+    }
+
+    for needle in ["Stdout.new", "'count: "] {
         let err = p.type_at(MAIN, Some(&text), needle, 0).unwrap_err();
 
         assert_eq!(err.code, "declarationErrors", "at {:?}", needle);
@@ -152,4 +160,292 @@ fn the_completion_placeholder_only_loses_its_own_call() {
 
     assert_eq!(m.receiver, "ref Array[Int]");
     assert!(m.members.iter().any(|m| m.name == "size"));
+}
+
+/// A request at `needle` (plus `offset`) in navigation's `file`, with
+/// `broken`'s text changed from `from` to `to` (each file must contain it).
+fn navigation(
+    file: &str,
+    needle: &str,
+    offset: u32,
+    broken: &str,
+    from: &str,
+    to: &str,
+) -> (Project, cuttlebone::query::Request) {
+    let p = Project::new("navigation");
+    let text = p.read(broken);
+
+    assert!(text.contains(from), "{:?} isn't in {}", from, broken);
+
+    let mut request = p.request(file, None, needle, offset);
+
+    request
+        .contents
+        .insert(p.path(broken), text.replacen(from, to, 1));
+    (p, request)
+}
+
+#[test]
+fn a_declaration_error_in_an_import_leaves_out_only_what_uses_it() {
+    let broken = (
+        "src/alpha.inko",
+        "fn pub message -> String",
+        "fn pub message -> Strin",
+    );
+    let ask = |needle: &str, offset: u32| {
+        let (p, request) = navigation(MAIN, needle, offset, broken.0, broken.1, broken.2);
+
+        query::type_at(&p.session, &request)
+    };
+
+    // `moved` uses nothing of alpha's.
+    let answer = ask("@x + by", 0);
+
+    assert_eq!(answer.result.unwrap().unwrap().typ, "Int");
+    assert_eq!(answer.source, Source::Guarded);
+    // The check of the documents as they are isn't a good check for later
+    // answers in code being edited.
+    assert!(!answer.typed);
+
+    // `main` calls `message`, alpha.Error's method with the error.
+    let answer = ask("error.message", 0);
+
+    assert_eq!(answer.result.unwrap_err().code, "declarationErrors");
+}
+
+#[test]
+fn references_are_given_only_where_no_declaration_error_could_hide_one() {
+    let references = |file: &str, needle: &str, broken: (&str, &str, &str)| {
+        let (p, request) = navigation(file, needle, 0, broken.0, broken.1, broken.2);
+
+        query::references(&p.session, &request, true)
+    };
+    // An error in a module that imports the file: `total`'s return type.
+    let total = ("src/main.inko", "-> Float {", "-> Floa {");
+    let answer = references("src/geometry/shapes.inko", "radius * @radius", total);
+    let found = answer.result.unwrap().unwrap();
+
+    assert_eq!(found.len(), 4, "{:?}", found);
+    assert_eq!(answer.source, Source::Guarded);
+
+    // `total`, with the error, uses `area`, and `main`, which calls `total`,
+    // uses `ORIGIN`.
+    for needle in ["area -> Float\n}", "ORIGIN = 0"] {
+        let answer = references("src/geometry/shapes.inko", needle, total);
+
+        assert_eq!(
+            answer.result.unwrap_err().code,
+            "declarationErrors",
+            "at {:?}",
+            needle
+        );
+    }
+
+    // An error in a module that neither imports the file nor is imported.
+    let beta = (
+        "src/beta.inko",
+        "fn pub message -> String",
+        "fn pub message -> Strin",
+    );
+    let answer = references("src/qualified.inko", "origin -> Int", beta);
+
+    assert_eq!(answer.result.unwrap().unwrap().len(), 1);
+    // `main` (which uses `message`) refers to `ORIGIN` too.
+    let answer = references("src/qualified.inko", "ORIGIN\n", beta);
+
+    assert_eq!(answer.result.unwrap_err().code, "declarationErrors");
+}
+
+#[test]
+fn an_operator_used_where_a_declaration_error_matters_has_no_highlights() {
+    // `main` calls `describe`, whose return type has the error, and adds
+    // `Int`s with `+`.
+    let (p, request) = navigation(
+        MAIN,
+        "@x + by",
+        3,
+        MAIN,
+        "-> Int {\n  match",
+        "-> In {\n  match",
+    );
+    let answer = query::highlights(&p.session, &request);
+
+    assert_eq!(answer.result.unwrap_err().code, "declarationErrors");
+
+    // `moved`'s argument `by` is used only in `moved`, which is safe.
+    let (p, request) = navigation(
+        MAIN,
+        "by: Int) -> Point",
+        0,
+        MAIN,
+        "-> Int {\n  match",
+        "-> In {\n  match",
+    );
+    let found = query::highlights(&p.session, &request)
+        .result
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(found.len(), 2);
+}
+
+#[test]
+fn a_panic_in_a_pass_after_a_declaration_error_stops_where_inko_check_does() {
+    // The compiler requires std.option's `Option` (to insert the
+    // prelude), and panics in a later pass if it's renamed.
+    let std = upstream_std();
+    let file = std.join("std/option.inko");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let session = query::Session {
+        std: std.clone(),
+        projects: vec![std.parent().unwrap().to_path_buf()],
+    };
+    let edited = text.replacen(
+        "type pub inline enum Option[T]",
+        "type pub inline enum Optio[T]",
+        1,
+    );
+    let request = query::Request {
+        file: file.clone(),
+        position: crate::common::position_of(&edited, "case Some(T)", 5),
+        encoding: cuttlebone::position::Encoding::Utf16,
+        contents: [(file, edited)].into_iter().collect(),
+    };
+    let answer = query::type_at(&session, &request);
+
+    // Checked again, stopping at the error: no method body is typed, as
+    // before, so there's no answer, but not a panic.
+    assert_eq!(answer.result.unwrap_err().code, "declarationErrors");
+}
+
+#[test]
+fn every_pass_runs_after_each_kind_of_error_without_a_panic() {
+    // Between them, these produce every diagnostic `inko check` can
+    // (tests/diagnostics.rs), from each pass that reports any.
+    let fixtures = crate::common::fixture("diagnostics");
+    let mut checked = 0;
+
+    for entry in std::fs::read_dir(&fixtures).unwrap() {
+        let root = entry.unwrap().path();
+        let target = Target::new(&root, upstream_std()).unwrap();
+        let run = std::panic::catch_unwind(|| {
+            cuttlebone::check::run_after_errors(&target, |_, modules, errors| {
+                (
+                    cuttlebone::walker::expressions_pass_ran(modules),
+                    errors.len(),
+                )
+            })
+        })
+        .unwrap_or_else(|_| panic!("{} panicked", root.display()))
+        .unwrap();
+
+        // A project that doesn't parse has no HIR to type.
+        if let Some((typed, errors)) = run.inspected {
+            assert!(typed, "{}: no method body was typed", root.display());
+            // Running on after an error doesn't make the check succeed.
+            assert_eq!(run.ok, errors == 0, "{}", root.display());
+            checked += 1;
+        }
+    }
+
+    assert_eq!(checked, 11);
+}
+
+#[test]
+fn what_an_error_left_undefined_is_skipped_by_later_passes() {
+    let file = crate::common::fixture("broken").join(MAIN);
+    let text = std::fs::read_to_string(&file).unwrap();
+
+    // Each panicked in a pass after the error, before the patch skipped
+    // it (patches/README.md): an `impl` of an undefined trait (in two
+    // passes), a required trait that's undefined, and a method in an
+    // `impl` that its trait doesn't have.
+    for added in [
+        "impl Missing for Main {}\n",
+        "trait Shaped: Missing {}\n",
+        "trait Sized {}\n\nimpl Sized for Main {\n  fn extra {}\n}\n",
+    ] {
+        let mut target = Target::new(&file, upstream_std()).unwrap();
+
+        target
+            .overlay
+            .insert(file.clone(), format!("{}\n{}", text, added));
+
+        let run = std::panic::catch_unwind(|| {
+            cuttlebone::check::run_after_errors(&target, |_, modules, errors| {
+                (
+                    cuttlebone::walker::expressions_pass_ran(modules),
+                    errors.len(),
+                )
+            })
+        })
+        .unwrap_or_else(|_| panic!("panicked with {:?}", added))
+        .unwrap();
+
+        assert_eq!(run.inspected, Some((true, 1)), "with {:?}", added);
+    }
+}
+
+#[test]
+fn what_changed_in_declarations_since_the_last_good_check_counts_too() {
+    // A field's type changed since the last good check (no error there:
+    // the uses of the field have them), and then a declaration got an
+    // error, elsewhere.
+    let p = Project::new("navigation");
+    let old = p.read(MAIN);
+    let retyped = old.replacen("let pub @x: Int", "let pub @x: Float", 1);
+    let new = retyped.replacen("-> Int {\n  match", "-> In {\n  match", 1);
+    let mut changes = cuttlebone::edits::Changes::none(old.len());
+
+    changes.replace_text(&old, &retyped);
+    changes.replace_text(&retyped, &new);
+
+    let fallback = cuttlebone::edits::Fallback {
+        contents: [(p.path(MAIN), old.clone())].into_iter().collect(),
+        changes: [(p.path(MAIN), changes)].into_iter().collect(),
+    };
+    let request = p.request(MAIN, Some(&new), "Point(x: x", 0);
+    let ask = |fallback| {
+        query::ask_with(
+            &query::Cache::new(0),
+            &p.session,
+            &request,
+            fallback,
+            false,
+            &[(query::Question::Type, request.position)],
+        )
+        .pop()
+        .unwrap()
+    };
+
+    // `Point.new` mentions `x`, whose type isn't what it was, and may be
+    // again once the error is fixed.
+    assert_eq!(
+        ask(Some(&fallback)).result.unwrap_err().code,
+        "declarationErrors"
+    );
+
+    // Without the last good check, only the error says what may change.
+    let answer = ask(None);
+
+    assert_eq!(answer.source, Source::Guarded);
+    assert!(answer.result.unwrap().is_some());
+}
+
+#[test]
+fn an_error_in_a_body_changes_nothing_else_while_a_declaration_has_one() {
+    let p = Project::new("navigation");
+    let text = p
+        .read(MAIN)
+        .replacen("-> Int {\n  match", "-> In {\n  match", 1)
+        .replacen("@x + by", "@x + byy", 1);
+    let answer = query::type_at(&p.session, &p.request(MAIN, Some(&text), "Point(x: x", 0));
+
+    // `new` is `moved`'s neighbour in `Point`, and mentions `Point`.
+    assert_eq!(answer.source, Source::Guarded);
+    assert_eq!(answer.result.unwrap().unwrap().typ, "Point");
+    // `moved` itself has an expression the check couldn't type.
+    let answer = query::type_at(&p.session, &p.request(MAIN, Some(&text), "@x + byy", 0));
+
+    assert_eq!(answer.result.unwrap_err().code, "declarationErrors");
 }

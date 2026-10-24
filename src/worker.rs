@@ -34,9 +34,11 @@ pub const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
 
 /// For testing robustness only: makes a worker hang (`hang`) or abort
 /// (`abort`) instead of checking, or check without repaired copies
-/// (`norepair`, so answers from older results can be tested), when the
-/// checked file's path ends with the text after the `:`, e.g.
-/// `hang:src/slow.inko`. No real input is
+/// (`norepair`, so answers from older results can be tested), or with the
+/// type checker's passes stopping at the first error (`stop`, as after a
+/// panic in a later pass, so the answers that need repaired copies or
+/// older results then can be tested), when the checked file's path ends
+/// with the text after the `:`, e.g. `hang:src/slow.inko`. No real input is
 /// known to do either, and the server must survive both. Only in builds with
 /// the `fault-injection` feature, which only the tests enable.
 #[cfg(feature = "fault-injection")]
@@ -204,6 +206,11 @@ impl Outcome {
 /// with a line on stdout, until stdin closes.
 pub fn serve() -> Result<(), String> {
     let cache = Cache::new(kept_checks());
+    #[cfg(feature = "fault-injection")]
+    let cache = match faults().into_iter().find(|(kind, _)| kind == "stop") {
+        Some((_, suffix)) => cache.stopping_at_errors(suffix),
+        None => cache,
+    };
     let deadlines = watchdog();
     let mut stdout = std::io::stdout().lock();
 
@@ -261,18 +268,28 @@ fn watchdog() -> Sender<Option<Instant>> {
     deadlines
 }
 
-/// The fault `CUTTLEBONE_FAULT` asks for, if its suffix matches the job's
-/// file.
+/// The faults `CUTTLEBONE_FAULT` asks for, separated by commas, as kinds
+/// and suffixes.
+#[cfg(feature = "fault-injection")]
+fn faults() -> Vec<(String, String)> {
+    std::env::var(FAULT_VARIABLE)
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|f| f.split_once(':'))
+        .map(|(kind, suffix)| (kind.to_string(), suffix.to_string()))
+        .collect()
+}
+
+/// The fault `CUTTLEBONE_FAULT` asks for other than `stop`, if its suffix
+/// matches the job's file.
 #[cfg(feature = "fault-injection")]
 fn fault(job: &Job) -> Option<String> {
-    let fault = std::env::var(FAULT_VARIABLE).ok()?;
-    let (kind, suffix) = fault.split_once(':')?;
+    let file = job.request.file.to_string_lossy().to_string();
 
-    job.request
-        .file
-        .to_string_lossy()
-        .ends_with(suffix)
-        .then(|| kind.to_string())
+    faults()
+        .into_iter()
+        .find(|(kind, suffix)| kind != "stop" && file.ends_with(suffix.as_str()))
+        .map(|(kind, _)| kind)
 }
 
 #[cfg(feature = "fault-injection")]

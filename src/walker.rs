@@ -146,7 +146,7 @@ impl SymbolId {
     ///   compiler/src/type_check/methods.rs:1030-1094), which patterns refer
     ///   to directly.
     /// - A default method a type inherits from a trait without redefining
-    ///   it is a copy of the trait's method (compiler/src/type_check/methods.rs:1283-1291).
+    ///   it is a copy of the trait's method (compiler/src/type_check/methods.rs:1286-1294).
     /// - A type parameter with an `impl ... if T: Trait` bound is a copy of
     ///   the original (`TypeParameterId::original`).
     pub fn canonical(self, db: &Database) -> SymbolId {

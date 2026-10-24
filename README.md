@@ -10,10 +10,11 @@ completion after `.` lists members with their signatures, and go to
 definition, go to type definition and find references locate symbols by the
 compiler's own ids. It publishes the same diagnostics as `inko check`,
 highlights a symbol's uses in a file, shows the signature of the call being
-typed, and shows inferred types and parameter names as inlay hints. In
-code being edited, which doesn't parse or has an error in a declaration, it
-answers from a repaired copy of the documents or from the last version
-that type checked, wherever that answer still holds.
+typed, and shows inferred types and parameter names as inlay hints. Where a
+declaration has an error, it type checks the method bodies anyway, and
+answers wherever the error can't matter. In code being edited that
+doesn't parse, it answers from a repaired copy of the documents or from
+the last version that type checked, wherever that answer still holds.
 
 Reports, in docs/history/:
 
@@ -118,7 +119,7 @@ also fast enough for the latency limits.
 | `tests/members.rs` | the members of `receiver.name`: visibility, static and instance methods, type arguments, modules, type parameters |
 | `tests/complete.rs` | completion's own placeholder, and converting positions to byte offsets |
 | `tests/manifest.rs` | the Inko version a project's manifests require, and never syncing `dep/` |
-| `tests/broken.rs` | answers for code with errors: an unknown method, an undefined type in a signature, a syntax error, the placeholder |
+| `tests/broken.rs` | answers for code with errors: an unknown method, a syntax error, the placeholder; errors in declarations, in the file, an import, an importer and an unrelated module, for every kind of answer, with the changes since the last good check, and the passes after each kind of error, without a panic or after one |
 | `tests/overlay.rs` | unsaved contents replacing files on disk |
 | `tests/panic.rs` | a compiler panic is reported, and the next request works |
 | `tests/crosscheck.rs` | reconstructed types agree with what the compiler stores |

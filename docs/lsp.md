@@ -398,10 +398,10 @@ sorted by file and position:
 
 The result is `null` when nothing is at the position, `[]` when the symbol
 has no references in the project, and `null` with a [status](#status)
-reason when there's no answer. Because the whole project is checked, an
-error that stops type checking anywhere in it (a syntax error, or an error
-in a declaration) makes references unavailable, even if the file itself is
-fine.
+reason when there's no answer. Because the whole project is checked, a
+syntax error anywhere in it makes references unavailable, even if the file
+itself is fine. An error in a declaration anywhere does only if it could
+hide a reference ([Errors in declarations](#errors-in-declarations)).
 
 ## `textDocument/documentHighlight`
 
@@ -569,8 +569,10 @@ with `paddingRight`:
 
 The result is `[]` when there are no hints in the range, and `null` with a
 [status](#status) reason when there's no answer, as for the other queries.
-Where code doesn't parse or a declaration has an error, the hints come from
-a repaired copy or the last good check, in the parts that still hold
+Where a declaration has an error, the hints are those of the parts it
+can't affect ([Errors in declarations](#errors-in-declarations)). Where
+code doesn't parse, the hints come from a repaired copy or the last good
+check, in the parts that still hold
 ([Answers in code being edited](#answers-in-code-being-edited)). Then the
 answer covers only part of the range, and the status's
 [`covered`](#what-an-answer-covers) says which: elsewhere, such as in the
@@ -726,7 +728,7 @@ a custom notification if the client opts in with
 |---|---|
 | `fresh` | Computed from the documents as they are now. The response holds the answer, which may be `null` when there's nothing at the position. |
 | `unavailable` | Cuttlebone has no answer, and the response is `null`. `reason` says why. A client with heuristics of its own can fall back to them. |
-| `stale` | Computed from an earlier version of the documents: the last that type checked, because the code as it is now can't be (it doesn't parse, or a declaration has an error). The answer holds for the documents as they are: every position and range in it is in text that hasn't changed since, mapped to where that text is now, in code no change since could make mean something else. Only read-only requests give these ([Answers in code being edited](#answers-in-code-being-edited)). |
+| `stale` | Computed from an earlier version of the documents: the last that type checked, because the code as it is now can't be (it doesn't parse), or a declaration's error may change the answer. The answer holds for the documents as they are: every position and range in it is in text that hasn't changed since, mapped to where that text is now, in code no change since could make mean something else. Only read-only requests give these ([Answers in code being edited](#answers-in-code-being-edited)). |
 
 A `fresh` answer from a [repaired copy](#answers-in-code-being-edited)
 has `"repaired": true` too. An answer from a check kept from an earlier
@@ -791,7 +793,7 @@ check, or the lookup in a kept one, or 0 if it never reached the worker.
 | `notAFile` | The document's URI isn't a `file:` URI. |
 | `invalidPosition` | The position's line is past the end of the document. |
 | `noHir` | The file, or a module it imports, couldn't be parsed or found (for example a syntax error, or an import of a module that doesn't exist), so nothing was type checked. |
-| `declarationErrors` | An error in a declaration (for example an undefined type in a signature) stopped the type checker before it typed any method body. |
+| `declarationErrors` | An error in a declaration (for example an undefined type in a signature) may change what's at the position once it's fixed, or for references, could hide one ([Errors in declarations](#errors-in-declarations)). |
 | `untyped` | The compiler couldn't type the expression at the position (or the receiver, for completion; or the expression, for type definition), usually because of an error in it. Other expressions in the file may still have types. |
 | `compilerPanic` | The compiler panicked. `message` has the panic's message and location. |
 | `compilerError` | The compiler reported an internal error, such as a project whose `inko.pkg` (or a dependency's) requires a newer Inko, or a manifest that doesn't parse. |
@@ -802,14 +804,66 @@ check, or the lookup in a kept one, or 0 if it never reached the worker.
 | `shutdown` | The server got `shutdown` before the query was answered. |
 | `internal` | A bug in Cuttlebone. |
 
+## Errors in declarations
+
+An error in a declaration, such as an undefined type in a signature or a
+field, an import of something that doesn't exist, or an `impl` of an
+undefined trait, stops `inko check` before it types any method body, in
+any module. Cuttlebone's queries run every pass of the type checker
+anyway, so the bodies get types (diagnostics are still `inko check`'s
+own, from a check that stops: [Diagnostics](#diagnostics)). Some of those
+types depend on the broken declaration, and will be different once it's
+fixed. So while the documents have such an error, an answer from them is
+given only where the error can't matter. The rules are those for
+answers from a check of other text
+([Answers in code being edited](#answers-in-code-being-edited)), with
+each error as a change of the item it's in:
+
+- **Not in the error's unit.** The method, or other item (a type's
+  header and fields, a trait, an `impl` block, a constant, an import) the
+  error is in gets no answers.
+- **Not mentioning what it's about.** A unit that mentions (in its text,
+  or in the types of its expressions) the name of the item with the
+  error, or of the items it's in, gets no answers: for an undefined type
+  in `fn add(amount: Strin)` in `type Counter`, every unit that mentions
+  `add` or `Counter`. For an import, every name in the import counts.
+  Names changed outside method bodies since the file's last good check
+  count too, since the error may come from them: a type renamed, so that
+  its uses don't resolve.
+- **No untyped expressions there.** A unit with an expression the check
+  couldn't type gets no answers.
+- **Complete lists.** Document highlights are given only if no unit that
+  gets no answers mentions the name. References are given only if no unit
+  of the project that gets no answers mentions it, in any module. Inlay
+  hints cover the units that get answers, and the status's `covered` says
+  which ([What an answer covers](#what-an-answer-covers)).
+
+This holds for errors in the file asked about, in a module it imports, in
+one that imports it and in one that's unrelated (which only references
+check). Errors in method bodies don't count: nothing outside a method
+depends on its body. Answers are `fresh`: they come from the documents as
+they are. Elsewhere the answer is `null`, with reason
+`declarationErrors`, and Cuttlebone tries a repaired copy and the last
+good check, as for code being edited (below).
+
+A check with an error in a declaration isn't a good check for later
+answers from older checks. In the rare case that a pass after an error
+fails (one is known: renaming `type Option` in std.option itself, which
+the compiler requires), Cuttlebone checks again, stopping at the error as
+`inko check` does, and has no fresh answer.
+
+**Cost.** None: the passes after the error run on a check that would have
+stopped, and the rest is a lookup in each answer's unit (or, for
+references, the units of every module of the project).
+
 ## Answers in code being edited
 
-Code being typed usually doesn't parse, and a declaration being edited
-(say, a type in a signature typed halfway) stops the type checker before
-it types any method body. Then a check of the documents as they are has
-nothing to answer from, in that file or any file that imports it (reason
-`noHir` or `declarationErrors`). Cuttlebone then tries two other checks,
-in this order:
+Code being typed usually doesn't parse. Then a check of the documents as
+they are has nothing to answer from, in that file or any file that
+imports it (reason `noHir`), and where a declaration has an error, it
+answers only where the error can't matter (reason `declarationErrors`;
+[Errors in declarations](#errors-in-declarations)). Cuttlebone then tries
+two other checks, in this order:
 
 1. **A repaired copy.** The lines in the way are made blank, in a copy of
    the documents, and the copy is checked. For a document that doesn't
@@ -824,7 +878,8 @@ in this order:
    for the blank lines.
 2. **The last good check** of the file: the server keeps the open
    documents as they were at each file's last check that typed method
-   bodies (a query's, or a diagnostics check's), and every edit since. The
+   bodies with no error in a declaration (a query's, or a diagnostics
+   check's), and every edit since. The
    position is mapped back through the edits, and every range in the
    answer forward. Answers are `stale`.
 
@@ -1054,7 +1109,13 @@ checking a file whose path ends with `<suffix>` hangs or aborts instead of
 checking. No real input is known to do either, and the server must
 survive both. With `CUTTLEBONE_FAULT=norepair:<suffix>`, it checks no
 [repaired copies](#answers-in-code-being-edited), so tests can reach
-answers from the last good check. Only builds with the `fault-injection` cargo feature have this, and
+answers from the last good check. With `CUTTLEBONE_FAULT=stop:<suffix>`,
+checks of that file (and of whole projects) stop at the first pass with
+an error, as `inko check`'s do, and as a check does after a pass after an
+error panics ([Errors in declarations](#errors-in-declarations)), so tests
+can reach the answers that then come from repaired copies and the last
+good check. Several faults can be given, separated by commas. Only builds
+with the `fault-injection` cargo feature have this, and
 only `cargo test` enables it: release builds ignore the variable.
 
 ## Example

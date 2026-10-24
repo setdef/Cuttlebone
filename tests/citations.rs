@@ -29,11 +29,11 @@ const CITATIONS: &[(&str, &str)] = &[
     ("compiler/src/mir/passes.rs:1836", ".unwrap()"),
     (
         "compiler/src/compiler.rs:258-261",
-        "self.check_with(file, |_, _| true)",
+        "self.check_with(file, |_, _, _| true)",
     ),
-    ("compiler/src/compiler.rs:795-810", "fn prepare(&mut self)"),
+    ("compiler/src/compiler.rs:796-811", "fn prepare(&mut self)"),
     (
-        "compiler/src/compiler.rs:812",
+        "compiler/src/compiler.rs:813",
         "sync_if_needed(&self.state.config.dependencies)?;",
     ),
     (
@@ -50,7 +50,7 @@ const CITATIONS: &[(&str, &str)] = &[
         "node.constructor_id = Some(constructor);",
     ),
     (
-        "compiler/src/type_check/methods.rs:1283-1291",
+        "compiler/src/type_check/methods.rs:1286-1294",
         "let source = MethodSource::Inherited(trait_ins, method);",
     ),
     (

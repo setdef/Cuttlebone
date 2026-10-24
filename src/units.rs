@@ -17,6 +17,11 @@
 //!
 //! Every other unit means what it did in the check, so its answers hold.
 //! Comments and blank lines between items change nothing.
+//!
+//! An error the type checker reports outside a method's body (in a
+//! declaration) is treated like a change there (`error_effect`): the types
+//! the check gave everything that uses the declaration are those of a
+//! declaration that will be different once it's fixed.
 use crate::edits::Change;
 use crate::position::Lines;
 use location::Location;
@@ -429,7 +434,7 @@ fn blank(text: &str) -> bool {
 }
 
 /// What a change to a file does to the units of a check of its old text.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Effect {
     /// The old text it changed, widened to whole names. A unit of the same
     /// file that this touches changed itself.
@@ -524,6 +529,60 @@ pub fn effect(outline: &Outline, old: &str, new: &str, change: &Change) -> Effec
     }
 
     effect
+}
+
+/// What an error the type checker reported at `range` of a file's text
+/// does to the units of that check.
+#[derive(Debug)]
+pub enum ErrorEffect {
+    /// It's in a method's body, which nothing else depends on.
+    Body,
+    /// It's in a declaration: units that mention the names it's about may
+    /// get other types once it's fixed, and its own unit is touched.
+    Declaration(Effect),
+    /// It's in no item (or nowhere in the text), so nothing says what it's
+    /// about.
+    Unknown,
+}
+
+/// What an error at `range` of `text` (outlined by `outline`) does: like a
+/// change of it (`effect`), with the names of the item it's in and the
+/// items around that, and for an import every name in it, since any of
+/// them may be what doesn't resolve.
+pub fn error_effect(outline: &Outline, text: &str, range: Range<usize>) -> ErrorEffect {
+    let Some(index) = outline.innermost(&range) else {
+        return ErrorEffect::Unknown;
+    };
+    let item = &outline.items[index];
+
+    if item.kind == Kind::Comment {
+        return ErrorEffect::Unknown;
+    }
+
+    if item.kind == Kind::Method
+        && let Some(body) = &item.body
+        && body.start < range.start
+        && range.end < body.end
+    {
+        return ErrorEffect::Body;
+    }
+
+    let mut effect = Effect {
+        old: Some(range),
+        ..Effect::default()
+    };
+
+    for i in outline.ancestors(index) {
+        effect.names.extend(i.names.iter().cloned());
+
+        if i.kind == Kind::Import {
+            effect
+                .names
+                .extend(names(&text[i.range.clone()]).map(String::from));
+        }
+    }
+
+    ErrorEffect::Declaration(effect)
 }
 
 #[cfg(test)]
@@ -691,6 +750,32 @@ fn main {
         assert!(sorted(&effect_of("# A counter.", 0, "# More.\n")).is_empty());
         assert!(sorted(&effect_of("\nfn main", 0, "\n\n")).is_empty());
         assert!(sorted(&effect_of("\n  fn add", 0, "\n  # About add.")).is_empty());
+    }
+
+    #[test]
+    fn errors_in_declarations_are_about_their_items() {
+        let outline = Outline::parse(TEXT).unwrap();
+        let at = |needle: &str, len: usize| {
+            let start = TEXT.find(needle).unwrap();
+
+            error_effect(&outline, TEXT, start..start + len)
+        };
+        let names = |e: ErrorEffect| match e {
+            ErrorEffect::Declaration(e) => {
+                let mut out: Vec<String> = e.names.into_iter().collect();
+
+                out.sort();
+                out
+            }
+            other => panic!("not a declaration's error: {:?}", other),
+        };
+
+        assert!(matches!(at("amount\n", 6), ErrorEffect::Body));
+        assert_eq!(names(at("Int) -> Int", 3)), ["Counter", "add"]);
+        assert_eq!(names(at("Int\n\n  fn static", 3)), ["Counter", "count"]);
+        assert_eq!(names(at("Stdout", 6)), ["Stdout", "std", "stdio"]);
+        assert!(matches!(at("A counter", 1), ErrorEffect::Unknown));
+        assert!(matches!(at("\n\nfn main", 1), ErrorEffect::Unknown));
     }
 
     #[test]

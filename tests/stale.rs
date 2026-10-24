@@ -9,11 +9,12 @@ use crate::common::client::{Client, Launch, at};
 use crate::common::features::Session;
 use serde_json::{Value, json};
 
-/// A server that never checks repaired copies (a fault only test builds
-/// have), so answers come from the last good check.
+/// A server that never checks repaired copies, and whose checks stop at
+/// the first pass with an error as `inko check`'s do (faults only test
+/// builds have), so answers come from the last good check.
 fn no_repair() -> Launch<'static> {
     Launch {
-        env: vec![("CUTTLEBONE_FAULT", "norepair:.inko".to_string())],
+        env: vec![("CUTTLEBONE_FAULT", "norepair:.inko,stop:.inko".to_string())],
         ..Launch::default()
     }
 }
@@ -766,4 +767,46 @@ fn an_older_check_does_not_answer_before_the_edit() {
     let (response, status) = hover(&mut client);
 
     assert_eq!(status, "unavailable", "{}", response);
+}
+
+#[test]
+fn an_operator_typed_since_has_no_highlights_from_the_last_good_check() {
+    let mut session = stale_session(false);
+    let file = session.file.clone();
+    let text = session.text.clone();
+
+    session.client.open(&file, &text);
+
+    let (before, status) = ask(
+        &mut session,
+        &text,
+        "textDocument/documentHighlight",
+        "n + 1",
+        2,
+        json!({}),
+    );
+
+    assert_eq!(status["status"], "fresh");
+    assert!(before.as_array().unwrap().len() > 1);
+
+    // An unfinished `+` in `reset`, which doesn't parse: it may be a use of
+    // `Int`'s `+`, which the last good check didn't see.
+    let added = "    @count = (@count + 1\n";
+    let edited = text.replacen("    @count = 0\n", &format!("{}    @count = 0\n", added), 1);
+
+    session
+        .client
+        .change(&file, 2, insert_before(&session, "    @count = 0\n", added));
+
+    let (after, status) = ask(
+        &mut session,
+        &edited,
+        "textDocument/documentHighlight",
+        "n + 1",
+        2,
+        json!({}),
+    );
+
+    assert_eq!(after, Value::Null);
+    assert_eq!(status["status"], "unavailable");
 }
