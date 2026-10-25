@@ -8,6 +8,21 @@ the entry links to the milestone's report, which its last commit adds
 (AGENTS.md, "Versions"). Milestones 1 to 6 were all built as 0.1.0; their
 versions here were given afterwards.
 
+## 0.10.0
+
+Milestone 10: prebuilt binaries.
+[Report](docs/history/MILESTONE-10.md).
+
+- **Prebuilt binaries** for macOS on ARM64 and Linux on AMD64 and ARM64
+  (static, for musl and glibc distributions alike), on each GitHub
+  release, built by its own workflow. Each build works with one Inko
+  version, which its name says.
+- **A manifest** with each release (`manifest.json`): per build, the Inko
+  version, target, URL, size and SHA-256, so a client can pick the build
+  for the user's platform and Inko without scraping
+  ([docs/releases.md](docs/releases.md)).
+- No change to the server's behaviour.
+
 ## 0.9.0
 
 Milestone 9: cheaper answers while typing.
