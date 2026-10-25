@@ -93,8 +93,8 @@ https://github.com/setdef/Cuttlebone/releases/latest/download/manifest.json
       "arch": "arm64",
       "minimumOs": "15.0",
       "url": "https://github.com/setdef/Cuttlebone/releases/download/v0.11.0/cuttlebone-0.11.0-inko-0.21.1-aarch64-apple-darwin.tar.gz",
-      "size": 5014108,
-      "sha256": "7283c51f39992d946216e6b49c0648dec4698d5235856e574bf274793f273d6e",
+      "size": 5470184,
+      "sha256": "ff413be83b58fa269d242f99d964ae0daea1ac211193dae438fb9d5c2331308f",
       "binary": "cuttlebone-0.11.0-inko-0.21.1-aarch64-apple-darwin/cuttlebone"
     }
   ]

@@ -42,6 +42,9 @@ Reports, in docs/history/:
   typing: questions with no answer kept, and cancelling without killing.
 - [MILESTONE-10.md](docs/history/MILESTONE-10.md): prebuilt binaries
   on GitHub releases, and a manifest for clients.
+- [MILESTONE-11.md](docs/history/MILESTONE-11.md): a license, a release
+  index, and a client's requests (ids for declaration errors, missing
+  modules, compound assignments, saves, references outside the project).
 
 Each milestone has its own version; what changed in each:
 [CHANGELOG.md](CHANGELOG.md).
