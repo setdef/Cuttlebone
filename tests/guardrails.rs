@@ -575,3 +575,26 @@ fn docs_show_the_current_version() {
         );
     }
 }
+
+/// Cuttlebone is MPL-2.0, as the compiler it patches is: LICENSE holds the
+/// license's text, Cargo.toml says so, and README.md has a License section.
+#[test]
+fn cuttlebone_is_mpl_2_0() {
+    let license = read(&root().join("LICENSE"));
+    let manifest = read(&root().join("Cargo.toml"));
+    let readme = read(&root().join("README.md"));
+
+    assert!(
+        license.starts_with("Mozilla Public License, version 2.0\n")
+            && license.contains("Exhibit A - Source Code Form License Notice"),
+        "LICENSE must be the text of the MPL-2.0"
+    );
+    assert!(
+        manifest.contains("\nlicense = \"MPL-2.0\"\n"),
+        "Cargo.toml must say `license = \"MPL-2.0\"`"
+    );
+    assert!(
+        readme.contains("\n## License\n") && readme.contains("[LICENSE](LICENSE)"),
+        "README.md must have a License section linking to LICENSE"
+    );
+}

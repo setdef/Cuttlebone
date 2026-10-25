@@ -201,3 +201,13 @@ should.
 checks that a hover and a go to definition work, and that a diagnostic
 appears for an error and clears when it's fixed (see
 [editors/](editors/README.md)).
+
+## License
+
+Cuttlebone is licensed under the Mozilla Public License 2.0
+([LICENSE](LICENSE)), the same as Inko, whose compiler it links and
+patches. The patch (patches/upstream.patch) modifies MPL-2.0 files, so it
+is MPL-2.0 too ([patches/README.md](patches/README.md)). Each release
+archive holds Cuttlebone's LICENSE, the compiler's own (as
+`LICENSE-MPL-2.0`), and the licenses of everything else the binary
+contains ([docs/releases.md](docs/releases.md#archives)).

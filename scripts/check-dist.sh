@@ -3,8 +3,9 @@
 # this machine's archive (scripts/dist-build.sh, which checks what it
 # links), verifies it, publishes it with a manifest to a file:// URL and
 # checks it from there, and checks that each refuses what it should: an
-# archive of other versions, a manifest whose checksum is wrong, and a
-# binary that links Homebrew's libraries (the development build).
+# archive of other versions or with another LICENSE, a manifest whose
+# checksum is wrong, and a binary that links Homebrew's libraries (the
+# development build).
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -25,6 +26,16 @@ fails python3 scripts/dist-verify.py "$archive" --inko-version 0.0.0
 release="${CARGO_TARGET_DIR:-$root/target}/check-dist"
 rm -rf "$release"
 mkdir -p "$release"
+
+# The same archive with another LICENSE than Cuttlebone's.
+other="$release/other-license"
+name=$(basename "$archive" .tar.gz)
+mkdir -p "$other"
+tar -xzf "$archive" -C "$other"
+echo "Some other license" > "$other/$name/LICENSE"
+COPYFILE_DISABLE=1 tar -czf "$other/$name.tar.gz" -C "$other" "$name"
+fails python3 scripts/dist-verify.py "$other/$name.tar.gz"
+
 cp "$archive" "$release/"
 python3 scripts/dist-manifest.py "file://$release" "$release"/*.tar.gz > "$release/manifest.json"
 python3 scripts/dist-check-release.py "file://$release/manifest.json"

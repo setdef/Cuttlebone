@@ -34,7 +34,7 @@ root = pathlib.Path(__file__).resolve().parent.parent
 sys.stdout.reconfigure(line_buffering=True)
 
 NAME = re.compile(r"^cuttlebone-(\d+\.\d+\.\d+)-inko-(\d+\.\d+\.\d+)-([a-z0-9_]+-[a-z0-9_]+-[a-z0-9_-]+)$")
-FILES = {"cuttlebone", "README.md", "LICENSE-MPL-2.0", "THIRD-PARTY.md"}
+FILES = {"cuttlebone", "README.md", "LICENSE", "LICENSE-MPL-2.0", "THIRD-PARTY.md"}
 TIMEOUT = 120
 
 
@@ -136,6 +136,11 @@ def main():
                 f"{archive.name} should hold exactly {stem}/ with {sorted(FILES)}, not {names}",
             )
             tar.extractall(work, filter="data")
+
+        check(
+            (work / stem / "LICENSE").read_bytes() == (root / "LICENSE").read_bytes(),
+            f"{archive.name}'s LICENSE isn't Cuttlebone's own (the repository's LICENSE)",
+        )
 
         binary = work / stem / "cuttlebone"
         project = work / "project"

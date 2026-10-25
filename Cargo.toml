@@ -2,6 +2,7 @@
 name = "cuttlebone"
 version = "0.11.0"
 edition = "2024"
+license = "MPL-2.0"
 publish = false
 default-run = "cuttlebone"
 # The tests are two binaries (tests/main.rs and tests/latency.rs), not one

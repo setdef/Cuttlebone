@@ -60,8 +60,9 @@ It holds one directory of the same name (without `.tar.gz`), with:
 | File | |
 |---|---|
 | `cuttlebone` | The server. |
-| `README.md` | Its versions, and where its source is. |
-| `LICENSE-MPL-2.0` | The license of the Inko compiler crates it contains. |
+| `README.md` | Its versions, its license, and where its source is. |
+| `LICENSE` | Cuttlebone's own license, the MPL-2.0 (the repository's LICENSE). |
+| `LICENSE-MPL-2.0` | The license of the Inko compiler crates it contains, also the MPL-2.0. |
 | `THIRD-PARTY.md` | Every crate and library it contains, with their licenses. |
 
 On macOS, a binary downloaded with a browser is quarantined, and

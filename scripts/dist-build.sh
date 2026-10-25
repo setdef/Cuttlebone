@@ -74,6 +74,7 @@ out="$root/dist/$name"
 rm -rf "$out" "$out.tar.gz"
 mkdir -p "$out"
 cp "$target_dir/release/cuttlebone" "$out/"
+cp LICENSE "$out/LICENSE"
 cp .upstream/inko/LICENSE "$out/LICENSE-MPL-2.0"
 python3 scripts/dist-licenses.py "$target" > "$out/THIRD-PARTY.md"
 cat > "$out/README.md" <<EOF
@@ -85,6 +86,8 @@ initialization option) must be Inko $inko. \`cuttlebone --version\`
 prints both versions.
 
 Documentation and source: https://github.com/setdef/Cuttlebone/tree/v$version
+
+Cuttlebone is licensed under the Mozilla Public License 2.0 (LICENSE).
 
 It contains the compiler crates of Inko $inko
 (https://github.com/inko-lang/inko/tree/v$inko), which are MPL-2.0

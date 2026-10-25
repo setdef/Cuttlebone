@@ -165,6 +165,9 @@ M = [
  ("the macOS release links Homebrew's LLVM directory", "scripts/dist-build.sh", "        export LLVM_SYS_181_PREFIX=\"$prefix\"\n", "", "sh:scripts/check-dist.sh"),
  ("an archive of any version verifies", "scripts/dist-verify.py", "check(args.version in (None, version)", "check(True", "sh:scripts/check-dist.sh"),
  ("an archive for any Inko verifies", "scripts/dist-verify.py", "check(args.inko_version in (None, inko)", "check(True", "sh:scripts/check-dist.sh"),
+ ("archives without Cuttlebone's license", "scripts/dist-build.sh", "cp LICENSE \"$out/LICENSE\"\n", "", "sh:scripts/check-dist.sh"),
+ ("an archive with another LICENSE verifies", "scripts/dist-verify.py", "(work / stem / \"LICENSE\").read_bytes() == (root / \"LICENSE\").read_bytes()", "True", "sh:scripts/check-dist.sh"),
+ ("Cargo.toml without the license", "Cargo.toml", "license = \"MPL-2.0\"\n", "", "--test guardrails cuttlebone_is_mpl_2_0"),
  ("published checksums not checked", "scripts/dist-check-release.py", "expect(sha256 == build[\"sha256\"]", "expect(True", "sh:scripts/check-dist.sh"),
  # Diagnostics (milestone 4).
  ("diagnostics skip MIR", "src/check.rs", "            inspect(db, hir);\n            true", "            inspect(db, hir);\n            false", "--test diagnostics every_fixture"),

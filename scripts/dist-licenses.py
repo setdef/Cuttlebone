@@ -64,8 +64,8 @@ if target.endswith("-linux-musl"):
 out = []
 out.append(f"# Third-party software in this build ({target})\n")
 out.append(
-    "Besides Cuttlebone's own code, the `cuttlebone` binary contains the "
-    "following, statically linked.\n"
+    "Besides Cuttlebone's own code (MPL-2.0, in LICENSE), the `cuttlebone` "
+    "binary contains the following, statically linked.\n"
 )
 out.append("## C and C++ libraries\n")
 out.append("| Library | License | License text |\n|---|---|---|")
