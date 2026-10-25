@@ -452,7 +452,8 @@ fn an_error_in_a_body_changes_nothing_else_while_a_declaration_has_one() {
 
 /// What a declaration's error affects is decided by the compiler's ids,
 /// where names have them: an error in `A.size`'s signature leaves out the
-/// units that call `A.size` (or name `A`), but not one that only calls
+/// units that call `A.size` (or name `A`), or a module's `measure` with an
+/// error, but not one that only calls
 /// `B.size`, nor `B.size` itself, though they say `size` too. The names
 /// in the types of a unit's expressions have no ids, so they still count:
 /// a value of type `A`.
@@ -462,10 +463,12 @@ fn a_declaration_error_affects_its_own_symbols_not_others_with_the_same_name() {
     let _ = std::fs::remove_dir_all(&root);
     let util = "type pub A {\n  fn pub size(unit: Missing) -> Int {\n    1\n  }\n}\n\n\
                 type pub B {\n  fn pub size(unit: Float) -> Int {\n    2\n  }\n}\n\n\
-                fn pub make -> A {\n  A()\n}\n";
-    let main = "import util (A, B, make)\n\nfn run(x: B) -> Int {\n  let total = x.size(2.0)\n  total\n}\n\n\
+                fn pub make -> A {\n  A()\n}\n\n\
+                fn pub measure(unit: Missing) -> Int {\n  3\n}\n";
+    let main = "import util (A, B, make, measure)\n\nfn run(x: B) -> Int {\n  let total = x.size(2.0)\n  total\n}\n\n\
                 fn twice(a: A) -> Int {\n  let both = a.size(1)\n  both\n}\n\n\
-                fn built {\n  let made = make\n}\n";
+                fn built {\n  let made = make\n}\n\n\
+                fn direct -> Int {\n  let measured = measure(1)\n  measured\n}\n";
 
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/util.inko"), util).unwrap();
@@ -500,6 +503,12 @@ fn a_declaration_error_affects_its_own_symbols_not_others_with_the_same_name() {
 
     // `twice` calls A's.
     let answer = ask("src/main.inko", main, "let both", 4);
+
+    assert_eq!(answer.result.unwrap_err().code, "declarationErrors");
+
+    // `direct` calls `measure`, a module's method with an error, which
+    // only its id says.
+    let answer = ask("src/main.inko", main, "let measured", 4);
 
     assert_eq!(answer.result.unwrap_err().code, "declarationErrors");
 
