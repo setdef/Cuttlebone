@@ -1118,6 +1118,26 @@ fn a_cancelled_check_that_hangs_is_killed_at_the_timeout() {
     );
 }
 
+/// `shutdown` stops a cancelled check that's still running, as it does a
+/// running one.
+#[test]
+fn shutdown_kills_a_cancelled_check() {
+    let (mut client, root) = hanging("cancel-shutdown", json!({ "diagnostics": false }));
+    let id = client.send_at("textDocument/hover", &root.join("src/shapes.inko"), 0, 0);
+
+    wait_for_a_worker(&client);
+    client.notify("$/cancelRequest", json!({ "id": id }));
+    assert_eq!(client.response(id)["error"]["code"], REQUEST_CANCELLED);
+    assert_eq!(
+        client.request("shutdown", Value::Null)["result"],
+        Value::Null
+    );
+    assert!(
+        client.workers().is_empty(),
+        "the cancelled check's worker is still running"
+    );
+}
+
 /// A diagnostics check starts only when no query runs (docs/lsp.md,
 /// "Scheduling"), and a cancelled check that's still running counts: it
 /// uses the machine as much. Here the cancelled check hangs, so the

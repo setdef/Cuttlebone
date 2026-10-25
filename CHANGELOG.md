@@ -13,6 +13,18 @@ versions here were given afterwards.
 Milestone 9: cheaper answers while typing.
 [Report](docs/history/MILESTONE-9.md).
 
+- **Questions with no answer are kept.** In code that doesn't parse, a
+  second question about the same text is a lookup, whatever the answer,
+  `unavailable` included: the check that found nothing to answer from is
+  kept too (status `cached`). An `unavailable` answer is `cached` only if
+  no check ran for it.
+- **Cancelling is cheap.** `$/cancelRequest` on a running query answers
+  it at once, and its check finishes in the worker, which keeps it and
+  everything it kept, instead of being killed. The next query waits for
+  it for at most 250 ms. A hung check is still killed at
+  `checkTimeoutMs`. A request cancelled while it waits out the debounce
+  never reaches the worker, as before.
+
 ## 0.8.0
 
 Milestone 8: answers when a declaration has an error.

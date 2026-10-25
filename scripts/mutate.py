@@ -291,6 +291,7 @@ M = [
  ("cancelled checks never time out", "src/lsp.rs", "            .take_if(|a| a.check.started.elapsed() >= self.options.timeout)", "            .take_if(|_| false)", "--test lsp a_cancelled_check_that_hangs"),
  ("diagnostics start beside a cancelled check", "src/lsp.rs", "            || self.abandoned.is_some()\n            || !self.queue.is_empty()", "            || !self.queue.is_empty()", "--test lsp diagnostics_wait_for"),
  ("a cancelled check's worker not kept", "src/lsp.rs", "            let (_, worker) = abandoned.check.finish(&done);\n\n            self.idle = worker;", "            let (_, worker) = abandoned.check.finish(&done);\n\n            drop(worker);", "--test lsp a_cancelled_check_is_kept"),
+ ("shutdown leaves a cancelled check", "src/lsp.rs", "        if let Some(abandoned) = self.abandoned.take() {\n            abandoned.check.kill();\n        }\n", "", "--test lsp shutdown_kills_a_cancelled"),
  # Checks with nothing to answer from (milestone 9).
  ("failures not kept", "src/query.rs", "        Ok(Err(Ok((reason, fingerprint)))) => Ok((Err(reason), fingerprint)),", "        Ok(Err(Ok((reason, _)))) => Err(reason),", "--test cache a_check_with_nothing"),
  ("failures' fingerprints leave out source files", "src/check.rs", "            || (sources && path.extension().is_some_and(|e| e == \"inko\"))", "            || (sources && path.extension().is_some_and(|e| e == \"none\"))", "--test cache a_module_fixed_on_disk"),
