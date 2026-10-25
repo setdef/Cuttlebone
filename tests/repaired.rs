@@ -365,3 +365,56 @@ fn the_changed_line_is_blank_first() {
     assert_repaired(&status);
     assert_eq!(hover["contents"]["value"], "```inko\nInt\n```");
 }
+
+/// An import of a module that doesn't exist stops the check before any
+/// type checking (`noHir`), even with no good check to answer from: a
+/// project opened with one. The repaired copy has the import blank, so
+/// the rest of the file is answered, but not what uses the import's
+/// names. The same for such an import in a module the file imports,
+/// which isn't open.
+#[test]
+fn an_import_of_a_module_that_doesnt_exist_is_blank_in_the_copy() {
+    let root = crate::common::tmp().join("repaired-missing-module");
+    let _ = std::fs::remove_dir_all(&root);
+    let main = "import app.util\nimport app.nope\nimport app.nope.deeper (Thing)\n\n\
+                type async Main {\n  fn async main {\n    let size = util.size\n  }\n\n  \
+                fn uses -> Int {\n    nope.value + 1\n  }\n}\n";
+    let util = "import app.missing\n\nfn pub size -> Int {\n  42\n}\n";
+
+    std::fs::create_dir_all(root.join("src/app")).unwrap();
+    std::fs::write(root.join("src/main.inko"), main).unwrap();
+    std::fs::write(root.join("src/app/util.inko"), util).unwrap();
+
+    let root = root.canonicalize().unwrap();
+    let file = root.join("src/main.inko");
+    let mut client = crate::common::client::Client::initialized(
+        &root,
+        json!({ "statusNotifications": true, "diagnostics": false }),
+    );
+    client.open(&file, main);
+
+    let mut hover = |needle: &str, offset: usize| {
+        let (line, character) = at(main, needle, offset, false);
+        let (id, response) = client.hover(&file, line, character);
+
+        (
+            response["result"].clone(),
+            client.status(id).unwrap().clone(),
+        )
+    };
+
+    let (result, status) = hover("let size", 4);
+
+    assert_repaired(&status);
+    assert_eq!(
+        result["contents"]["value"], "```inko\nInt\n```",
+        "{}",
+        status
+    );
+
+    // `uses` mentions `nope`, a name in a blank import.
+    let (result, status) = hover("nope.value + 1", 11);
+
+    assert_eq!(result, Value::Null);
+    assert_eq!(status["reason"]["code"], "noHir", "{}", status);
+}

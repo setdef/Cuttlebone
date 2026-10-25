@@ -771,6 +771,59 @@ fn a_file_changed_outside_the_editor_is_never_answered_from_a_kept_check_over_ls
     assert_eq!(client.status(id).unwrap().get("cached"), None);
 }
 
+/// A save writes the open document's text to its file, which the check
+/// didn't read (it read the document), so it keeps the checks of that
+/// text: written in place, or to a new file renamed over the old one, as
+/// editors that save safely do. The file must still exist, though, and a
+/// change to a file that isn't open still counts.
+#[test]
+fn a_save_keeps_the_checks_of_the_text_it_saved() {
+    let (root, _) = lib_project("lsp-save");
+    let main = root.join("src/main.inko");
+    let edited = MAIN.replace("let third = [first, second]", "let third = [second, first]");
+    let mut client = with_kept_checks(&root);
+    let (line, character) = at(&edited, "first", 0, false);
+    let mut version = 1;
+    let cached = |client: &mut Client| {
+        let (id, response) = client.hover(&main, line, character);
+
+        assert_eq!(response["result"]["contents"]["value"], "```inko\nInt\n```");
+        client.status(id).unwrap().get("cached") == Some(&json!(true))
+    };
+
+    client.open(&main, MAIN);
+    client.change(&main, 2, json!([{ "text": edited }]));
+    assert!(!cached(&mut client));
+    assert!(cached(&mut client));
+
+    for safely in [false, true, false] {
+        if safely {
+            let temporary = root.join("src/.main.inko.tmp");
+
+            std::fs::write(&temporary, &edited).unwrap();
+            std::fs::rename(&temporary, &main).unwrap();
+        } else {
+            std::fs::write(&main, &edited).unwrap();
+        }
+
+        version += 1;
+        client.notify(
+            "textDocument/didSave",
+            json!({ "textDocument": { "uri": crate::common::client::uri(&main), "version": version }, "text": edited }),
+        );
+        assert!(cached(&mut client), "saved safely: {}", safely);
+    }
+
+    // A module that isn't open, changed on disk, still counts.
+    std::fs::write(root.join("src/lib.inko"), LIB.replace("42", "24")).unwrap();
+    assert!(!cached(&mut client));
+    assert!(cached(&mut client));
+
+    // So does a file created where the compiler finds modules.
+    std::fs::write(root.join("src/other.inko"), "").unwrap();
+    assert!(!cached(&mut client));
+}
+
 /// The tests' switch for running every test without kept checks, to show
 /// that the answers are the same.
 #[test]

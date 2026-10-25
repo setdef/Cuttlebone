@@ -118,6 +118,10 @@ pub struct Run<R> {
     pub type_check: Duration,
     /// The above, plus lowering to MIR if `mir` was set.
     pub total: Duration,
+    /// Where an import named a module that couldn't be found, if that's
+    /// why nothing was type checked: each file, and its first and last
+    /// line (1-based).
+    pub unfound: Vec<(PathBuf, u32, u32)>,
 }
 
 /// Refuses a project that requires a newer Inko than the one linked, as
@@ -250,13 +254,35 @@ fn run_with<R>(
         compiler.print_diagnostics();
     }
 
+    let unfound = match inspected {
+        Some(_) => Vec::new(),
+        None => compiler
+            .diagnostics()
+            .filter(|d| unfound_module(d))
+            .map(|d| {
+                let l = d.location();
+
+                (d.file().clone(), l.line_start, l.line_end)
+            })
+            .collect(),
+    };
+
     Ok(Run {
         inspected,
         ok,
         modules,
         type_check,
         total,
+        unfound,
     })
+}
+
+/// Whether a diagnostic is the compiler's for an import of a module it
+/// couldn't find (compiler/src/modules_parser.rs:119-124), at the import.
+fn unfound_module(d: &compiler::diagnostics::Diagnostic) -> bool {
+    d.id().to_string() == "invalid-file"
+        && d.message().starts_with("the module '")
+        && d.message().ends_with("' couldn't be found")
 }
 
 /// A diagnostic as the compiler reports it.
@@ -384,9 +410,76 @@ const COARSE: Duration = Duration::from_secs(2);
 /// fingerprint is `current`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fingerprint {
-    stamps: Vec<(PathBuf, Option<Stamp>)>,
+    stamps: Vec<(PathBuf, Seen)>,
     /// When the check started.
     started: SystemTime,
+}
+
+/// What a fingerprint saw of one path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Seen {
+    /// A file the check read, or could have.
+    File(Option<Stamp>),
+    /// A file with an open document, whose text the check read instead
+    /// (the overlay). Saving the document writes the file, but doesn't
+    /// change what the check read. Whether it exists (the compiler finds
+    /// modules on disk) is in its directory's names.
+    Open,
+    /// A directory, and the names in it module resolution could find
+    /// (directories, source files and manifests). A file saved by writing
+    /// another and renaming it over the first changes the directory's
+    /// stamp, but not those names.
+    Directory(Option<Stamp>, Vec<std::ffi::OsString>),
+}
+
+impl Seen {
+    fn of(path: &Path, open: bool, directory: bool) -> Seen {
+        if directory {
+            Seen::Directory(Stamp::of(path), names(path))
+        } else if open {
+            Seen::Open
+        } else {
+            Seen::File(Stamp::of(path))
+        }
+    }
+
+    /// Whether `path` is as it was when this was seen.
+    fn unchanged(&self, path: &Path) -> bool {
+        match self {
+            Seen::File(stamp) => Stamp::of(path) == *stamp,
+            Seen::Open => true,
+            Seen::Directory(stamp, seen) => Stamp::of(path) == *stamp || names(path) == *seen,
+        }
+    }
+
+    /// The stamp of what the check read itself, if it read anything here.
+    fn read(&self) -> Option<Stamp> {
+        match self {
+            Seen::File(stamp) | Seen::Directory(stamp, _) => *stamp,
+            Seen::Open => None,
+        }
+    }
+}
+
+/// The names in a directory that module resolution could find, sorted.
+fn names(dir: &Path) -> Vec<std::ffi::OsString> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<_> = entries
+        .flatten()
+        .filter(|e| {
+            let path = e.path();
+
+            e.file_type().is_ok_and(|t| t.is_dir())
+                || path.file_name().is_some_and(|n| n == MANIFEST_FILE)
+                || path.extension().is_some_and(|e| e == "inko")
+        })
+        .map(|e| e.file_name())
+        .collect();
+
+    names.sort();
+    names
 }
 
 impl Fingerprint {
@@ -414,7 +507,8 @@ impl Fingerprint {
         sources: bool,
         started: SystemTime,
     ) -> Fingerprint {
-        paths.push(target.root.clone());
+        let mut dirs = vec![target.root.clone()];
+
         paths.push(target.root.join(MANIFEST_FILE));
 
         for dir in [
@@ -423,28 +517,35 @@ impl Fingerprint {
             target.root.join("test"),
             target.root.join("dep"),
         ] {
-            directories(&dir, sources, &mut paths);
+            directories(&dir, sources, &mut dirs, &mut paths);
         }
 
-        paths.sort();
-        paths.dedup();
+        let mut seen: Vec<(PathBuf, Seen)> = dirs
+            .into_iter()
+            .map(|d| {
+                let seen = Seen::of(&d, false, true);
+
+                (d, seen)
+            })
+            .chain(paths.into_iter().map(|p| {
+                let seen = Seen::of(&p, target.overlay.contains_key(&p), false);
+
+                (p, seen)
+            }))
+            .collect();
+
+        seen.sort_by(|a, b| a.0.cmp(&b.0));
+        seen.dedup_by(|a, b| a.0 == b.0);
 
         Fingerprint {
-            stamps: paths
-                .into_iter()
-                .map(|p| {
-                    let stamp = Stamp::of(&p);
-
-                    (p, stamp)
-                })
-                .collect(),
+            stamps: seen,
             started,
         }
     }
 
     /// Whether nothing it covers changed since it was taken.
     pub fn current(&self) -> bool {
-        self.stamps.iter().all(|(p, s)| Stamp::of(p) == *s)
+        self.stamps.iter().all(|(p, s)| s.unchanged(p))
     }
 
     /// Whether every path last changed before the check started, so the
@@ -453,8 +554,8 @@ impl Fingerprint {
     /// tell) may have been read before the write, and its stamp would
     /// then describe text the check never saw.
     pub fn settled(&self) -> bool {
-        self.stamps.iter().all(|(_, stamp)| {
-            stamp
+        self.stamps.iter().all(|(_, seen)| {
+            seen.read()
                 .and_then(|s| s.latest())
                 .is_none_or(|latest| before(latest, self.started))
         })
@@ -482,24 +583,24 @@ fn before(changed: SystemTime, started: SystemTime) -> bool {
     changed + margin < started
 }
 
-/// `dir`, every directory under it, and the manifests in them, and with
-/// `sources`, the source files in them too.
-fn directories(dir: &Path, sources: bool, out: &mut Vec<PathBuf>) {
+/// `dir` and every directory under it (into `dirs`), and the manifests in
+/// them, and with `sources`, the source files in them too (into `files`).
+fn directories(dir: &Path, sources: bool, dirs: &mut Vec<PathBuf>, files: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
 
-    out.push(dir.to_path_buf());
+    dirs.push(dir.to_path_buf());
 
     for entry in entries.flatten() {
         let path = entry.path();
 
         if entry.file_type().is_ok_and(|t| t.is_dir()) {
-            directories(&path, sources, out);
+            directories(&path, sources, dirs, files);
         } else if path.file_name().is_some_and(|n| n == MANIFEST_FILE)
             || (sources && path.extension().is_some_and(|e| e == "inko"))
         {
-            out.push(path);
+            files.push(path);
         }
     }
 }

@@ -391,6 +391,14 @@ sorted by file and position:
   Not dependencies or the standard library, even when the symbol is
   declared there. A file outside a project's `src/` and `test/` is its own
   project.
+- **Asked at a declaration outside the project**, in the standard library
+  or in a dependency in a project's `dep/` (say std's `Array.size`, in
+  its own file), it's the project's uses that are found: those of every
+  workspace folder's project for the standard library (each checked
+  whole), and of the project whose `dep/` it is for a dependency. The
+  standard library's and the dependency's own uses aren't listed, nor is
+  the declaration, which isn't the project's. A module no project uses
+  has no references: `[]`.
 - **The whole project is type checked**, not just the file and what it
   imports, so modules that don't import the file are found. This costs
   more than the other queries ([cost](#freshness-cost-and-side-effects)).
@@ -839,7 +847,8 @@ each error as a change of the item it's in:
   or in the types of its expressions) the name of the item with the
   error, or of the items it's in, gets no answers: for an undefined type
   in `fn add(amount: Strin)` in `type Counter`, every unit that mentions
-  `add` or `Counter`. For an import, every name in the import counts.
+  `add` or `Counter`. For an import, every name it binds counts: the last
+  name of its path and those in its symbol list.
   Names changed outside method bodies since the file's last good check
   count too, since the error may come from them: a type renamed, so that
   its uses don't resolve.
@@ -885,7 +894,10 @@ two other checks, in this order:
    nothing closes (the parser often reports that lines later), then also
    each line the parser stops at, in turn. For a declaration error, the
    methods or items that the changes since the last good check outside
-   method bodies are in. Blank lines keep every
+   method bodies are in. For an import of a module that doesn't exist
+   (`import app.nope`, which stops the compiler before any type checking,
+   like a syntax error), that import, in whichever module it is, open or
+   not. Blank lines keep every
    other line where it is. Answers are `fresh`, with `"repaired": true` in
    the [status](#status): they come from the documents as they are, except
    for the blank lines.
@@ -920,8 +932,11 @@ they are:
   the unit of each item in it) wasn't changed itself, and doesn't mention
   a name that a change outside a method body is about: the method, field,
   type or import it's in, and the names it removed or added (an added name
-  may be unfinished, so any name it starts counts). A change inside a
-  method's body only affects that method.
+  may be unfinished, so any name it starts counts). A whole import, added
+  or removed, is about the names it binds: the last name of its path
+  (`util` in `import app.util`) and those in its symbol list, not the
+  path's leading names (`app`). A change inside a method's body only
+  affects that method.
 - **Before the edit, in a repaired copy.** In a method whose body has
   blank lines, what ends before the first one still means the same once
   the blank text is back, if all of it has a complete type: text added
@@ -1070,11 +1085,18 @@ without checking again when everything the query would check is the same:
   deleted there changes its directory). Before each answer, the worker
   looks at all of them again (their size, modification and change times,
   and inode), and checks again if any differs. So a file changed outside
-  the editor (a `git checkout`, a formatter, a save) is never answered
-  from an older check, without `workspace/didChangeWatchedFiles`. A check
-  that read a file changed while it ran, or so shortly before it that the
-  file system's clock can't tell (2 s, on one that records whole seconds),
-  isn't kept.
+  the editor (a `git checkout`, a formatter) is never answered from an
+  older check, without `workspace/didChangeWatchedFiles`. A check that
+  read a file changed while it ran, or so shortly before it that the file
+  system's clock can't tell (2 s, on one that records whole seconds; none
+  on APFS, ext4 and others that record nanoseconds), isn't kept.
+- **Saving doesn't count.** An open document's file isn't what a check
+  read: it read the document's text. So a save, which writes that text
+  to the file, keeps every check of it, whether the editor writes the
+  file in place or writes another and renames it over the first (which
+  changes the directory's times, but not the names in it, which are what
+  module resolution reads). What a save changes is the text, if it sends
+  other text in `didSave`, and that's a different check anyway.
 
 This covers all three kinds of answer: the documents as they are, a
 repaired copy, and the last good check's version, each of which is a

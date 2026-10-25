@@ -63,6 +63,11 @@ pub struct Unavailable {
     pub code: String,
     /// A description for people.
     pub message: String,
+    /// For `noHir`, the imports of modules that couldn't be found, if any:
+    /// each file, and its first and last line (1-based). A repaired copy
+    /// has them blank.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unfound: Vec<(PathBuf, u32, u32)>,
 }
 
 impl Unavailable {
@@ -70,6 +75,7 @@ impl Unavailable {
         Unavailable {
             code: code.to_string(),
             message: message.into(),
+            unfound: Vec::new(),
         }
     }
 }
@@ -302,19 +308,55 @@ pub fn ask_with(
         }
 
         let items: Vec<(Question, Position)> = group.iter().map(|i| questions[*i]).collect();
+        let roots = match project {
+            true => searched(session, &request.file),
+            false => Vec::new(),
+        };
+        let checking = |root| Checking {
+            project,
+            keep: true,
+            root,
+        };
+        let found = match roots.split_first() {
+            None => pipeline(
+                cache,
+                session,
+                request,
+                checking(None),
+                &items,
+                older,
+                repair,
+            ),
+            Some((first, rest)) => rest.iter().fold(
+                pipeline(
+                    cache,
+                    session,
+                    request,
+                    checking(Some(first)),
+                    &items,
+                    older,
+                    repair,
+                ),
+                |all, root| {
+                    let more = pipeline(
+                        cache,
+                        session,
+                        request,
+                        checking(Some(root)),
+                        &items,
+                        older,
+                        repair,
+                    );
 
-        for (i, answer) in group.iter().zip(pipeline(
-            cache,
-            session,
-            request,
-            Checking {
-                project,
-                keep: true,
-            },
-            &items,
-            older,
-            repair,
-        )) {
+                    all.into_iter()
+                        .zip(more)
+                        .map(|(a, b)| merged(a, b))
+                        .collect()
+                },
+            ),
+        };
+
+        for (i, answer) in group.iter().zip(found) {
             answers[*i] = Some(answer);
         }
     }
@@ -563,11 +605,11 @@ fn references_in(
         for module in scope.modules {
             let file = module.module_id.file(scope.db);
 
-            if file == scope.file {
+            if !scope.in_project(&file) {
+                continue;
+            } else if file == scope.file {
                 collect(&file, scope.walker);
-            } else if scope.in_project(&file)
-                && let Some(walker) = scope.checked.walker(&file)
-            {
+            } else if let Some(walker) = scope.checked.walker(&file) {
                 collect(&file, &walker);
             }
         }
@@ -971,6 +1013,7 @@ fn edited_question(
                 Checking {
                     project: false,
                     keep: !changed,
+                    root: None,
                 },
                 &[(inspect, position)],
                 older,
@@ -1382,9 +1425,12 @@ impl Scope<'_, '_> {
 /// What `pipeline` checks: the whole project, or the file and what it
 /// imports; and whether the check may be kept for later questions.
 #[derive(Clone, Copy)]
-struct Checking {
+struct Checking<'a> {
     project: bool,
     keep: bool,
+    /// The project to check instead of the file's own, for references to
+    /// a declaration outside the session's projects (`searched`).
+    root: Option<&'a Path>,
 }
 
 /// Type checks the request's file and answers each question from its
@@ -1400,7 +1446,11 @@ fn pipeline(
     cache: &Cache,
     session: &Session,
     request: &Request,
-    Checking { project, keep }: Checking,
+    Checking {
+        project,
+        keep,
+        root,
+    }: Checking,
     questions: &[(Question, Position)],
     older: Option<(&Request, &Fallback)>,
     repair: bool,
@@ -1410,7 +1460,10 @@ fn pipeline(
         Ok((mut target, text)) => {
             let file = target.file.clone().unwrap();
 
-            if project && in_sources(&target.root, &file) {
+            if let Some(root) = root {
+                target.root = root.to_path_buf();
+                target.file = None;
+            } else if project && in_sources(&target.root, &file) {
                 target.file = None;
             }
 
@@ -1445,10 +1498,15 @@ fn pipeline(
     let parse = results
         .iter()
         .any(|r| matches!(r, Err(e) if e.code == "noHir"));
+    let unfound: Vec<(PathBuf, u32, u32)> = results
+        .iter()
+        .filter_map(|r| r.as_ref().err())
+        .flat_map(|e| e.unfound.iter().cloned())
+        .collect();
 
     if repair
         && !wanted.is_empty()
-        && let Some(repaired) = repaired_copy(request, older, parse)
+        && let Some(repaired) = repaired_copy(request, older, parse, &unfound)
     {
         let asked: Vec<(Question, Position)> = wanted.iter().map(|i| questions[*i]).collect();
         let (found, kept) = from_older(cache, session, request, &repaired, true, &asked);
@@ -1522,6 +1580,63 @@ fn inspect(question: Question, scope: &Scope) -> Result<Option<Reply>, Unavailab
             })
         }),
     })
+}
+
+/// The projects whose references to a file's symbols are asked about when
+/// the file isn't any project's own: for a file in the standard library,
+/// every project of the session (each with a `src/` or `test/`); for one
+/// in a project's `dep/`, that project. Empty for any other file, whose
+/// own project is searched (`root_of`).
+fn searched(session: &Session, file: &Path) -> Vec<PathBuf> {
+    let Ok(file) = canonical(file) else {
+        return Vec::new();
+    };
+    let projects = session
+        .projects
+        .iter()
+        .filter_map(|p| p.canonicalize().ok())
+        .filter(|p| p.join("src").is_dir() || p.join("test").is_dir());
+    let std = session.std.canonicalize().unwrap_or(session.std.clone());
+
+    if session.projects.iter().any(|p| in_sources(p, &file)) {
+        Vec::new()
+    } else if file.starts_with(&std) {
+        projects.collect()
+    } else {
+        projects
+            .filter(|p| file.starts_with(p.join("dep")))
+            .take(1)
+            .collect()
+    }
+}
+
+/// Two projects' answers to one question about references, as one: every
+/// reference either found, if both have an answer.
+fn merged(a: Answer<Reply>, b: Answer<Reply>) -> Answer<Reply> {
+    let result = match (a.result, b.result) {
+        (Err(e), _) | (_, Err(e)) => Err(e),
+        (Ok(Some(Reply::Places(mut places))), Ok(Some(Reply::Places(more)))) => {
+            places.extend(more);
+            places.sort_by(|x, y| {
+                (&x.file, x.range.start.line, x.range.start.character).cmp(&(
+                    &y.file,
+                    y.range.start.line,
+                    y.range.start.character,
+                ))
+            });
+            places.dedup();
+            Ok(Some(Reply::Places(places)))
+        }
+        (Ok(a), Ok(b)) => Ok(a.or(b)),
+    };
+
+    Answer {
+        result,
+        elapsed: a.elapsed + b.elapsed,
+        source: a.source,
+        typed: a.typed && b.typed,
+        cached: a.cached && b.cached,
+    }
 }
 
 /// Works out what to check, and reads the file's text.
@@ -1609,6 +1724,18 @@ fn analyze(
     let (found, kept) = cache.with(target, keep, move |checked| {
         let lines = Lines::with_encoding(&text, encoding);
         let Some(walker) = checked.walker(&file) else {
+            // A project's check for references to a declaration outside
+            // it (`searched`) may not use the file's module at all. Then
+            // nothing in the project refers to anything in it.
+            if checked.target.file.is_none() && !in_sources(&checked.target.root, &file) {
+                let none = |(question, _): &(Question, Position)| match question {
+                    Question::References { .. } => Ok(Some(Reply::Places(Vec::new()))),
+                    _ => Ok(None),
+                };
+
+                return Ok((asked.iter().map(none).collect(), false));
+            }
+
             return Err(Unavailable::new("internal", "the file wasn't type checked"));
         };
         let module = walker_module(checked, &file);
@@ -2010,11 +2137,14 @@ fn start_check(
             // compiler doesn't say which modules it got to. A panic isn't.
             let failure = match checking {
                 Ok(Ok(run)) if run.inspected.is_some() => return,
-                Ok(Ok(_)) => Ok(Unavailable::new(
-                    "noHir",
-                    "the file or a module it imports couldn't be parsed or found, \
-                     so nothing was type checked",
-                )),
+                Ok(Ok(run)) => Ok(Unavailable {
+                    unfound: run.unfound,
+                    ..Unavailable::new(
+                        "noHir",
+                        "the file or a module it imports couldn't be parsed or found, \
+                         so nothing was type checked",
+                    )
+                }),
                 Ok(Err(e)) => Ok(Unavailable::new("compilerError", e)),
                 Err(_) => Err(Unavailable::new("compilerPanic", panic_message())),
             };
@@ -2207,6 +2337,7 @@ fn repaired_copy(
     request: &Request,
     older: Option<(&Request, &Fallback)>,
     parse: bool,
+    unfound: &[(PathBuf, u32, u32)],
 ) -> Option<Fallback> {
     let file = canonical(&request.file).ok()?;
     let mut docs: HashMap<PathBuf, String> = request
@@ -2219,13 +2350,38 @@ fn repaired_copy(
         docs.insert(file.clone(), read(&file).ok()?);
     }
 
+    // The imports of modules that couldn't be found are blank, in modules
+    // that aren't open too.
+    let mut imports: HashMap<PathBuf, BTreeSet<usize>> = HashMap::new();
+
+    for (path, first, last) in unfound {
+        let Ok(path) = canonical(path) else {
+            continue;
+        };
+
+        if !docs.contains_key(&path) {
+            docs.insert(path.clone(), read(&path).ok()?);
+        }
+
+        imports
+            .entry(path)
+            .or_default()
+            .extend((*first as usize).saturating_sub(1)..(*last as usize));
+    }
+
     let mut out = Fallback {
         contents: docs.clone(),
         changes: HashMap::new(),
     };
 
     for (path, text) in &docs {
+        let imports = imports.remove(path).unwrap_or_default();
+
         if parse && parses(text) {
+            if !imports.is_empty() {
+                blank_lines(&mut out, path, text, &imports);
+            }
+
             continue;
         }
 
@@ -2272,7 +2428,7 @@ fn repaired_copy(
 
                 None
             });
-        let Some(lines) = found else {
+        let Some(mut lines) = found else {
             if parse {
                 return None;
             }
@@ -2280,11 +2436,23 @@ fn repaired_copy(
             continue;
         };
 
+        lines.extend(imports);
+
         if lines.is_empty() {
             continue;
         }
 
-        let copy = blank(text, &lines);
+        blank_lines(&mut out, path, text, &lines);
+    }
+
+    (!out.changes.is_empty()).then_some(out)
+}
+
+/// `text` with `lines` blank in `out`, as the document at `path`, with
+/// what changed.
+fn blank_lines(out: &mut Fallback, path: &Path, text: &str, lines: &BTreeSet<usize>) {
+    {
+        let copy = blank(text, lines);
         let mut changes = Changes::none(copy.len());
         let starts: Vec<usize> = std::iter::once(0)
             .chain(text.match_indices('\n').map(|(i, _)| i + 1))
@@ -2294,7 +2462,7 @@ fn repaired_copy(
 
         // Consecutive blank lines are one change: a whole method blank is
         // one method, not lines of one.
-        for line in &lines {
+        for line in lines {
             match runs.last_mut() {
                 Some((_, last)) if *last + 1 == *line => *last = *line,
                 _ => runs.push((*line, *line)),
@@ -2309,11 +2477,9 @@ fn repaired_copy(
             changes.replace(at, at + (last - first), end_of(last) - at);
         }
 
-        out.contents.insert(path.clone(), copy);
-        out.changes.insert(path.clone(), changes);
+        out.contents.insert(path.to_path_buf(), copy);
+        out.changes.insert(path.to_path_buf(), changes);
     }
-
-    (!out.changes.is_empty()).then_some(out)
 }
 
 /// The lines of `path` (as it is in `now`) that changed since the last

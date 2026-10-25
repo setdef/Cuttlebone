@@ -597,3 +597,113 @@ fn a_qualified_constant_is_two_references() {
         );
     }
 }
+
+/// References asked at a declaration outside the project, in std or in a
+/// dependency in the project's `dep/`: the project's own uses, which
+/// are what the project's root (the session's) is asked about. Not
+/// std's or the dependency's own uses, and not the declaration, which
+/// isn't the project's.
+#[test]
+fn references_at_a_declaration_outside_the_project_are_the_projects_uses() {
+    let root = crate::common::tmp().join("references-outside");
+    let _ = std::fs::remove_dir_all(&root);
+    let url = "https://example.com/acme/geo";
+    let package = root
+        .join("dep")
+        .join(
+            compiler::pkg::manifest::Url::parse(url)
+                .unwrap()
+                .directory_name(),
+        )
+        .join("v1");
+    let main = "import geo\n\nfn twice -> Int {\n  [1, 2].size + geo.area(2)\n}\n\n\
+                fn thrice -> Int {\n  [3].size + geo.area(3)\n}\n";
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(package.join("src")).unwrap();
+    std::fs::write(root.join("src/main.inko"), main).unwrap();
+    std::fs::write(
+        root.join("inko.pkg"),
+        format!(
+            "require {} 1.0.0 0123456789012345678901234567890123456789\n",
+            url
+        ),
+    )
+    .unwrap();
+    std::fs::write(package.join("inko.pkg"), "").unwrap();
+    std::fs::write(
+        package.join("src/geo.inko"),
+        "fn pub area(side: Int) -> Int {\n  side * side\n}\n\nfn pub own -> Int {\n  area(1)\n}\n",
+    )
+    .unwrap();
+
+    // Another project of the session, which std's references search too.
+    let other = crate::common::tmp().join("references-outside-other");
+
+    std::fs::create_dir_all(other.join("src")).unwrap();
+    std::fs::write(
+        other.join("src/once.inko"),
+        "fn once -> Int {\n  [4].size\n}\n",
+    )
+    .unwrap();
+
+    let root = root.canonicalize().unwrap();
+    let other = other.canonicalize().unwrap();
+    let session = query::Session {
+        std: upstream_std(),
+        projects: vec![root.clone(), other.clone()],
+    };
+    let ask = |file: &Path, needle: &str, offset: u32| {
+        let text = std::fs::read_to_string(file).unwrap();
+        let request = Request {
+            file: file.to_path_buf(),
+            position: position_of(&text, needle, offset),
+            encoding: Encoding::Utf16,
+            contents: HashMap::new(),
+        };
+        let answer = query::references(&session, &request, true);
+
+        answer
+            .result
+            .unwrap()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let file = match p.file.strip_prefix(&root) {
+                    Ok(rel) => rel.display().to_string(),
+                    Err(_) => format!("other:{}", p.file.strip_prefix(&other).unwrap().display()),
+                };
+
+                (file, p.range.start.line, text_at(&p.file, p))
+            })
+            .collect::<Vec<_>>()
+    };
+    let uses = |name: &str| {
+        vec![
+            ("src/main.inko".to_string(), 3, name.to_string()),
+            ("src/main.inko".to_string(), 7, name.to_string()),
+        ]
+    };
+
+    assert_eq!(
+        ask(&upstream_std().join("std/array.inko"), "fn pub size", 7),
+        [
+            uses("size"),
+            vec![("other:src/once.inko".to_string(), 1, "size".to_string())]
+        ]
+        .concat()
+    );
+    assert_eq!(
+        ask(&package.join("src/geo.inko"), "fn pub area", 7),
+        uses("area")
+    );
+    // A module the project doesn't use: nothing in it is referred to.
+    assert_eq!(
+        ask(
+            &upstream_std().join("std/json.inko"),
+            "fn pub static parse",
+            14
+        ),
+        vec![]
+    );
+}

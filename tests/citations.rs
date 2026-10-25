@@ -19,6 +19,10 @@ const CITATIONS: &[(&str, &str)] = &[
     ),
     ("compiler/src/diagnostics.rs:25-50", "BorrowValueType,"),
     (
+        "compiler/src/modules_parser.rs:119-124",
+        "format!(\"the module '{}' couldn't be found\", dep),",
+    ),
+    (
         "inko/src/command/check.rs:62-70",
         "compiler.print_diagnostics();",
     ),

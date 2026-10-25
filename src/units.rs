@@ -359,6 +359,19 @@ pub fn names(text: &str) -> impl Iterator<Item = &str> {
         .filter(|w| !KEYWORDS.contains(w))
 }
 
+/// The names an import binds, from its text: the last name of its path
+/// (`util` in `import app.util`, which is what the module is used as) and
+/// every name in its symbol list (`Thing`, an alias), but not the path's
+/// leading names (`app`) or its build tags (`if linux`), which name
+/// nothing in the module. A unit that mentions only those, say in the
+/// type of `app.other`'s module, can't depend on the import.
+pub fn import_names(text: &str) -> impl Iterator<Item = &str> {
+    let text = text.find(" if ").map_or(text, |i| &text[..i]);
+    let (path, list) = text.find('(').map_or((text, ""), |i| text.split_at(i));
+
+    names(path).last().into_iter().chain(names(list))
+}
+
 /// A change's old and new ranges, widened to whole names: at an end where
 /// the removed or added text is part of a name, over the rest of the name.
 fn widen(old: &str, new: &str, change: &Change) -> (Range<usize>, Range<usize>) {
@@ -395,7 +408,7 @@ fn widen(old: &str, new: &str, change: &Change) -> (Range<usize>, Range<usize>) 
 /// The names that text declares, if it's whole items (at the top level of
 /// a module, or in a type's body), such as a method typed in full or blank
 /// in a repaired copy: what the items declare, with the members of types,
-/// and every name in an import. `None` if it isn't, or is only blank.
+/// and every name an import binds. `None` if it isn't, or is only blank.
 fn declared(text: &str) -> Option<HashSet<String>> {
     if blank(text) {
         return None;
@@ -414,7 +427,7 @@ fn declared(text: &str) -> Option<HashSet<String>> {
         }
 
         match item.kind {
-            Kind::Import => out.extend(names(&source[item.range.clone()]).map(String::from)),
+            Kind::Import => out.extend(import_names(&source[item.range.clone()]).map(String::from)),
             Kind::Comment => {}
             _ => out.extend(item.names.iter().cloned()),
         }
@@ -547,7 +560,7 @@ pub enum ErrorEffect {
 
 /// What an error at `range` of `text` (outlined by `outline`) does: like a
 /// change of it (`effect`), with the names of the item it's in and the
-/// items around that, and for an import every name in it, since any of
+/// items around that, and for an import every name it binds, since any of
 /// them may be what doesn't resolve.
 pub fn error_effect(outline: &Outline, text: &str, range: Range<usize>) -> ErrorEffect {
     let Some(index) = outline.innermost(&range) else {
@@ -578,7 +591,7 @@ pub fn error_effect(outline: &Outline, text: &str, range: Range<usize>) -> Error
         if i.kind == Kind::Import {
             effect
                 .names
-                .extend(names(&text[i.range.clone()]).map(String::from));
+                .extend(import_names(&text[i.range.clone()]).map(String::from));
         }
     }
 
@@ -737,12 +750,30 @@ fn main {
             "import std.fmt (Format)\n\nfn other(a: Int) {}\n",
         );
 
-        assert_eq!(sorted(&e), ["Format", "fmt", "other", "std"]);
+        assert_eq!(sorted(&e), ["Format", "fmt", "other"]);
         // Unfinished, it may declare anything it names.
         assert_eq!(
             sorted(&effect_of("fn main", 0, "fn other(a: Int) {\n")),
             ["Int", "a", "other"]
         );
+    }
+
+    #[test]
+    fn an_import_binds_its_last_name_and_its_symbols() {
+        fn bound(text: &str) -> Vec<&str> {
+            import_names(text).collect()
+        }
+
+        assert_eq!(bound("import app.util"), ["util"]);
+        assert_eq!(
+            bound("import app.nope.deeper (Thing, Other as O)"),
+            ["deeper", "Thing", "Other", "O"]
+        );
+        assert_eq!(
+            bound("import std.libc.linux (self as sys) if linux"),
+            ["linux", "sys"]
+        );
+        assert_eq!(bound("import std.sys.unix.env if unix"), ["env"]);
     }
 
     #[test]
@@ -773,7 +804,7 @@ fn main {
         assert!(matches!(at("amount\n", 6), ErrorEffect::Body));
         assert_eq!(names(at("Int) -> Int", 3)), ["Counter", "add"]);
         assert_eq!(names(at("Int\n\n  fn static", 3)), ["Counter", "count"]);
-        assert_eq!(names(at("Stdout", 6)), ["Stdout", "std", "stdio"]);
+        assert_eq!(names(at("Stdout", 6)), ["Stdout", "stdio"]);
         assert!(matches!(at("A counter", 1), ErrorEffect::Unknown));
         assert!(matches!(at("\n\nfn main", 1), ErrorEffect::Unknown));
     }
