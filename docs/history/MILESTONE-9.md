@@ -280,7 +280,21 @@ check was new. Now it's kept, so the test also asks after a check of
 other text pushed the repaired copy's (or the last good version's) check
 out, where only the answer's own check says it ran.
 
-**The tiers.** TIERS-PENDING
+**The tiers.** scripts/mutate.py changed (its mutations), so the
+milestone tier said the exhaustive tier must pass too (AGENTS.md). It
+runs everything the milestone tier does, so I ran it in its place, on
+102d52d, the commit before this paragraph, which is all that changed
+since. It took 2,424 s, with the machine loaded by another session
+throughout (load averages 350 to 450): the checks of every commit 76 s,
+the whole corpus 94 s, every test without kept checks (and the whole
+corpus again) 160 s, the selection check 4 s, and the mutations 2,089 s
+(with the runner's control, 173 s). **270 of the 271 mutations were
+caught. The other, "the batch's answers out of order", timed out at the
+runner's 900 s under that load**, as it did in milestone 8. Run again
+alone (`scripts/mutate.py "the batch's answers out of order"`), it was
+caught by the corpus in 704 s. It's milestone 6's, and this milestone
+didn't change its code. The first exhaustive run, on d9db7b1, is the one
+that found the four mutations above.
 
 ## Every patch line added, and why
 
