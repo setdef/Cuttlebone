@@ -1089,7 +1089,10 @@ lookup each: on an Apple M1 Max, in a release build, 1,000 definition
 requests sent at once on a std-sized project are answered in 0.7 s
 (tests/latency.rs holds them to 3 s under `cargo test`). Looking again at
 what a check read costs about 2 µs a path (150 paths for a file that
-imports all of std).
+imports all of std). In code that doesn't parse, a second question with
+no answer on that project takes about 10 ms in the worker instead of
+30 ms: the lookups, and trying the repaired copies' blank lines again (a
+parse each, about 2 ms in all).
 
 **Memory.** Each kept check holds its compiler's state: about 33 MB for a
 file that imports all of std. On an Apple M1 Max the worker holds 48 MB
