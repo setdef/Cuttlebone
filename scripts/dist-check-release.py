@@ -3,8 +3,9 @@
 manifest's URL (docs/releases.md): the manifest's shape, then for each
 build, downloads its archive, checks its size and SHA-256, and runs it
 (scripts/dist-verify.py) wherever this machine can. A Linux build runs in
-Alpine and in Ubuntu containers (Docker, emulating the other CPU), and a
-macOS build on macOS on its own CPU. It fails if any build can't be run
+Alpine and in Ubuntu containers, with Docker on Linux on the build's CPU
+or Docker Desktop on macOS (which emulates the other CPU), and a macOS
+build on macOS on its own CPU. It fails if any build can't be run
 here, unless `--partial` is given.
 
 Usage: scripts/dist-check-release.py MANIFEST_URL [--partial] [--inko PATH]
@@ -19,6 +20,7 @@ import json
 import pathlib
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -65,6 +67,9 @@ version = manifest["cuttlebone"]
 host_os = {"Darwin": "macos", "Linux": "linux", "FreeBSD": "freebsd"}.get(platform.system())
 host_arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64", "amd64": "amd64"}.get(platform.machine())
 unrun = []
+# Docker on Linux runs containers of its own CPU; Docker Desktop on macOS
+# emulates the other.
+docker = subprocess.run(["docker", "info"], capture_output=True).returncode == 0 if shutil.which("docker") else False
 
 with tempfile.TemporaryDirectory(prefix="cuttlebone-release-") as work:
     for build in manifest["builds"]:
@@ -95,7 +100,7 @@ with tempfile.TemporaryDirectory(prefix="cuttlebone-release-") as work:
         archive.write_bytes(data)
         verify = [sys.executable, str(root / "scripts/dist-verify.py"), str(archive), "--version", version, "--inko-version", build["inko"]]
 
-        if build["os"] == "linux":
+        if build["os"] == "linux" and docker and (build["arch"] == host_arch or host_os == "macos"):
             runs = [verify + ["--docker", image] for image in IMAGES]
         elif (build["os"], build["arch"]) == (host_os, host_arch):
             runs = [verify + (["--inko", args.inko] if args.inko else [])]

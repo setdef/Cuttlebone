@@ -47,7 +47,29 @@ Each milestone has its own version; what changed in each:
 Setting it up in VS Code and Neovim: [editors/](editors/README.md). The rules
 every change follows, for people and coding agents: [AGENTS.md](AGENTS.md).
 
-## Building
+## Installing
+
+Each [release](https://github.com/setdef/Cuttlebone/releases) has a
+prebuilt `cuttlebone` for macOS (15 or newer) and Linux (any
+distribution), on AMD64 and ARM64. Each build works with one Inko version,
+which its name says: pick the one for the `inko --version` you have.
+For example, on Linux on AMD64 with Inko 0.21.1:
+
+    version=0.10.0 inko=0.21.1 target=x86_64-unknown-linux-musl
+    name=cuttlebone-$version-inko-$inko-$target
+    curl -fLO https://github.com/setdef/Cuttlebone/releases/download/v$version/$name.tar.gz
+    tar -xzf $name.tar.gz
+    install $name/cuttlebone ~/.local/bin/    # or anywhere on PATH
+
+The targets are `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`. The Linux
+binaries are static, so they run on glibc and musl distributions alike.
+Each binary is self-contained: it needs Inko itself, and nothing else.
+Each release's `manifest.json` lists its builds with their sizes and
+SHA-256, for clients that install Cuttlebone for their users
+([docs/releases.md](docs/releases.md)).
+
+## Building from source
 
 You need Rust (rust-toolchain.toml pins the version) and LLVM 18, because the
 upstream compiler crate links LLVM even though Cuttlebone never generates
@@ -166,6 +188,12 @@ fresh copy of the pinned release and matches `.upstream/inko`
 test-only code (`scripts/check-release.sh`). Tests build with the
 `fault-injection` feature (docs/lsp.md, "Testing faults"); release builds
 don't.
+
+The milestone tier also checks the release tooling with this machine's
+archive (`scripts/check-dist.sh`, [docs/releases.md](docs/releases.md)):
+it builds and verifies it, publishes it to a `file://` URL with a manifest
+and checks it from there, and checks that each step refuses what it
+should.
 
 `editors/check.sh` starts the server from VS Code and Neovim headlessly and
 checks that a hover and a go to definition work, and that a diagnostic

@@ -13,8 +13,8 @@ versions here were given afterwards.
 Milestone 10: prebuilt binaries.
 [Report](docs/history/MILESTONE-10.md).
 
-- **Prebuilt binaries** for macOS on ARM64 and Linux on AMD64 and ARM64
-  (static, for musl and glibc distributions alike), on each GitHub
+- **Prebuilt binaries** for macOS and Linux, on AMD64 and ARM64 (Linux's
+  static, for musl and glibc distributions alike), on each GitHub
   release, built by its own workflow. Each build works with one Inko
   version, which its name says.
 - **A manifest** with each release (`manifest.json`): per build, the Inko

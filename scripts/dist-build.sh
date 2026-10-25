@@ -4,7 +4,7 @@
 #
 #   dist/cuttlebone-<version>-inko-<inko>-<target>.tar.gz
 #
-# Run it on macOS (ARM64), or in Alpine for Linux (scripts/dist-linux.sh
+# Run it on macOS, or in Alpine for Linux (scripts/dist-linux.sh
 # runs it there). scripts/upstream.sh must have prepared .upstream/ first.
 # It fails if the binary links anything outside the operating system's own
 # libraries (scripts/dist-deps.sh).
