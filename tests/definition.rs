@@ -54,7 +54,14 @@ fn definition(needle: &str, offset: u32) -> Option<(String, u32, String)> {
         &request(&project, "src/main.inko", needle, offset),
     );
 
-    answer.result.unwrap().map(|p| describe(&project, &p))
+    answer.result.unwrap().map(|p| describe(&project, &one(p)))
+}
+
+/// The one place of a definition: every name but a compound assignment's
+/// to a setter has one.
+fn one(mut places: Vec<Place>) -> Place {
+    assert_eq!(places.len(), 1, "{:?}", places);
+    places.remove(0)
 }
 
 fn type_definition(needle: &str, offset: u32) -> Option<(String, u32, String)> {
@@ -310,7 +317,9 @@ fn definition_in_code_with_errors_is_unavailable_with_the_same_reasons() {
             contents: HashMap::from([(file.clone(), text.clone())]),
         };
 
-        query::definition(&project.session, &request).result
+        query::definition(&project.session, &request)
+            .result
+            .map(|p| p.map(one))
     };
 
     // A syntax error: a repaired copy answers before it, but not after.
@@ -362,10 +371,10 @@ fn positions_and_ranges_count_the_requests_encoding() {
             encoding,
             contents: HashMap::new(),
         };
-        let place = query::definition(&project.session, &request)
+        let place = one(query::definition(&project.session, &request)
             .result
             .unwrap()
-            .unwrap();
+            .unwrap());
 
         assert_eq!(place.range.start.line, 14, "{:?}", encoding);
 
@@ -384,6 +393,7 @@ fn positions_and_ranges_count_the_requests_encoding() {
         )
         .result
         .unwrap()
+        .map(one)
         .unwrap();
 
         assert_eq!(
@@ -578,6 +588,7 @@ fn a_qualified_constant_is_two_references() {
         )
         .result
         .unwrap()
+        .map(one)
         .unwrap();
 
         assert_eq!(

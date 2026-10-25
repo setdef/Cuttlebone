@@ -158,14 +158,16 @@ impl Job {
                 Reply::Members(m) => Some(m),
                 _ => None,
             })),
-            Query::Definition | Query::TypeDefinition => Outcome::Place(answer.map(|r| match r {
+            Query::TypeDefinition => Outcome::Place(answer.map(|r| match r {
                 Reply::Place(p) => Some(p),
                 _ => None,
             })),
-            Query::References { .. } => Outcome::Places(answer.map(|r| match r {
-                Reply::Places(p) => Some(p),
-                _ => None,
-            })),
+            Query::Definition | Query::References { .. } => {
+                Outcome::Places(answer.map(|r| match r {
+                    Reply::Places(p) => Some(p),
+                    _ => None,
+                }))
+            }
             Query::Highlight => Outcome::Highlights(answer.map(|r| match r {
                 Reply::Highlights(h) => Some(h),
                 _ => None,

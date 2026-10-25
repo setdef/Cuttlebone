@@ -280,7 +280,8 @@ answer ([status](#status) says why). It's never a guess.
 
 ## `textDocument/definition`
 
-Where the symbol at the position is declared, as one `Location`:
+Where the symbol at the position is declared, as one `Location` (or
+several, for a [compound assignment to a setter](#a-compound-assignment-to-a-setter)):
 
 ```json
 → {"jsonrpc": "2.0", "id": 4, "method": "textDocument/definition", "params": {
@@ -312,6 +313,16 @@ the whole declaration. A module's range is empty, at the start of its file.
 
 Symbols are matched by the compiler's ids, never by name, so two modules'
 `Error` types are never confused.
+
+### A compound assignment to a setter
+
+`c.value += 1` calls the getter `value`, and then the setter `value=` with
+the sum: the compiler gives both calls the same name. Definition there is
+both declarations, as a `Location[]` (which LSP allows), the setter's
+first. Everywhere else it's one `Location`, as above: `c.value = 2` is the
+setter, and `c.value` the getter. References find the name from either
+method, and a document highlight there is the setter's (both assignments,
+as writes).
 
 The result is `null` when there's nothing at the position (a comment, a
 literal, a keyword), or the name doesn't resolve (an undefined method, say).

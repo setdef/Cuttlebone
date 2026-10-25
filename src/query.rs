@@ -441,27 +441,28 @@ fn members_in(scope: &Scope) -> Result<Option<MembersAt>, Unavailable> {
 /// Where the symbol at a position is declared: a method (for a call, the
 /// called method), a variable, a field, a type, trait, type parameter,
 /// constant, constructor or module. On a declaration's own name, that
-/// declaration.
-pub fn definition(session: &Session, request: &Request) -> Answer<Place> {
+/// declaration. Usually one place; a name that refers to several symbols
+/// (`c.value += 1` calls the setter `value=` and the getter `value`) has
+/// each one's, as `symbols_at` orders them.
+pub fn definition(session: &Session, request: &Request) -> Answer<Vec<Place>> {
     ask_one(session, request, Question::Definition).map(|r| match r {
-        Reply::Place(p) => Some(p),
+        Reply::Places(p) => Some(p),
         _ => None,
     })
 }
 
-fn definition_in(scope: &Scope) -> Result<Option<Place>, Unavailable> {
-    {
-        let Some(reference) = symbol_at(
-            &scope.walker.references,
-            &scope.walker.declarations,
-            scope.at,
-        ) else {
-            return Ok(None);
-        };
-        Ok(scope
-            .declaration(reference.symbol)
-            .map(|(file, location)| scope.place(&file, location)))
-    }
+fn definition_in(scope: &Scope) -> Result<Option<Vec<Place>>, Unavailable> {
+    let places: Vec<Place> = symbols_at(
+        &scope.walker.references,
+        &scope.walker.declarations,
+        scope.at,
+    )
+    .into_iter()
+    .filter_map(|r| scope.declaration(r.symbol))
+    .map(|(file, location)| scope.place(&file, location))
+    .collect();
+
+    Ok((!places.is_empty()).then_some(places))
 }
 
 /// Where the type of the expression at a position is declared, without
@@ -817,6 +818,31 @@ pub fn symbol_at<'a>(
                 (l.line_end, l.column_end),
             )
         })
+}
+
+/// Every symbol the name at a position refers to or declares: the one
+/// `symbol_at` selects, and any other symbol with a name at exactly its
+/// location. A compound assignment to a setter (`c.value += 1`) is a call
+/// of the getter and of the setter, which the compiler gives the same
+/// name. The selected one comes first (there, the setter), so a client
+/// that takes only the first gets what it did before.
+pub fn symbols_at<'a>(
+    references: &'a [Reference],
+    declarations: &'a [Reference],
+    at: HirPosition,
+) -> Vec<&'a Reference> {
+    let Some(selected) = symbol_at(references, declarations, at) else {
+        return Vec::new();
+    };
+    let mut found: Vec<&Reference> = Vec::new();
+
+    for r in references.iter().chain(declarations) {
+        if r.location == selected.location && found.iter().all(|f| f.symbol != r.symbol) {
+            found.push(r);
+        }
+    }
+
+    found
 }
 
 /// Where each symbol of a check is declared.
@@ -1482,7 +1508,7 @@ fn inspect(question: Question, scope: &Scope) -> Result<Option<Reply>, Unavailab
     Ok(match question {
         Question::Type => type_at_in(scope)?.map(Reply::Type),
         Question::Members | Question::Complete => members_in(scope)?.map(Reply::Members),
-        Question::Definition => definition_in(scope)?.map(Reply::Place),
+        Question::Definition => definition_in(scope)?.map(Reply::Places),
         Question::TypeDefinition => type_definition_in(scope)?.map(Reply::Place),
         Question::References {
             include_declaration,

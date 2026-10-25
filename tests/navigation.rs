@@ -482,3 +482,56 @@ fn locations_in_dependencies_are_in_the_projects_dep_directory() {
         (file, 0, "area".to_string())
     );
 }
+
+/// `c.value += 1` calls the getter `value` and then the setter `value=`,
+/// both at the same name. Definition there is both, as a `Location[]`
+/// (the setter first); a plain read or assignment is one `Location`.
+#[test]
+fn definition_at_a_compound_assignment_to_a_setter_is_the_getter_and_the_setter() {
+    let root = crate::common::tmp().join("compound-setter");
+    let file = root.join(MAIN);
+    let text = "type Counter {\n  let @count: Int\n\n  fn pub value -> Int {\n    @count\n  }\n\n  \
+                fn pub mut value=(value: Int) {\n    @count = value\n  }\n}\n\n\
+                type async Main {\n  fn async main {\n    let c = Counter(count: 0)\n\n    \
+                c.value = 2\n    c.value += 1\n    c.value\n  }\n}\n";
+
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, text).unwrap();
+
+    let root = root.canonicalize().unwrap();
+    let mut client = Client::initialized(&root, json!({ "diagnostics": false }));
+    let getter = (MAIN.to_string(), 3, "value".to_string());
+    let setter = (MAIN.to_string(), 7, "value=".to_string());
+
+    for (needle, expected) in [
+        ("c.value += 1", vec![setter.clone(), getter.clone()]),
+        ("c.value = 2", vec![setter.clone()]),
+        ("c.value\n  }", vec![getter.clone()]),
+    ] {
+        let (line, character) = at(text, needle, 2, false);
+        let id = client.send_at("textDocument/definition", &root.join(MAIN), line, character);
+        let result = client.response(id)["result"].clone();
+        let found: Vec<_> = match &result {
+            Value::Array(locations) => locations.iter().map(|l| place(&root, l, false)).collect(),
+            location => {
+                assert_eq!(
+                    expected.len(),
+                    1,
+                    "{}: one Location, not an array: {}",
+                    needle,
+                    result
+                );
+                vec![place(&root, location, false)]
+            }
+        };
+
+        assert_eq!(found, expected, "{}: {}", needle, result);
+        assert_eq!(
+            result.is_array(),
+            expected.len() > 1,
+            "{}: {}",
+            needle,
+            result
+        );
+    }
+}

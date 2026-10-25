@@ -1354,6 +1354,13 @@ impl Server {
             Outcome::Places(answer) => {
                 let status = status_of(&answer);
                 let result = match answer.result {
+                    // A definition is one `Location` unless there are
+                    // several (`Location[]`), which LSP allows both of.
+                    Ok(Some(mut places))
+                        if pending.query == Query::Definition && places.len() == 1 =>
+                    {
+                        location(places.remove(0))
+                    }
                     Ok(Some(places)) => Value::Array(places.into_iter().map(location).collect()),
                     _ => Value::Null,
                 };

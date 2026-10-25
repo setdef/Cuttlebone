@@ -136,6 +136,8 @@ M = [
  ("qualified names cover the qualifier", "src/walker.rs", "    if location.line_start != location.line_end || width == 0 || width > location.column_end {", "    if true {", "--test corpus_definition"),
  ("type definition keeps the instance", "src/walker.rs", "TypeEnum::TypeInstance(ins) => SymbolId::Type(ins.instance_of()),", "TypeEnum::TypeInstance(_) => return None,", "--test definition type_definition_strips"),
  ("type definition ignores type names", "src/query.rs", "symbol: SymbolId::Type(_) | SymbolId::Trait(_) | SymbolId::TypeParameter(_),", "symbol: SymbolId::Trait(_),", "--test definition type_definition_strips"),
+ ("a compound assignment's definition is the setter only", "src/query.rs", "        if r.location == selected.location && found.iter().all(|f| f.symbol != r.symbol) {", "        if std::ptr::eq(r, selected) {", "--test navigation definition_at_a_compound"),
+ ("one definition as an array", "src/lsp.rs", "if pending.query == Query::Definition && places.len() == 1 =>", "if false =>", "--test navigation definition_at_a_compound"),
  ("includeDeclaration ignored", "src/query.rs", ".filter(|_| include_declaration);", ".filter(|_| true);", "--test definition references_to_a_variable"),
  ("references only in what the file imports", "src/query.rs", "            target.file = None;\n", "", "--test definition references_search_modules"),
  ("references in std and dependencies", "src/query.rs", "} else if scope.in_project(&file)\n", "} else if !file.as_os_str().is_empty()\n", "--test definition references_to_a_std_symbol"),
