@@ -95,5 +95,7 @@ EOF
 
 scripts/dist-deps.sh "$out/cuttlebone"
 
-tar -czf "$out.tar.gz" -C "$root/dist" "$name"
+# COPYFILE_DISABLE: without it, macOS's tar adds ._ files of extended
+# attributes.
+COPYFILE_DISABLE=1 tar -czf "$out.tar.gz" -C "$root/dist" "$name"
 echo "dist/$name.tar.gz"

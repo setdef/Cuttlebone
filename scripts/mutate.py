@@ -160,6 +160,12 @@ M = [
  ("unsafe code", "src/position.rs", "impl Encoding {\n", "impl Encoding {\n    pub fn unsafe_code() {\n        unsafe {}\n    }\n", "sh:cargo clippy --quiet --all-targets"),
  ("fault injection in release builds", "Cargo.toml", "fault-injection = []\n", "default = [\"fault-injection\"]\nfault-injection = []\n", "sh:scripts/check-release.sh"),
  ("a patch that doesn't apply to the release", "patches/upstream.patch", "-mod hir;\n", "-mod hir_typo;\n", "sh:scripts/check-patch.sh"),
+ # The release tooling (docs/releases.md).
+ ("release binaries may link anything", "scripts/dist-deps.sh", "    exit 1\nfi\n\necho \"$bin links only", "fi\n\necho \"$bin links only", "sh:scripts/check-dist.sh"),
+ ("the macOS release links Homebrew's LLVM directory", "scripts/dist-build.sh", "        export LLVM_SYS_181_PREFIX=\"$prefix\"\n", "", "sh:scripts/check-dist.sh"),
+ ("an archive of any version verifies", "scripts/dist-verify.py", "check(args.version in (None, version)", "check(True", "sh:scripts/check-dist.sh"),
+ ("an archive for any Inko verifies", "scripts/dist-verify.py", "check(args.inko_version in (None, inko)", "check(True", "sh:scripts/check-dist.sh"),
+ ("published checksums not checked", "scripts/dist-check-release.py", "expect(sha256 == build[\"sha256\"]", "expect(True", "sh:scripts/check-dist.sh"),
  # Diagnostics (milestone 4).
  ("diagnostics skip MIR", "src/check.rs", "            inspect(db, hir);\n            true", "            inspect(db, hir);\n            false", "--test diagnostics every_fixture"),
  ("warnings dropped", "src/check.rs", "    let diagnostics = compiler.diagnostics().map(reported).collect();", "    let diagnostics = compiler.diagnostics().filter(|d| d.is_error()).map(reported).collect();", "--test diagnostics every_fixture"),

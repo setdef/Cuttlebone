@@ -1,0 +1,10 @@
+# The project scripts/dist-verify.py hovers in, with each release binary.
+import std.stdio (Stdout)
+
+type async Main {
+  fn async main {
+    let numbers = [10, 20]
+
+    Stdout.new.print(numbers.size.to_string)
+  }
+}

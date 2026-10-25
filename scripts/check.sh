@@ -63,6 +63,7 @@ if [ "$tier" != commit ]; then
         env CUTTLEBONE_NO_CACHE=1 CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet
     step "the milestone tier selects every mutation that guards changed code" \
         python3 scripts/check-selection.py
+    step "the release tooling, with this machine's archive" scripts/check-dist.sh
 fi
 
 case "$tier" in
