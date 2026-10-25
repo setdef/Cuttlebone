@@ -30,7 +30,7 @@ milestone tier replays the whole edit-replay corpus with and without
 kept checks, and runs every test without them (section 5).
 
 **Tests:** 297 (26 unit, 258 integration, 13 latency), up from 286.
-`scripts/mutate.py` has 271 mutations, 14 of them new and 5 with new
+`scripts/mutate.py` has 271 mutations, 14 of them new and 7 with new
 snippets. All are caught (section 5). **The patch didn't change.**
 
 This milestone was requested: built by a coding agent with little or no
@@ -249,7 +249,7 @@ checks that were killed never reported theirs.
 
 | File | What |
 |---|---|
-| tests/cache.rs (+4) | A check with nothing to answer from is kept, and answers as a new check does; a module fixed on disk (rewritten in place, so its directory doesn't change) is checked again; failures don't push out checks, and at most `KEPT_FAILURES` are kept; an answer with no result is `cached` only if no check ran for it, past a repaired copy and past the last good check. |
+| tests/cache.rs (+4, 1 changed) | A check with nothing to answer from is kept, and answers as a new check does; a module fixed on disk (rewritten in place, so its directory doesn't change) is checked again; failures don't push out checks, and at most `KEPT_FAILURES` are kept; an answer with no result is `cached` only if no check ran for it, past a repaired copy and past the last good check. Changed: a repaired or stale answer from a check run again is not `cached`, though the documents' own failed check is (below). |
 | tests/lsp.rs (+4, 1 changed) | A cancelled check's request is answered at once while its worker runs on, and a query waits `ABANDONED_GRACE` for a hung one, then has it killed; a cancelled hung check is killed at the timeout with nothing waiting; a cancelled check is kept by its worker (the same question is `cached`, in the same worker); diagnostics wait for a cancelled check; `shutdown` kills one. Changed: "cancelling a running check kills it" is now the first of these. |
 | tests/latency.rs (+3) | A question after a cancelled one, at most 2.5 times one without; a second unanswered question in code that doesn't parse, at most 0.6 of the first; the typing replay, which prints what it measures and asserts nothing about time. |
 
@@ -264,10 +264,21 @@ during the milestone:
   waiting query never kills it, or kills it at once, no wake-up at the
   end of the grace, cancelled checks never time out, diagnostics start
   beside one, its worker not kept afterwards, `shutdown` leaving it.
-- **Moved (5):** kept checks found by target but not text, fingerprints
+- **Moved (7):** kept checks found by target but not text, fingerprints
   leaving out directories, the cache keeping more than its capacity, kept
-  checks not moved to the end when used, and the queries' worker not
-  kept (its snippet now matched the cancelled check's too).
+  checks not moved to the end when used, the queries' worker not kept
+  (its snippet now matched the cancelled check's too), no timeout, and
+  diagnostics not waiting for queries.
+
+The first exhaustive run, on d9db7b1, found two more things: the last
+two moved snippets, which it skipped, and two of milestone 6's mutations
+that kept failures had made pass. "Repaired (or stale) answers marked by
+the fresh check" drop the `cached` an answer takes from the check it
+came from. Their test passed anyway, because the fresh check, which
+failed, used to be never kept, and so said `false` whenever the answer's
+check was new. Now it's kept, so the test also asks after a check of
+other text pushed the repaired copy's (or the last good version's) check
+out, where only the answer's own check says it ran.
 
 **The tiers.** TIERS-PENDING
 

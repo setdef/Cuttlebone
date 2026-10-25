@@ -442,6 +442,34 @@ fn repaired_and_stale_answers_come_from_kept_checks() {
         assert!(!answers[0].cached);
         assert!(answers[1].cached && answers[2].cached);
         assert_eq!(hover_type(&answers[1]), "Int");
+
+        // The documents' own check, which has nothing to answer from, is
+        // kept apart, so `cached` must come from the check that answers:
+        // here a new one, after a check of other text pushed it out.
+        let small = Cache::new(1);
+        let asked = |cache: &Cache| {
+            ask_with(
+                cache,
+                &session,
+                &main,
+                &broken,
+                Some(&fallback),
+                repair,
+                Question::Type,
+                "first",
+                0,
+            )
+        };
+
+        let other = MAIN.replace("+ 1", "+ 2");
+
+        asked(&small);
+        ask(&small, &session, &main, &other, Question::Type, "first", 0);
+
+        let again = asked(&small);
+
+        assert_eq!(again.source, source);
+        assert!(!again.cached, "{:?}", source);
     }
 }
 

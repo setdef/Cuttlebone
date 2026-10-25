@@ -54,7 +54,7 @@ M = [
  ("UTF-8 counts chars", "src/position.rs", "Encoding::Utf8 => text.len() as u32,", "Encoding::Utf8 => text.chars().count() as u32,", "--test lsp non_ascii"),
  ("incremental edits replace everything", "src/lsp.rs", "    let Some(r) = change.range else {", "    let Some(r) = None::<lsp::Range> else {", "--test lsp several_changes"),
  ("edit ranges in UTF-16 regardless", "src/lsp.rs", "            encoding,\n        )\n        .unwrap_or(text.len())", "            Encoding::Utf16,\n        )\n        .unwrap_or(text.len())", "--test lsp non_ascii_positions_and_ranges_in_utf8"),
- ("no timeout", "src/lsp.rs", "        let query = match &self.running {\n            Some((_, check)) => Some(check.started + self.options.timeout),", "        let query = match &self.running {\n            Some((_, _check)) => None,", "--test lsp a_hung_check"),
+ ("no timeout", "src/lsp.rs", "            (Some((_, check)), _) => Some(check.started + self.options.timeout),", "            (Some((_, _check)), _) => None,", "--test lsp a_hung_check"),
  ("timeout doesn't kill", "src/lsp.rs", "        check.kill();\n        log(&format!(\n            \"check for {} timed out", "        std::mem::forget(check);\n        log(&format!(\n            \"check for {} timed out", "--test lsp a_hung_check"),
  ("cancel ignored", "src/lsp.rs", "self.cancel(connection, &id);", "let _ = id;", "--test lsp cancelling"),
  # The client's process (LSP's processId and --clientProcessId).
@@ -176,7 +176,7 @@ M = [
  ("warnings published as errors", "src/lsp.rs", "                    lsp::DiagnosticSeverity::WARNING", "                    lsp::DiagnosticSeverity::ERROR", "--test publish every_file_with_diagnostics"),
  ("diagnostics not superseded", "src/lsp.rs", "        if changed\n            && let Some((target, check))", "        if false\n            && let Some((target, check))", "--test publish superseded"),
  ("no diagnostics debounce", "src/lsp.rs", "            Instant::now() + self.options.diagnostics_debounce", "            Instant::now()", "--test publish diagnostics_wait_for_their"),
- ("diagnostics don't wait for queries", "src/lsp.rs", "if self.diagnoser.running.is_some() || self.running.is_some() || !self.queue.is_empty() {", "if self.diagnoser.running.is_some() {", "--test publish diagnostics_wait_for_running"),
+ ("diagnostics don't wait for queries", "src/lsp.rs", "        if self.diagnoser.running.is_some()\n            || self.running.is_some()\n            || self.abandoned.is_some()\n            || !self.queue.is_empty()\n        {", "        if self.diagnoser.running.is_some() {", "--test publish diagnostics_wait_for_running"),
  ("no diagnostics timeout", "src/lsp.rs", ".take_if(|(_, c)| c.started.elapsed() >= self.options.timeout)\n        {", ".take_if(|(_, c)| c.started.elapsed() >= self.options.timeout && false)\n        {", "--test publish superseded"),
  ("diagnostics can't be turned off", "src/lsp.rs", "        if !self.options.diagnostics {\n            return;\n        }\n", "", "--test publish diagnostics_can_be_turned_off"),
  ("diagnostics in the server's thread", "src/lsp.rs", "        match Check::start(self.checks, &job, self.finished.0.clone()) {\n            Ok(check) => self.diagnoser.running = Some((target, check)),", "        match Ok::<_, Unavailable>(job.run(&crate::query::Cache::new(0))) {\n            Ok(Outcome::Diagnostics(answer)) => self.publish(connection, target, answer),\n            Ok(_) => {}", "--test latency queries_stay_fast"),
