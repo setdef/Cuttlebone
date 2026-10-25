@@ -28,8 +28,8 @@ without kept checks, has no wrong answer, and no coverage was lost
 (section 5).
 
 **Tests:** 305 (27 unit, 264 integration, 14 latency), up from 297.
-`scripts/mutate.py` has 303 mutations, 27 of them new and 2 with new
-snippets. **The patch didn't change.**
+`scripts/mutate.py` has 303 mutations, 27 of them new and 8 with new
+snippets. All 303 are caught. **The patch didn't change.**
 
 This milestone was requested: built by a coding agent with little or no
 review.
@@ -400,15 +400,44 @@ build's size and SHA-256.
   unit. The test now also calls a module's method with an error, which
   only its id says.
 
-Two snippets moved: "fingerprints leave out directories" and
-"fingerprints compare nothing".
+Eight snippets moved: "fingerprints leave out directories" and
+"fingerprints compare nothing" during the milestone, and six that the
+exhaustive run found (below).
 
 What isn't guarded by a mutation: the load scaling (section 4), and the
 case where a mention the check didn't resolve still counts
 (`is_none_or`). Such a unit has an expression the check couldn't type,
 which refuses it anyway, so no test can tell the two apart.
 
-**The tiers.** Filled in below.
+**The tiers.** scripts/mutate.py and Cargo.toml changed, so the
+milestone tier says the exhaustive tier must pass too (AGENTS.md). That
+tier runs everything the milestone tier does, so I ran it in its place,
+on 43392ab (the report's first commit), at load averages of 9 to 40. It
+took 1,963 s:
+
+| Step | Time |
+|---|---|
+| formatting, clippy (both) | 7 s |
+| tests | 46 s |
+| the patch, the release build | 17 s |
+| the whole edit-replay corpus | 88 s |
+| the latency limits as written | 20 s |
+| every test without kept checks, and the whole corpus | 153 s |
+| the selection check | 4 s |
+| the release tooling (`scripts/check-dist.sh`) | 25 s |
+| every mutation (with the runner's control, 209 s) | 1,602 s |
+
+**297 of the 303 mutations were caught. The other six were skipped**,
+since this milestone's edits had moved their snippets: "references only
+in what the file imports", "references in std and dependencies", "the
+batch's answers out of order", "units mentioning a changed declaration
+count as safe", "an error's item names not counted" and "an error's
+import names not counted". I gave each its snippet in the new code
+(the same break, in the same place) and ran them alone
+(`scripts/mutate.py` with their names): **6 of 6 caught**, in 625 s.
+Only those six snippets and this paragraph changed after 43392ab. Every
+commit's check passed through the pre-commit hook, the last ones at
+loads up to 175 with the limits scaled.
 
 ## Every patch line added, and why
 
