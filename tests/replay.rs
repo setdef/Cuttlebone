@@ -1238,14 +1238,14 @@ const COVERAGE: &[(&str, usize)] = &[
 /// What the server answers without older checks, from repaired copies
 /// only.
 const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
-    ("hover", 10350),
-    ("definition", 10721),
-    ("typeDefinition", 10400),
+    ("hover", 10358),
+    ("definition", 10729),
+    ("typeDefinition", 10408),
     ("completion", 109),
     ("signatureHelp", 311),
-    ("inlayHint", 5784),
+    ("inlayHint", 5792),
     ("inlayHint, whole file", 386),
-    ("documentHighlight", 9616),
+    ("documentHighlight", 9622),
     ("references", 1261),
 ];
 

@@ -1699,7 +1699,7 @@ fn analyze(
     (file, text): (&Path, &str),
     encoding: Encoding,
     questions: &[(Question, Position)],
-    changed: Option<Vec<(PathBuf, Effect)>>,
+    changed: Option<Vec<Cause>>,
 ) -> (Results, bool, bool, bool) {
     let lines = Lines::with_encoding(text, encoding);
     let ats: Vec<Result<HirPosition, Unavailable>> = questions
@@ -1819,7 +1819,7 @@ fn analyze(
 /// they changed is part of the documents as they are. `None` if a changed
 /// file's text then can't be read or doesn't parse, which can't happen
 /// for a check that typed method bodies.
-fn declaration_changes(now: &Request, fallback: &Fallback) -> Option<Vec<(PathBuf, Effect)>> {
+fn declaration_changes(now: &Request, fallback: &Fallback) -> Option<Vec<Cause>> {
     let canonical_keys = |map: &HashMap<PathBuf, String>| -> HashMap<PathBuf, String> {
         map.iter()
             .filter_map(|(p, t)| Some((canonical(p).ok()?, t.clone())))
@@ -1847,7 +1847,7 @@ fn declaration_changes(now: &Request, fallback: &Fallback) -> Option<Vec<(PathBu
                 ..effect(&outline, &before, &after, &change)
             };
 
-            out.push((path.clone(), e));
+            out.push((path.clone(), e, Ids::new()));
         }
     }
 
@@ -1859,7 +1859,7 @@ fn declaration_changes(now: &Request, fallback: &Fallback) -> Option<Vec<(PathBu
 /// isn't safe, because of the check's errors in declarations
 /// (`Guard::safe`), mentions its name. Such a unit may refer to it once
 /// the error is fixed, or does now through what the error left untyped.
-fn hidden(scope: &Scope, errors: &[(PathBuf, Effect)]) -> bool {
+fn hidden(scope: &Scope, errors: &[Cause]) -> bool {
     let Some(reference) = symbol_at(
         &scope.walker.references,
         &scope.walker.declarations,
@@ -1908,6 +1908,16 @@ fn hidden(scope: &Scope, errors: &[(PathBuf, Effect)]) -> bool {
         .is_none_or(|guard| guard.mentioned_unsafely(&name))
     })
 }
+
+/// An error in a declaration, or a change outside a method body since the
+/// last good check, as a change of the file it's in: what it does, and
+/// the ids of the names it's about where the check has them (only for
+/// errors: a change's names were resolved in another check).
+type Cause = (PathBuf, Effect, Ids);
+
+/// The symbols each name an error is about stands for, by the compiler's
+/// ids. A name that isn't here counts wherever it's mentioned.
+type Ids = HashMap<String, HashSet<SymbolId>>;
 
 /// The module of a file the check walked.
 fn walker_module(checked: &Checked, file: &Path) -> ModuleId {
@@ -2212,7 +2222,7 @@ struct Checked<'db> {
     /// The errors the check reported.
     errors: Vec<Reported>,
     /// What its errors in declarations do (`declaration_errors`).
-    declarations: OnceCell<Option<Vec<(PathBuf, Effect)>>>,
+    declarations: OnceCell<Option<Vec<Cause>>>,
 }
 
 impl<'db> Checked<'db> {
@@ -2257,7 +2267,7 @@ impl<'db> Checked<'db> {
     /// What the check's errors in declarations do (`units::error_effect`),
     /// by file: empty if it has none, and `None` if one can't be placed in
     /// a declaration, which leaves nothing safe to answer.
-    fn declaration_errors(&self) -> Option<&[(PathBuf, Effect)]> {
+    fn declaration_errors(&self) -> Option<&[Cause]> {
         self.declarations
             .get_or_init(|| {
                 let mut outlines: HashMap<PathBuf, Option<(String, Outline)>> = HashMap::new();
@@ -2280,7 +2290,11 @@ impl<'db> Checked<'db> {
 
                     match error_effect(outline, text, start..end) {
                         ErrorEffect::Body => {}
-                        ErrorEffect::Declaration(effect) => out.push((error.file.clone(), effect)),
+                        ErrorEffect::Declaration(effect) => {
+                            let ids = self.ids(&error.file, text, &effect);
+
+                            out.push((error.file.clone(), effect, ids))
+                        }
                         ErrorEffect::Unknown => return None,
                     }
                 }
@@ -2288,6 +2302,35 @@ impl<'db> Checked<'db> {
                 Some(out)
             })
             .as_deref()
+    }
+
+    /// The ids of the names an error is about (`Effect::named`), where the
+    /// check resolved them in the headers of the items the error is in.
+    fn ids(&self, file: &Path, text: &str, effect: &Effect) -> Ids {
+        let mut ids = Ids::new();
+        let Some(walker) = self.walker(file) else {
+            return ids;
+        };
+        let lines = Lines::new(text);
+
+        for r in walker.references.iter().chain(&walker.declarations) {
+            let l = &r.location;
+            let (Some(start), Some(end)) = (
+                lines.offset(l.line_start, l.column_start),
+                lines.offset(l.line_end, l.column_end + 1),
+            ) else {
+                continue;
+            };
+            let name = text[start..end.max(start)].trim_start_matches('@');
+
+            for (header, named) in &effect.named {
+                if header.contains(&start) && named.iter().any(|n| n == name) {
+                    ids.entry(name.to_string()).or_default().insert(r.symbol);
+                }
+            }
+        }
+
+        ids
     }
 
     /// Whether it has an error in a declaration, so that some of what it
@@ -2800,8 +2843,12 @@ struct Guard<'a> {
     repaired: bool,
     /// What the changes to the file did.
     effects: Vec<Effect>,
-    /// What the changes to every file did.
-    all: Vec<Effect>,
+    /// What the changes to every file did, with the ids of what each is
+    /// about, if they're known.
+    all: Vec<(Effect, Ids)>,
+    /// The symbol of each name the walk found in the old text, by the
+    /// byte its name starts at.
+    symbols: HashMap<usize, SymbolId>,
     /// Each unit's `limit`.
     limits: RefCell<HashMap<Unit, usize>>,
     encoding: Encoding,
@@ -2818,7 +2865,7 @@ impl<'a> Guard<'a> {
         walker: &'a Walker,
         encoding: Encoding,
         repaired: bool,
-        errors: &[(PathBuf, Effect)],
+        errors: &[Cause],
     ) -> Option<Guard<'a>> {
         let (old, new, changes) = (own.old.as_str(), own.new.as_str(), &own.changes);
         let outline = Outline::parse(old)?;
@@ -2833,19 +2880,30 @@ impl<'a> Guard<'a> {
                     effects.push(effect(&other, &v.old, &v.new, &change));
                 }
 
-                all.push(effect(&other, &v.old, &v.new, &change));
+                all.push((effect(&other, &v.old, &v.new, &change), Ids::new()));
             }
         }
 
-        for (path, e) in errors {
+        for (path, e, ids) in errors {
             if path == file {
                 effects.push(e.clone());
             }
 
-            all.push(e.clone());
+            all.push((e.clone(), ids.clone()));
         }
 
         let lines = Lines::new(old);
+        let symbols = walker
+            .references
+            .iter()
+            .chain(&walker.declarations)
+            .filter_map(|r| {
+                let start = lines.offset(r.location.line_start, r.location.column_start)?;
+                let start = start + usize::from(old[start..].starts_with('@'));
+
+                Some((start, r.symbol))
+            })
+            .collect();
         // Completion's placeholder is never a method: the call it's in is
         // never typed, which isn't an error in the code.
         let placeholders: Vec<usize> = old.match_indices(PLACEHOLDER).map(|(i, _)| i).collect();
@@ -2876,6 +2934,7 @@ impl<'a> Guard<'a> {
             types,
             effects,
             all,
+            symbols,
             repaired,
             limits: RefCell::new(HashMap::new()),
             encoding,
@@ -2966,18 +3025,40 @@ impl<'a> Guard<'a> {
             return 0;
         }
 
-        let types: Vec<Option<&str>> = types.into_iter().map(|(t, _)| t).collect();
-
-        let mentioned: HashSet<&str> = before
+        let types: HashSet<&str> = types
+            .into_iter()
+            .filter_map(|(t, _)| t)
+            .flat_map(names)
+            .collect();
+        // Each name in the unit's text, and the byte it starts at.
+        let written: Vec<(&str, usize)> = before
             .iter()
             .flat_map(|r| names(&self.old[r.clone()]))
-            .chain(types.into_iter().flatten().flat_map(names))
+            .map(|n| (n, n.as_ptr() as usize - self.old.as_ptr() as usize))
             .collect();
-
-        if mentioned
+        let mentioned: HashSet<&str> = written
             .iter()
-            .any(|n| self.all.iter().any(|e| e.affects(n)))
-        {
+            .map(|(n, _)| *n)
+            .chain(types.iter().copied())
+            .collect();
+        // A name a change is about counts unless the check resolved what
+        // it's about to ids, and every time the unit writes the name, it's
+        // the id of another symbol: `size` in `b.size` is B's, not A's.
+        let counts = |name: &str, ids: &Ids| match ids.get(name) {
+            None => true,
+            Some(about) => {
+                types.contains(name)
+                    || written.iter().any(|(n, at)| {
+                        *n == name && self.symbols.get(at).is_none_or(|s| about.contains(s))
+                    })
+            }
+        };
+
+        if mentioned.iter().any(|n| {
+            self.all
+                .iter()
+                .any(|(e, ids)| e.affects(n) && counts(n, ids))
+        }) {
             return 0;
         }
 

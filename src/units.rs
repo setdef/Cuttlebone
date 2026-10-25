@@ -464,6 +464,12 @@ pub struct Effect {
     pub added: Vec<String>,
     /// Whether it's inside a method's body.
     pub body: bool,
+    /// For an error, where each item it's in names what the error is
+    /// about: its header (a method's signature, a type's or `impl`'s line,
+    /// a field, an import), and the names there. A unit that mentions
+    /// one of these names by the compiler's id for another symbol doesn't
+    /// depend on the error (`query::Ids`).
+    pub named: Vec<(Range<usize>, Vec<String>)>,
 }
 
 impl Effect {
@@ -586,13 +592,27 @@ pub fn error_effect(outline: &Outline, text: &str, range: Range<usize>) -> Error
     };
 
     for i in outline.ancestors(index) {
-        effect.names.extend(i.names.iter().cloned());
+        let mut named = i.names.clone();
 
         if i.kind == Kind::Import {
-            effect
-                .names
-                .extend(import_names(&text[i.range.clone()]).map(String::from));
+            named.extend(import_names(&text[i.range.clone()]).map(String::from));
         }
+
+        // An item's header ends where its body or its first member starts.
+        let header = match &i.body {
+            Some(body) => i.range.start..body.start,
+            None => {
+                let members = outline
+                    .items
+                    .iter()
+                    .filter(|m| i.range.start < m.range.start && m.range.end <= i.range.end);
+
+                i.range.start..members.map(|m| m.range.start).min().unwrap_or(i.range.end)
+            }
+        };
+
+        effect.names.extend(named.iter().cloned());
+        effect.named.push((header, named));
     }
 
     ErrorEffect::Declaration(effect)

@@ -849,6 +849,15 @@ each error as a change of the item it's in:
   in `fn add(amount: Strin)` in `type Counter`, every unit that mentions
   `add` or `Counter`. For an import, every name it binds counts: the last
   name of its path and those in its symbol list.
+- **By the compiler's ids, where it has them.** A name the error is about
+  stands for the symbols the check found at it in those items' headers
+  (`add` for `Counter.add`, `Counter` for the type). A unit doesn't count
+  as mentioning it where each time its text says the name, the check
+  resolved it to another symbol: with an error in `A.size`'s signature, a
+  method that only calls `B.size` (or `B.size` itself) is answered, and
+  one that calls `a.size` isn't. A name the check didn't resolve there,
+  and names in the types of a unit's expressions (which have no ids),
+  count as before.
   Names changed outside method bodies since the file's last good check
   count too, since the error may come from them: a type renamed, so that
   its uses don't resolve.
