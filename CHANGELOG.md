@@ -10,8 +10,32 @@ versions here were given afterwards.
 
 ## 0.11.0
 
-Milestone 11: a license, a release index, and requests from a client's reports.
-[Report](docs/history/MILESTONE-11.md).
+Milestone 11: a license, a release index, and requests from a client's
+reports. [Report](docs/history/MILESTONE-11.md).
+
+- **License: MPL-2.0**, as Inko's. LICENSE is at the repository's root,
+  and every release archive now holds it beside the compiler's
+  `LICENSE-MPL-2.0`.
+- **A release index**, `index.json`, with each release, and at
+  `releases/latest/download/index.json`: every release's version, the
+  Inko versions it has builds for, and its manifest's URL, so a client
+  can find a build for an older Inko ([docs/releases.md](docs/releases.md)).
+  The manifest is unchanged.
+- **Declaration errors by ids.** An error in a declaration no longer
+  refuses code that only mentions its name by another symbol's id: with
+  an error in `A.size`'s signature, a method that only calls `B.size` is
+  answered.
+- **An import of a module that doesn't exist** (`noHir`) is blank in the
+  repaired copy, so the rest of the file is answered, `fresh` and
+  `repaired`, even before any good check. A whole import now counts only
+  the names it binds, not its path's leading ones.
+- **Definition at `c.value += 1`** answers the setter and the getter, as
+  a `Location[]`. Every other position still answers one `Location`.
+- **Saving keeps kept checks.** A save (in place, or by renaming a new
+  file over the old) no longer makes the next question a whole check.
+- **References at a declaration outside the project** (std's, or a
+  dependency's in `dep/`) answer the project's uses, instead of
+  `noHir` or the declaring library's own.
 
 ## 0.10.0
 
