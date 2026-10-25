@@ -436,8 +436,9 @@ import names not counted". I gave each its snippet in the new code
 (the same break, in the same place) and ran them alone
 (`scripts/mutate.py` with their names): **6 of 6 caught**, in 625 s.
 Only those six snippets and this paragraph changed after 43392ab. Every
-commit's check passed through the pre-commit hook, the last ones at
-loads up to 175 with the limits scaled.
+commit's check passed through the pre-commit hook. The one exception
+came before section 4's change, and that change's own commit passed at
+load averages of 110 to 147, with the limits scaled.
 
 ## Every patch line added, and why
 
