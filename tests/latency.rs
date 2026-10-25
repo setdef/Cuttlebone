@@ -1160,6 +1160,7 @@ fn a_second_question_in_code_that_doesnt_parse_is_a_lookup() {
 
     let mut first = Vec::new();
     let mut second = Vec::new();
+    let mut statuses = Vec::new();
 
     for i in 0..RUNS {
         let edited = text.replacen(
@@ -1180,9 +1181,7 @@ fn a_second_question_in_code_that_doesnt_parse_is_a_lookup() {
             times.push(worker_time(&client, id));
         }
 
-        let status = client.notifications.last().unwrap()["params"].clone();
-
-        assert_eq!(status["cached"], true, "{}", status);
+        statuses.push(client.notifications.last().unwrap()["params"].clone());
     }
 
     let (first_median, second_median) = (median(first.clone()), median(second.clone()));
@@ -1192,6 +1191,10 @@ fn a_second_question_in_code_that_doesnt_parse_is_a_lookup() {
          the second: {:?} (all: {:?})",
         first_median, first, second_median, second
     );
+
+    for status in statuses {
+        assert_eq!(status["cached"], true, "{}", status);
+    }
     assert!(
         second_median < first_median.mul_f64(UNPARSED_LOOKUP),
         "the second: {:?}, the first: {:?}",
