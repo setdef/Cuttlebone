@@ -1,6 +1,6 @@
 # Builds, verifies and publishes the prebuilt binaries (docs/releases.md).
 #
-# A pushed version tag (v0.10.0) builds every target, verifies each archive
+# A pushed version tag (v0.11.0) builds every target, verifies each archive
 # on its own platform, publishes them with manifest.json as the tag's
 # GitHub release, and then checks the published release from its
 # manifest's URL alone. Run by hand (workflow_dispatch), it builds and
