@@ -40,6 +40,8 @@ Reports, in docs/history/:
   declaration has an error.
 - [MILESTONE-9.md](docs/history/MILESTONE-9.md): cheaper answers while
   typing: questions with no answer kept, and cancelling without killing.
+- [MILESTONE-10.md](docs/history/MILESTONE-10.md): prebuilt binaries
+  on GitHub releases, and a manifest for clients.
 
 Each milestone has its own version; what changed in each:
 [CHANGELOG.md](CHANGELOG.md).
