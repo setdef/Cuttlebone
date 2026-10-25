@@ -10,7 +10,8 @@
 use crate::common::client::{Client, Launch, at, fake_inko, uri};
 use crate::common::fixture;
 use cuttlebone::check::upstream_version;
-use cuttlebone::worker::FAULT_VARIABLE;
+use cuttlebone::lsp::ABANDONED_GRACE;
+use cuttlebone::worker::{FAULT_VARIABLE, NO_CACHE_VARIABLE};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -1027,36 +1028,175 @@ fn an_aborting_check_is_unavailable_and_the_server_keeps_going() {
     assert_eq!(hover_type(&response), "Int");
 }
 
-#[test]
-fn cancelling_a_running_check_kills_it() {
-    let root = copy_fixture("members", "fault-cancel");
-    let main = root.join("src/main.inko");
-    let shapes = root.join("src/shapes.inko");
-    let text = std::fs::read_to_string(&main).unwrap();
+/// A server whose checks of `fault-<name>/src/shapes.inko` hang.
+fn hanging(name: &str, options: Value) -> (Client, PathBuf) {
+    let root = copy_fixture("members", &format!("fault-{}", name));
     let launch = Launch {
         env: vec![(
             FAULT_VARIABLE,
-            "hang:fault-cancel/src/shapes.inko".to_string(),
+            format!("hang:fault-{}/src/shapes.inko", name),
         )],
         unset: vec![],
         cwd: None,
     };
-    let mut client =
-        Client::initialized_with(launch, &root, json!({ "diagnostics": false }), json!({}));
-    let id = client.send_at("textDocument/hover", &shapes, 0, 0);
+    let client = Client::initialized_with(launch, &root, options, json!({}));
+
+    (client, root)
+}
+
+/// Cancelling a running check answers it at once, and its worker carries
+/// on, so as to keep what it kept. A query that's ready waits for it for
+/// at most `ABANDONED_GRACE`, and a hung one is then killed.
+#[test]
+fn cancelling_a_running_check_answers_it_and_a_query_waits_for_it_only_so_long() {
+    let (mut client, root) = hanging("cancel", json!({ "diagnostics": false }));
+    let main = root.join("src/main.inko");
+    let text = std::fs::read_to_string(&main).unwrap();
+    let id = client.send_at("textDocument/hover", &root.join("src/shapes.inko"), 0, 0);
 
     wait_for_a_worker(&client);
+
+    let start = Instant::now();
+
     client.notify("$/cancelRequest", json!({ "id": id }));
 
     let response = client.response(id);
 
     assert_eq!(response["error"]["code"], REQUEST_CANCELLED, "{}", response);
-    assert!(client.workers().is_empty());
+    assert!(start.elapsed() < ABANDONED_GRACE, "{:?}", start.elapsed());
+    assert_eq!(client.workers().len(), 1, "the worker was killed");
 
+    let start = Instant::now();
     let (line, character) = at(&text, "name.size", 5, false);
     let (_, response) = client.hover(&main, line, character);
 
     assert_eq!(hover_type(&response), "Int");
+    assert!(start.elapsed() >= ABANDONED_GRACE, "{:?}", start.elapsed());
+    assert!(
+        client
+            .stderr
+            .lock()
+            .unwrap()
+            .contains("a cancelled check ran on"),
+        "{}",
+        client.stderr.lock().unwrap()
+    );
+}
+
+/// A cancelled check that hangs is killed at the timeout, even with
+/// nothing waiting for its worker.
+#[test]
+fn a_cancelled_check_that_hangs_is_killed_at_the_timeout() {
+    let (mut client, root) = hanging(
+        "cancel-timeout",
+        json!({ "checkTimeoutMs": 500, "diagnostics": false }),
+    );
+    let id = client.send_at("textDocument/hover", &root.join("src/shapes.inko"), 0, 0);
+
+    wait_for_a_worker(&client);
+    client.notify("$/cancelRequest", json!({ "id": id }));
+    assert_eq!(client.response(id)["error"]["code"], REQUEST_CANCELLED);
+
+    let start = Instant::now();
+
+    while !client.workers().is_empty() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the hung worker is still running"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert!(
+        client
+            .stderr
+            .lock()
+            .unwrap()
+            .contains("a cancelled check timed out"),
+        "{}",
+        client.stderr.lock().unwrap()
+    );
+}
+
+/// A diagnostics check starts only when no query runs (docs/lsp.md,
+/// "Scheduling"), and a cancelled check that's still running counts: it
+/// uses the machine as much. Here the cancelled check hangs, so the
+/// diagnostics check starts once it's killed at the timeout.
+#[test]
+fn diagnostics_wait_for_a_cancelled_check() {
+    let (mut client, root) = hanging(
+        "cancel-diagnostics",
+        json!({ "checkTimeoutMs": 1000, "diagnosticsDebounceMs": 0, "statusNotifications": true }),
+    );
+    let shapes = root.join("src/shapes.inko");
+    let text = std::fs::read_to_string(&shapes).unwrap();
+
+    // The check the server starts with.
+    client.diagnostics_status();
+    client.open(&shapes, &text);
+
+    let id = client.send_at("textDocument/hover", &shapes, 0, 0);
+
+    client.notify("$/cancelRequest", json!({ "id": id }));
+    assert_eq!(client.response(id)["error"]["code"], REQUEST_CANCELLED);
+    client.change(&shapes, 2, json!([{ "text": text }]));
+
+    let status = client.diagnostics_status();
+
+    assert_eq!(status["status"], "fresh", "{}", status);
+    assert!(
+        client
+            .stderr
+            .lock()
+            .unwrap()
+            .contains("a cancelled check timed out"),
+        "diagnostics started beside the cancelled check: {}",
+        client.stderr.lock().unwrap()
+    );
+}
+
+/// The worker finishes a cancelled check and keeps it: the same question
+/// afterwards is a lookup, in the same worker.
+#[test]
+fn a_cancelled_check_is_kept_by_its_worker() {
+    let root = copy_fixture("features", "cancel-kept");
+    let main = root.join("src/main.inko");
+    let text = std::fs::read_to_string(&main).unwrap();
+    let mut client = Client::initialized_with(
+        Launch {
+            env: vec![],
+            unset: vec![NO_CACHE_VARIABLE],
+            cwd: None,
+        },
+        &root,
+        json!({ "diagnostics": false, "debounceMs": 0, "statusNotifications": true }),
+        json!({}),
+    );
+    let (line, character) = at(&text, "numbers.iter", 0, false);
+
+    client.open(&main, &text);
+
+    // Sent at once: the server starts the check before it reads the
+    // cancel, and the second hover then waits for it.
+    let cancelled = client.send_at("textDocument/hover", &main, line, character);
+
+    client.notify("$/cancelRequest", json!({ "id": cancelled }));
+
+    let id = client.send_at("textDocument/hover", &main, line, character);
+
+    assert_eq!(
+        client.response(cancelled)["error"]["code"],
+        REQUEST_CANCELLED
+    );
+
+    let response = client.response(id);
+    let workers = client.workers();
+
+    assert!(response["result"].is_object(), "{}", response);
+    assert_eq!(client.status(id).unwrap()["cached"], true);
+    assert_eq!(workers.len(), 1);
+    client.hover(&main, line, character);
+    assert_eq!(client.workers(), workers);
 }
 
 #[test]

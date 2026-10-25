@@ -682,6 +682,8 @@ struct Typed {
     latency: Vec<Duration>,
     /// Query worker processes started.
     workers: usize,
+    /// Cancelled checks killed because a query waited too long for them.
+    killed: usize,
     /// How many answers had each method, status, reason and source.
     kinds: std::collections::BTreeMap<String, usize>,
     elapsed: Duration,
@@ -909,6 +911,12 @@ fn replay_typing(client: &mut Client, typing: &Typing) -> Typed {
     client.close(file);
 
     let mut out = Typed {
+        killed: client
+            .stderr
+            .lock()
+            .unwrap()
+            .matches("a cancelled check ran on")
+            .count(),
         requests: asked.len(),
         workers: pids.len(),
         elapsed,
@@ -1001,7 +1009,7 @@ fn typing_replay() {
         latency.sort();
         eprintln!(
             "{}: {} requests in {:.1} s, {} cancelled, {} answered; {} checks (median {:.1} ms), \
-             {:.2} s in the worker; noHir {} ({} cached); latency median {:?}, p90 {:?}; {} workers",
+             {:.2} s in the worker; noHir {} ({} cached); latency median {:?}, p90 {:?}; {} workers, {} killed after the grace",
             typing.name,
             t.requests,
             t.elapsed.as_secs_f64(),
@@ -1015,7 +1023,179 @@ fn typing_replay() {
             median(latency.clone()),
             latency[latency.len() * 9 / 10],
             t.workers,
+            t.killed,
         );
         eprintln!("  {:?}", t.kinds);
     }
+}
+
+/// A server that keeps checks, even when every test runs without them.
+fn kept(root: &Path, options: serde_json::Value) -> Client {
+    Client::initialized_with(
+        Launch {
+            env: vec![],
+            unset: vec![NO_CACHE_VARIABLE],
+            cwd: None,
+        },
+        root,
+        options,
+        json!({}),
+    )
+}
+
+/// The worker's time for request `id`, from its status.
+fn worker_time(client: &Client, id: i64) -> Duration {
+    let status = client.status(id).unwrap();
+
+    Duration::from_secs_f64(status["elapsedMs"].as_f64().unwrap() / 1000.0)
+}
+
+/// Cancelling a running check leaves its worker, and the checks it kept,
+/// so the next question costs what it would have without the cancel. In
+/// code being typed that doesn't parse, each question uses a check kept
+/// from before: here the repaired copy is the last good text at every
+/// edit. Killing the worker, as cancelling did before milestone 9, made
+/// the next question check that again. Each round makes a new edit that
+/// doesn't parse and asks a hover; in half of them, a hover about the edit
+/// before is cancelled while it's checked first.
+#[test]
+fn a_question_after_a_cancelled_one_is_no_slower() {
+    let _alone = alone();
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let mut client = kept(
+        &root,
+        json!({ "diagnostics": false, "debounceMs": 0, "statusNotifications": true }),
+    );
+    let (line, character) = at(&text, "[1, 2].size", 7, false);
+
+    client.open(&file, &text);
+    client.hover(&file, line, character);
+
+    let mut version = 1;
+    // Each a new text that doesn't parse, whose repaired copy is `text`.
+    let mut edit = |client: &mut Client, i: usize| {
+        version += 1;
+        client.change(
+            &file,
+            version,
+            json!([{ "text": text.replacen(
+                "    let doubled",
+                &format!("    let broken{} = (\n    let doubled", i),
+                1,
+            ) }]),
+        );
+    };
+    let (mut plain, mut after) = (Vec::new(), Vec::new());
+
+    for i in 0..2 * RUNS {
+        let cancel = i % 2 == 1;
+
+        if cancel {
+            // The server starts the check before it reads the cancel.
+            edit(&mut client, 2 * i);
+            let id = client.send_at("textDocument/hover", &file, line, character);
+
+            client.notify("$/cancelRequest", json!({ "id": id }));
+            assert_eq!(client.response(id)["error"]["code"], -32800);
+        }
+
+        edit(&mut client, 2 * i + 1);
+
+        let start = Instant::now();
+        let (id, response) = client.hover(&file, line, character);
+        let time = start.elapsed();
+
+        assert!(response["result"].is_object(), "{}", response);
+        assert_eq!(client.status(id).unwrap()["repaired"], true);
+        (if cancel { &mut after } else { &mut plain }).push(time);
+    }
+
+    let (plain_median, after_median) = (median(plain.clone()), median(after.clone()));
+
+    eprintln!(
+        "a question in code that doesn't parse: {:?} (all: {:?}); after a cancelled one: {:?} (all: {:?})",
+        plain_median, plain, after_median, after
+    );
+    assert!(
+        after_median < plain_median.mul_f64(AFTER_A_CANCEL),
+        "{:?} after a cancel, {:?} without",
+        after_median,
+        plain_median
+    );
+}
+
+/// How much longer than another question the one after a cancelled one
+/// may take (`a_question_after_a_cancelled_one_is_no_slower`): it waits for
+/// the cancelled check to finish, about one question's time, and is then
+/// answered from what that kept. Measured on an Apple M1 Max: 2.0 times as
+/// long; 4.5 times before milestone 9, when the worker and its checks were
+/// killed. The limit leaves a quarter for noise.
+const AFTER_A_CANCEL: f64 = 2.5;
+
+/// How long a second question about code that doesn't parse may take in
+/// the worker, as a share of the first, where nothing answers: it's
+/// lookups in the checks the first kept
+/// (`a_second_question_in_code_that_doesnt_parse_is_a_lookup`). Measured
+/// on an Apple M1 Max: 9.7 ms, 0.32 of the first's 30 ms. Before milestone
+/// 9 it was a check again, as long as the first.
+const UNPARSED_LOOKUP: f64 = 0.6;
+
+/// In code that doesn't parse, a question that nothing can answer (the
+/// documents as they are, a repaired copy, the last good check) is a
+/// lookup the second time, as one with an answer is.
+#[test]
+fn a_second_question_in_code_that_doesnt_parse_is_a_lookup() {
+    let _shared = shared();
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let mut client = kept(
+        &root,
+        json!({ "diagnostics": false, "statusNotifications": true }),
+    );
+    let (line, character) = at(&text, "[1, 2].size", 7, false);
+
+    client.open(&file, &text);
+    client.hover(&file, line, character);
+
+    let mut first = Vec::new();
+    let mut second = Vec::new();
+
+    for i in 0..RUNS {
+        let edited = text.replacen(
+            "    let doubled",
+            &format!("    let broken{} = (\n    let doubled", i),
+            1,
+        );
+        let (line, character) = at(&edited, "broken", 0, false);
+
+        client.change(&file, 2 + i as i32, json!([{ "text": edited }]));
+
+        for times in [&mut first, &mut second] {
+            let (id, response) = client.hover(&file, line, character);
+            let status = client.status(id).unwrap();
+
+            assert!(response["result"].is_null(), "{}", response);
+            assert_eq!(status["reason"]["code"], "noHir", "{}", status);
+            times.push(worker_time(&client, id));
+        }
+
+        let status = client.notifications.last().unwrap()["params"].clone();
+
+        assert_eq!(status["cached"], true, "{}", status);
+    }
+
+    let (first_median, second_median) = (median(first.clone()), median(second.clone()));
+
+    eprintln!(
+        "a question in code that doesn't parse, with no answer: {:?} (all: {:?}); \
+         the second: {:?} (all: {:?})",
+        first_median, first, second_median, second
+    );
+    assert!(
+        second_median < first_median.mul_f64(UNPARSED_LOOKUP),
+        "the second: {:?}, the first: {:?}",
+        second_median,
+        first_median
+    );
 }

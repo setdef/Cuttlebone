@@ -42,6 +42,10 @@ pub const STATUS: &str = "cuttlebone/status";
 /// How long `inko --version` and `inko print std` may take.
 const INKO_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a query that's ready waits for a cancelled check to finish
+/// before the check's worker is killed (`Abandoned`).
+pub const ABANDONED_GRACE: Duration = Duration::from_millis(250);
+
 /// Settings a client may pass as `initializationOptions`.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -301,6 +305,17 @@ impl Support {
     }
 }
 
+/// A check whose query was cancelled while it ran. Its worker finishes it,
+/// and keeps it (and every check it kept) for later queries, rather than
+/// being killed and starting over: nothing waits for its answer. It's
+/// killed once a query has waited `ABANDONED_GRACE` for it, or at the
+/// timeout, as a running check is.
+struct Abandoned {
+    check: Check,
+    /// When the next query was ready to start, if one is.
+    waiting: Option<Instant>,
+}
+
 struct Server {
     options: Options,
     session: Session,
@@ -309,6 +324,7 @@ struct Server {
     documents: HashMap<Url, Document>,
     queue: VecDeque<Pending>,
     running: Option<(Pending, Check)>,
+    abandoned: Option<Abandoned>,
     /// The queries' worker while it waits for a job, with the checks it
     /// kept (`query::Cache`).
     idle: Option<Worker>,
@@ -342,6 +358,7 @@ impl Server {
             documents: HashMap::new(),
             queue: VecDeque::new(),
             running: None,
+            abandoned: None,
             idle: None,
             diagnoser: Diagnoser::default(),
             snapshots: Snapshots::default(),
@@ -725,12 +742,16 @@ impl Server {
     }
 
     /// Cancels the query the client cancelled, queued or running, with
-    /// `RequestCancelled`.
+    /// `RequestCancelled`. A running check carries on without it
+    /// (`Abandoned`).
     fn cancel(&mut self, connection: &Connection, id: &RequestId) {
         let code = ErrorCode::RequestCanceled;
 
         if let Some((pending, check)) = self.running.take_if(|(p, _)| p.id == *id) {
-            check.kill();
+            self.abandoned = Some(Abandoned {
+                check,
+                waiting: None,
+            });
             reply_error(connection, pending.id, code, "cancelled");
         }
 
@@ -751,6 +772,10 @@ impl Server {
         if let Some((pending, check)) = self.running.take() {
             check.kill();
             self.answer(connection, pending, Outcome::Failed(reason.clone()));
+        }
+
+        if let Some(abandoned) = self.abandoned.take() {
+            abandoned.check.kill();
         }
 
         for pending in std::mem::take(&mut self.queue) {
@@ -839,7 +864,11 @@ impl Server {
     /// debounce is over, no diagnostics check is running, and no query is
     /// queued or running: queries come first.
     fn start_diagnostics(&mut self, connection: &Connection) {
-        if self.diagnoser.running.is_some() || self.running.is_some() || !self.queue.is_empty() {
+        if self.diagnoser.running.is_some()
+            || self.running.is_some()
+            || self.abandoned.is_some()
+            || !self.queue.is_empty()
+        {
             return;
         }
 
@@ -991,15 +1020,30 @@ impl Server {
     /// The next time something must happen: a running check's timeout, or
     /// the end of a queued query's debounce.
     fn deadline(&self) -> Option<Instant> {
-        let query = match &self.running {
-            Some((_, check)) => Some(check.started + self.options.timeout),
-            None => self.queue.iter().map(|p| p.ready).min(),
+        let query = match (&self.running, &self.abandoned) {
+            (Some((_, check)), _) => Some(check.started + self.options.timeout),
+            (None, Some(abandoned)) => {
+                let timeout = abandoned.check.started + self.options.timeout;
+
+                // Until a query is ready, then until it has waited long
+                // enough.
+                Some(match abandoned.waiting {
+                    Some(at) => timeout.min(at + ABANDONED_GRACE),
+                    None => self
+                        .queue
+                        .iter()
+                        .map(|p| p.ready)
+                        .min()
+                        .map_or(timeout, |ready| timeout.min(ready)),
+                })
+            }
+            (None, None) => self.queue.iter().map(|p| p.ready).min(),
         };
         let diagnostics = match &self.diagnoser.running {
             Some((_, check)) => Some(check.started + self.options.timeout),
             // Waiting diagnostics can't start before the queries are done,
             // which wake the loop up when they are.
-            None if self.running.is_none() && self.queue.is_empty() => {
+            None if self.running.is_none() && self.abandoned.is_none() && self.queue.is_empty() => {
                 self.diagnoser.pending.values().min().copied()
             }
             None => None,
@@ -1009,13 +1053,32 @@ impl Server {
     }
 
     /// Starts the first query that's ready, if nothing is running. One
-    /// that can't start is answered right away.
+    /// that can't start is answered right away. A cancelled check that's
+    /// still running is waited for, for at most `ABANDONED_GRACE`, and
+    /// then killed.
     fn start_next(&mut self, connection: &Connection) {
         while self.running.is_none() {
             let now = Instant::now();
             let Some(index) = self.queue.iter().position(|p| p.ready <= now) else {
                 return;
             };
+
+            if let Some(abandoned) = &mut self.abandoned {
+                let waiting = *abandoned.waiting.get_or_insert(now);
+
+                if now < waiting + ABANDONED_GRACE {
+                    return;
+                }
+
+                let abandoned = self.abandoned.take().unwrap();
+
+                log(&format!(
+                    "a cancelled check ran on for {:?} with a query waiting; killed it",
+                    abandoned.check.started.elapsed()
+                ));
+                abandoned.check.kill();
+            }
+
             let pending = self.queue.remove(index).unwrap();
 
             self.checks += 1;
@@ -1166,6 +1229,21 @@ impl Server {
             };
         }
 
+        // A cancelled check: its worker is ready for the next query, with
+        // what it kept. Its answer is for nobody, and its documents aren't
+        // a good check's, as when it was killed.
+        if let Some(abandoned) = self.abandoned.take_if(|a| a.check.id == done.id) {
+            if !done.stderr.trim().is_empty() {
+                log(&format!("cancelled check: {}", done.stderr.trim_end()));
+            }
+
+            let (_, worker) = abandoned.check.finish(&done);
+
+            self.idle = worker;
+            self.snapshots.finished(done.id, &[]);
+            return;
+        }
+
         // A check that was killed isn't running any more.
         let Some((pending, check)) = self.running.take_if(|(_, c)| c.id == done.id) else {
             return;
@@ -1212,6 +1290,17 @@ impl Server {
                 )),
                 Duration::ZERO,
             );
+        }
+
+        if let Some(abandoned) = self
+            .abandoned
+            .take_if(|a| a.check.started.elapsed() >= self.options.timeout)
+        {
+            log(&format!(
+                "a cancelled check timed out after {:?}; killed it",
+                abandoned.check.started.elapsed()
+            ));
+            abandoned.check.kill();
         }
 
         let Some((pending, check)) = self

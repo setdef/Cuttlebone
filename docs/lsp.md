@@ -658,8 +658,8 @@ takes about as long). So diagnostics never hold up queries:
   A query never waits for a diagnostics check, and a diagnostics check
   never waits for a query once it's started.
 - **Queries first.** A diagnostics check only *starts* when no query is
-  queued or running, so a burst of hovers doesn't compete with a check
-  starting. A query that arrives while a diagnostics check runs starts at
+  queued or running (a cancelled one whose check runs on counts), so a
+  burst of hovers doesn't compete with a check starting. A query that arrives while a diagnostics check runs starts at
   once, in parallel. A hover on a std-sized project takes about 104 ms
   during a check of the project, and 102 ms without one (tests/latency.rs
   holds every query to 500 ms during a check).
@@ -968,9 +968,17 @@ Diagnostics have their own queue and worker ([Scheduling](#scheduling)).
   Such a check is never the [last good check](#answers-in-code-being-edited)
   for later answers.
 - **`$/cancelRequest`** answers the request with `RequestCancelled`
-  (-32800), whether it's queued or running. A running check's worker is
-  killed. Clients that cancel requests they no longer need (VS Code's
-  does, as its `staleRequestSupport` says) save the checks.
+  (-32800) at once, whether it's queued or running. A queued request,
+  such as one still waiting out the debounce, never reaches the worker.
+  A running check carries on in its worker, which keeps it and everything
+  it kept before, as if it had been answered: the answer goes nowhere.
+  The next query waits for it, for at most 250 ms after it's ready to
+  start. Then, or at `checkTimeoutMs` from the check's start if nothing
+  waits, the worker is killed, as a running check's is at the timeout. So
+  a hung check is still killed, and a cancel never costs the checks the
+  worker kept. Clients that cancel requests they no longer need (VS
+  Code's does, as its `staleRequestSupport` says) save the checks that
+  haven't started.
 - **`shutdown`** stops everything queued or running. Those queries get
   `null`, with status `unavailable` and reason `shutdown`: the client
   didn't cancel them, so `RequestCancelled` would be wrong.
@@ -986,9 +994,10 @@ The worker stays between queries, keeping the checks it did
 ([Kept checks](#kept-checks)):
 
 - The server kills the worker when a query times out (`checkTimeoutMs`),
-  is cancelled, or the server shuts down, and starts a new one for the next
-  query.
-  The checks it kept go with it.
+  or the server shuts down, and starts a new one for the next query.
+  The checks it kept go with it. A cancelled query's check runs on
+  instead, unless the next query has waited 250 ms for it, or it reaches
+  the timeout ([Debouncing and cancellation](#debouncing-and-cancellation)).
 - If the worker panics, aborts, or overflows its stack, the server reports
   it (`compilerPanic` or `checkCrashed`) and goes on. A check the
   compiler panicked in isn't kept. A panic while answering from a kept

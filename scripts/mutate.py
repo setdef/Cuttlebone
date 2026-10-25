@@ -283,6 +283,14 @@ M = [
  ("coarse clocks get no margin", "src/check.rs", "let margin = if fine { Duration::ZERO } else { COARSE };", "let margin = if fine || true { Duration::ZERO } else { COARSE };", "--lib coarse"),
  ("the cache keeps more than its capacity", "src/query.rs", "            if list.len() > capacity {", "            if list.len() > capacity + 1 {", "--test cache the_cache_keeps"),
  ("kept checks not moved to the end when used", "src/query.rs", "                    list.push(entry);\n                    return (result, true);", "                    list.insert(0, entry);\n                    return (result, true);", "--test cache the_cache_keeps"),
+ # Cancelled checks run on in their worker (milestone 9).
+ ("cancelling kills the running check", "src/lsp.rs", "            self.abandoned = Some(Abandoned {\n                check,\n                waiting: None,\n            });", "            check.kill();", "--test lsp a_cancelled_check_is_kept"),
+ ("a waiting query never kills a cancelled check", "src/lsp.rs", "                if now < waiting + ABANDONED_GRACE {", "                if true {", "--test lsp cancelling_a_running_check_answers"),
+ ("a cancelled check killed when a query is ready", "src/lsp.rs", "                if now < waiting + ABANDONED_GRACE {", "                if false {", "--test lsp a_cancelled_check_is_kept"),
+ ("no wake-up at the end of the grace", "src/lsp.rs", "                    Some(at) => timeout.min(at + ABANDONED_GRACE),", "                    Some(_) => timeout,", "--test lsp cancelling_a_running_check_answers"),
+ ("cancelled checks never time out", "src/lsp.rs", "            .take_if(|a| a.check.started.elapsed() >= self.options.timeout)", "            .take_if(|_| false)", "--test lsp a_cancelled_check_that_hangs"),
+ ("diagnostics start beside a cancelled check", "src/lsp.rs", "            || self.abandoned.is_some()\n            || !self.queue.is_empty()", "            || !self.queue.is_empty()", "--test lsp diagnostics_wait_for"),
+ ("a cancelled check's worker not kept", "src/lsp.rs", "            let (_, worker) = abandoned.check.finish(&done);\n\n            self.idle = worker;", "            let (_, worker) = abandoned.check.finish(&done);\n\n            drop(worker);", "--test lsp a_cancelled_check_is_kept"),
  # Checks with nothing to answer from (milestone 9).
  ("failures not kept", "src/query.rs", "        Ok(Err(Ok((reason, fingerprint)))) => Ok((Err(reason), fingerprint)),", "        Ok(Err(Ok((reason, _)))) => Err(reason),", "--test cache a_check_with_nothing"),
  ("failures' fingerprints leave out source files", "src/check.rs", "            || (sources && path.extension().is_some_and(|e| e == \"inko\"))", "            || (sources && path.extension().is_some_and(|e| e == \"none\"))", "--test cache a_module_fixed_on_disk"),
@@ -294,7 +302,7 @@ M = [
  ("repaired answers marked by the fresh check", "src/query.rs", "                sources[*i] = Source::Repaired;\n                cached[*i] = kept;", "                sources[*i] = Source::Repaired;", "--test cache repaired_and_stale"),
  ("stale answers marked by the fresh check", "src/query.rs", "                    sources[*i] = Source::Stale;\n                    cached[*i] = kept;", "                    sources[*i] = Source::Stale;", "--test cache repaired_and_stale"),
  ("no cached status", "src/lsp.rs", "            if cached {\n                params[\"cached\"]", "            if false {\n                params[\"cached\"]", "--test cache kept_answers_are_marked"),
- ("the queries' worker not kept", "src/lsp.rs", "        self.idle = worker;\n", "        drop(worker);\n", "--test cache kept_answers_are_marked"),
+ ("the queries' worker not kept", "src/lsp.rs", "        let (outcome, worker) = check.finish(&done);\n\n        self.idle = worker;\n", "        let (outcome, worker) = check.finish(&done);\n\n        drop(worker);\n", "--test cache kept_answers_are_marked"),
  ("workers keep no checks", "src/worker.rs", "    let cache = Cache::new(kept_checks());", "    let cache = Cache::new(0);", "--test cache kept_answers_are_marked"),
  ("the tests can't turn kept checks off", "src/worker.rs", "    if std::env::var_os(NO_CACHE_VARIABLE).is_some() {\n        return 0;", "    if std::env::var_os(NO_CACHE_VARIABLE).is_some() {\n        return query::KEPT_CHECKS;", "--test cache the_tests_can_turn"),
  ("shutdown leaves the waiting worker", "src/lsp.rs", "        if let Some(worker) = self.idle.take() {\n            worker.kill();\n        }\n", "", "--test cache shutdown_stops"),
