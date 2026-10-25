@@ -227,7 +227,33 @@ exercises. Removing either fails the Linux build itself, at the link or
 in scripts/dist-deps.sh, as it did while I wrote them. The workflow's own
 steps aren't covered either.
 
-**Tiers:** see below; this report's commit adds them.
+**The tiers.** Cargo.toml and scripts/mutate.py changed, so the
+milestone tier says the exhaustive tier must pass too (AGENTS.md). The
+exhaustive tier runs everything the milestone tier does, so I ran it in
+its place, on 2dc8474 (the report's first commit; this paragraph is all
+that changed since).
+
+- **The first run** reported all 276 mutations caught by 00:55. Then the
+  Mac ran out of battery and went into low-power sleep at 00:57 (`pmset
+  -g log`), before the runner printed its summary, and it was stopped at
+  the two-hour limit while asleep.
+- **The second run**, on AC power, with other processes keeping the load
+  average between 140 and 530, passed every step before the mutations:
+  formatting, clippy, the tests, the patch, the release build, the whole
+  corpus, every test without kept checks, the selection check, and
+  `scripts/check-dist.sh`. The runner's control passed in 230 s, and
+  **274 of the 276 mutations were caught, in 2,863 s. The other two
+  timed out at the runner's 900 s**: "the batch's answers out of order"
+  (milestone 6's, which timed out under load in milestones 8 and 9 too)
+  and "highlights missing uses in unsafe units". Neither guards code this
+  milestone changed.
+- **Run again alone** (`scripts/mutate.py "the batch's answers out of
+  order" "highlights missing uses in unsafe units"`), both were caught by
+  the edit-replay corpus, in 770 s.
+
+The check of every commit passed on each commit, through the pre-commit
+hook, some only on a second try after the load had dropped (Remaining
+unknowns, 5).
 
 ## Every patch line added, and why
 
