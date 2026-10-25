@@ -68,8 +68,9 @@ The targets are `aarch64-apple-darwin`, `x86_64-apple-darwin`,
 binaries are static, so they run on glibc and musl distributions alike.
 Each binary is self-contained: it needs Inko itself, and nothing else.
 Each release's `manifest.json` lists its builds with their sizes and
-SHA-256, for clients that install Cuttlebone for their users
-([docs/releases.md](docs/releases.md)).
+SHA-256, for clients that install Cuttlebone for their users, and
+`releases/latest/download/index.json` lists every release with its Inko
+versions, for users of an older Inko ([docs/releases.md](docs/releases.md)).
 
 ## Building from source
 
@@ -164,7 +165,7 @@ also fast enough for the latency limits.
 | `tests/highlight.rs` | document highlights over LSP in both encodings: bindings and assignments as writes, fields, same-named symbols, methods, types, closure arguments, `null`, broken code |
 | `tests/signature.rs` | signature help over LSP in both encodings: positional and named arguments (in any order), nested calls, type arguments, unclosed argument lists while typing, `null` outside parentheses, for operators and unresolved methods |
 | `tests/inlay.rs` | inlay hints over LSP in both encodings: every rule for type and parameter hints, and the requested range |
-| `tests/latency.rs` | latency limits for every query (each a check of its own), alone and while a diagnostics check of the same project runs, a burst of 1,000 definitions (one check), the cost of a worker process, a question after a cancelled one (the worker keeps its checks), and a second question in code that doesn't parse (a lookup). With `CUTTLEBONE_TYPING_REPLAY` set, a replay of typing at 7 characters a second, which prints what it measured |
+| `tests/latency.rs` | latency limits (scaled by the machine's load in the check of every commit, as written in the milestone tier: AGENTS.md, "Checks") for every query (each a check of its own), alone and while a diagnostics check of the same project runs, a burst of 1,000 definitions (one check), the cost of a worker process, a question after a cancelled one (the worker keeps its checks), and a second question in code that doesn't parse (a lookup). With `CUTTLEBONE_TYPING_REPLAY` set, a replay of typing at 7 characters a second, which prints what it measured |
 | `tests/golden.rs` | `dump-types` output for a few std modules and fixtures, compared with `tests/golden/*.txt`. Run `UPDATE_GOLDEN=1 cargo test` to rewrite them. |
 | `tests/editors.rs` | the Neovim smoke check (below) under `cargo test`, if `nvim` is on `PATH` |
 | `tests/guardrails.rs` | the layering of src/, no editor named in code, nothing named after Inko, no machine-specific paths, patches/README.md accounting for every patch line, a CHANGELOG.md entry for the version, and docs showing it |
@@ -194,8 +195,8 @@ don't.
 The milestone tier also checks the release tooling with this machine's
 archive (`scripts/check-dist.sh`, [docs/releases.md](docs/releases.md)):
 it builds and verifies it, publishes it to a `file://` URL with a manifest
-and checks it from there, and checks that each step refuses what it
-should.
+and an index and checks them from there, and checks that each step
+refuses what it should.
 
 `editors/check.sh` starts the server from VS Code and Neovim headlessly and
 checks that a hover and a go to definition work, and that a diagnostic

@@ -5,7 +5,8 @@ Each version of Cuttlebone is published as a
 prebuilt binaries, so it can be installed (by people, or by a client on
 their behalf) without Rust and LLVM. `.github/workflows/release.yml` builds
 them when a version tag is pushed, verifies each on its own platform, and
-publishes them with a manifest that lists them. Nothing is published to any
+publishes them with a manifest that lists them, and an index of every
+release. Nothing is published to any
 registry or package manager.
 
 ## Builds
@@ -127,9 +128,60 @@ To install a build, a client:
 
 Today each release has builds for one Inko version, the one its source
 pins. A client whose user has an older Inko needs an older release of
-Cuttlebone, whose manifest is at its own tag's URL. Each version's entry in
-[CHANGELOG.md](../CHANGELOG.md) says which Inko `cuttlebone --version`
-names.
+Cuttlebone, which [the index](#the-index) finds.
+
+## The index
+
+Each release also has an `index.json` that lists every release, newest
+first, with the Inko versions it has builds for and its manifest's URL.
+The latest release's is at a URL that doesn't change:
+
+```
+https://github.com/setdef/Cuttlebone/releases/latest/download/index.json
+https://github.com/setdef/Cuttlebone/releases/download/v<version>/index.json
+```
+
+```json
+{
+  "schema": 1,
+  "releases": [
+    {
+      "cuttlebone": "0.11.0",
+      "inko": ["0.21.1"],
+      "manifest": "https://github.com/setdef/Cuttlebone/releases/download/v0.11.0/manifest.json"
+    },
+    {
+      "cuttlebone": "0.10.0",
+      "inko": ["0.21.1"],
+      "manifest": "https://github.com/setdef/Cuttlebone/releases/download/v0.10.0/manifest.json"
+    }
+  ]
+}
+```
+
+| Field | |
+|---|---|
+| `schema` | The index's format: 1, with the same rules as the manifest's `schema`. |
+| `releases` | Every release published with a manifest, newest first, each once. 0.10.0 is the first. |
+| `releases[].cuttlebone` | The release's version. |
+| `releases[].inko` | The Inko versions its manifest has builds for, newest first. |
+| `releases[].manifest` | Its manifest's URL, at its own tag. |
+
+So for a user whose Inko isn't the latest release's, a client:
+
+1. fetches `releases/latest/download/index.json`,
+2. takes the first release whose `inko` has the user's version (none means
+   no release of Cuttlebone works with that Inko),
+3. fetches its `manifest`, and installs from it as above. If the manifest
+   has no build for the user's `os` and `arch`, the next release in the
+   index with that Inko may.
+
+The index is written when a release is published, from the manifests of
+every release published before it and its own
+(`scripts/dist-index.py`), so it says what they say. A tag's own
+`index.json` lists the releases up to that one; only the latest's is
+complete. Each version's entry in [CHANGELOG.md](../CHANGELOG.md) also
+says which Inko `cuttlebone --version` names.
 
 ## How a release is made
 
@@ -143,14 +195,19 @@ names.
    `tests/fixtures/release`, with a stand-in `inko` of the right version
    whose standard library is the pinned release's. A Linux build is
    verified in Alpine and in Ubuntu containers.
-4. It publishes the release with the archives and `manifest.json`, the
+4. It publishes the release with the archives, `manifest.json` and
+   `index.json` (every published release's manifest, and this one's), the
    version's CHANGELOG.md entry as its notes.
 5. It downloads the published release again from the manifest's URL on
    each runner, checks each archive's size and SHA-256, and verifies those
-   it can run there (`scripts/dist-check-release.py`).
+   it can run there (`scripts/dist-check-release.py`). It checks the index
+   at the tag's URL and the latest release's: newest first, this release
+   the newest, and each release's manifest saying what the index does
+   (`scripts/dist-check-index.py`).
 
 Run by hand (`workflow_dispatch`), the workflow does steps 3 alone. To build
 and check locally: `scripts/dist-build.sh` (macOS) or
 `scripts/dist-linux.sh` (Docker), then `scripts/check-dist.sh` checks the
 tooling, and `scripts/dist-check-release.py MANIFEST_URL` checks a
-published release from any machine.
+published release from any machine, and `scripts/dist-check-index.py
+INDEX_URL` the index.

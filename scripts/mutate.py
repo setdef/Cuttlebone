@@ -168,6 +168,11 @@ M = [
  ("archives without Cuttlebone's license", "scripts/dist-build.sh", "cp LICENSE \"$out/LICENSE\"\n", "", "sh:scripts/check-dist.sh"),
  ("an archive with another LICENSE verifies", "scripts/dist-verify.py", "(work / stem / \"LICENSE\").read_bytes() == (root / \"LICENSE\").read_bytes()", "True", "sh:scripts/check-dist.sh"),
  ("Cargo.toml without the license", "Cargo.toml", "license = \"MPL-2.0\"\n", "", "--test guardrails cuttlebone_is_mpl_2_0"),
+ ("the index in the order given", "scripts/dist-index.py", "releases.sort(key=lambda r: tuple(map(int, r[\"cuttlebone\"].split(\".\"))), reverse=True)\n", "", "sh:scripts/check-dist.sh"),
+ ("an index in any order checks", "scripts/dist-check-index.py", "expect(versions == sorted(set(versions), key=key, reverse=True)", "expect(True", "sh:scripts/check-dist.sh"),
+ ("an index's Inko versions not checked", "scripts/dist-check-index.py", "expect(set(release[\"inko\"]) == inko,", "expect(True,", "sh:scripts/check-dist.sh"),
+ ("a version twice in the index", "scripts/dist-index.py", "    if any(r[\"cuttlebone\"] == version for r in releases):\n", "    if False:\n", "sh:scripts/check-dist.sh"),
+ ("strict latency limits scaled by the load", "tests/latency.rs", "    if std::env::var_os(STRICT_VARIABLE).is_some() {\n        return base;\n    }\n", "", "--test latency limits_are_as_written"),
  ("published checksums not checked", "scripts/dist-check-release.py", "expect(sha256 == build[\"sha256\"]", "expect(True", "sh:scripts/check-dist.sh"),
  # Diagnostics (milestone 4).
  ("diagnostics skip MIR", "src/check.rs", "            inspect(db, hir);\n            true", "            inspect(db, hir);\n            false", "--test diagnostics every_fixture"),
@@ -452,6 +457,8 @@ def run_sh(command):
 def test_env(extra=None):
     env = dict(os.environ)
     env["CUTTLEBONE_CORPUS_FULL"] = "1"
+    # The latency limits as written, as in the milestone tier.
+    env["CUTTLEBONE_LATENCY_STRICT"] = "1"
     env.update(extra or {})
     return env
 

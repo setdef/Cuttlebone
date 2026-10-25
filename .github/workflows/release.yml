@@ -1,10 +1,10 @@
 # Builds, verifies and publishes the prebuilt binaries (docs/releases.md).
 #
 # A pushed version tag (v0.11.0) builds every target, verifies each archive
-# on its own platform, publishes them with manifest.json as the tag's
-# GitHub release, and then checks the published release from its
-# manifest's URL alone. Run by hand (workflow_dispatch), it builds and
-# verifies without publishing.
+# on its own platform, publishes them with manifest.json and the release
+# index (index.json) as the tag's GitHub release, and then checks the
+# published release from its manifest's and index's URLs alone. Run by
+# hand (workflow_dispatch), it builds and verifies without publishing.
 name: Release
 
 on:
@@ -89,6 +89,14 @@ jobs:
           python3 scripts/dist-manifest.py \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" dist/*.tar.gz > dist/manifest.json
           cat dist/manifest.json
+          # The index: every published release with a manifest, and this one.
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download"
+          older=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | select(.draft or .prerelease | not) | select(any(.assets[]; .name == "manifest.json")) | .tag_name' |
+            sed "s|.*|$base/&/manifest.json|")
+          python3 scripts/dist-index.py --use "$base/$TAG/manifest.json=dist/manifest.json" \
+            "$base/$TAG/manifest.json" $older > dist/index.json
+          cat dist/index.json
           {
             # The version's entry in CHANGELOG.md, without its heading.
             awk -v h="## ${TAG#v}" '$0 == h {on = 1; next} /^## / {on = 0} on' CHANGELOG.md
@@ -96,10 +104,12 @@ jobs:
             echo "Each archive works with one Inko version, which its name says."
             echo "Machine-readable list of the builds, with sizes and SHA-256:"
             echo "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/manifest.json"
+            echo "Every release, with its Inko versions and manifest:"
+            echo "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/index.json"
             echo "(docs/releases.md)."
           } > notes.md
       - name: Publish the release
-        run: gh release create "$TAG" dist/*.tar.gz dist/manifest.json --title "Cuttlebone ${TAG#v}" --notes-file notes.md --verify-tag
+        run: gh release create "$TAG" dist/*.tar.gz dist/manifest.json dist/index.json --title "Cuttlebone ${TAG#v}" --notes-file notes.md --verify-tag
 
   check:
     needs: publish
@@ -118,3 +128,9 @@ jobs:
         run: |
           python3 scripts/dist-check-release.py --partial \
             "https://github.com/$GITHUB_REPOSITORY/releases/download/${{ github.ref_name }}/manifest.json"
+      - name: Check the release index, at the tag's URL and the latest release's
+        run: |
+          for url in "download/${{ github.ref_name }}" latest/download; do
+            python3 scripts/dist-check-index.py --newest "${GITHUB_REF_NAME#v}" \
+              "https://github.com/$GITHUB_REPOSITORY/releases/$url/index.json"
+          done

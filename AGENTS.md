@@ -78,11 +78,20 @@ is safe only as this section says.
   `scripts/install-hooks.sh`. On macOS, add the terminal under System
   Settings, Privacy & Security, Developer Tools, or each new test binary
   is scanned on its first run.
+- **Latency:** in the check of every commit, tests/latency.rs scales each
+  latency limit by the machine's load (the last minute's load average per
+  core, when it's over 1), so other processes can't fail a commit. The
+  milestone tier and the mutations hold every query to the limits as
+  written (`CUTTLEBONE_LATENCY_STRICT`), however loaded the machine is:
+  run them when it's quiet. Ratios between two measurements taken in the
+  same run (a question after a cancel, a second lookup) aren't scaled in
+  either tier. Don't loosen a written limit to get past a loaded machine.
 - **Milestone reports:** `scripts/check.sh --milestone [REV]`, where REV is
   the milestone's first commit (by default, the last commit that changed a
-  milestone report). It adds the whole corpus, every test again without
-  kept checks, and the mutations whose snippet, tests or checked command
-  is in a file changed since REV, or whose snippet moved.
+  milestone report). It adds the whole corpus, the latency limits as
+  written, every test again without kept checks, and the mutations whose
+  snippet, tests or checked command is in a file changed since REV, or
+  whose snippet moved.
   `scripts/check-selection.py` shows that this would have run every
   mutation guarding code the last three milestones changed.
 - **Exhaustive:** `scripts/check.sh --exhaustive` runs every mutation. It's

@@ -5,10 +5,12 @@
 # Usage: scripts/check.sh [--milestone [REV] | --exhaustive]
 #
 #   (none)            every commit: formatting, clippy, the tests (with a
-#                     sample of the edit-replay corpus), the patch, and the
+#                     sample of the edit-replay corpus, and latency limits
+#                     scaled by the machine's load), the patch, and the
 #                     release build. About a minute.
 #   --milestone [REV] before a milestone report: the above, the whole
-#                     corpus, every test again without kept checks (the
+#                     corpus, the latency limits as written (unscaled),
+#                     every test again without kept checks (the
 #                     answers must be the same), the mutation selection's
 #                     own check, and the mutations a change since REV could
 #                     affect. REV is the milestone's first commit; by
@@ -59,6 +61,8 @@ step "the release build has no test-only code" scripts/check-release.sh
 if [ "$tier" != commit ]; then
     step "the whole edit-replay corpus" \
         env CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet --test integration replay::
+    step "the latency limits as written, however loaded the machine is" \
+        env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency
     step "every test without kept checks, and the whole corpus" \
         env CUTTLEBONE_NO_CACHE=1 CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet
     step "the milestone tier selects every mutation that guards changed code" \

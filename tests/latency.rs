@@ -23,6 +23,71 @@ const PROCESS_LIMIT: Duration = Duration::from_millis(50);
 
 const RUNS: usize = 7;
 
+/// With this set, the limits are as they are written: the milestone tier
+/// (scripts/check.sh) and the mutations hold every query to them.
+/// Without it, as in the check of every commit, each limit is scaled by
+/// how loaded the machine is (`load`), so that other processes can't fail
+/// a commit (AGENTS.md, "Checks").
+const STRICT_VARIABLE: &str = "CUTTLEBONE_LATENCY_STRICT";
+
+/// A latency limit: `base`, or in the check of every commit, `base` times
+/// the machine's load.
+fn limit(base: Duration) -> Duration {
+    if std::env::var_os(STRICT_VARIABLE).is_some() {
+        return base;
+    }
+
+    let factor = load();
+
+    if factor > 1.0 {
+        eprintln!(
+            "limit {:?} scaled by the load, {:.1} per core, to {:?} ({} not set)",
+            base,
+            factor,
+            base.mul_f64(factor),
+            STRICT_VARIABLE
+        );
+    }
+
+    base.mul_f64(factor)
+}
+
+/// The milestone tier and the mutations set `STRICT_VARIABLE`, and then
+/// the limits are exactly as written, however loaded the machine is.
+#[test]
+fn limits_are_as_written_when_strict() {
+    if std::env::var_os(STRICT_VARIABLE).is_some() {
+        assert_eq!(limit(LIMIT), LIMIT);
+        assert_eq!(limit(BURST_LIMIT), BURST_LIMIT);
+    } else {
+        assert!(limit(LIMIT) >= LIMIT);
+    }
+}
+
+/// The load average over the last minute per core, at least 1: how many
+/// times slower than on an idle machine a process here may run, as other
+/// processes take their share of the cores.
+fn load() -> f64 {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
+    let average = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .or_else(|| {
+            let out = std::process::Command::new("sysctl")
+                .args(["-n", "vm.loadavg"])
+                .output()
+                .ok()?;
+
+            String::from_utf8(out.stdout).ok()
+        })
+        .and_then(|text| {
+            text.split_whitespace()
+                .find_map(|word| word.parse::<f64>().ok())
+        })
+        .unwrap_or(0.0);
+
+    (average / cores).max(1.0)
+}
+
 /// These tests measure queries on their own, as they would be in an editor
 /// with nothing else going on. They run in parallel, and each server would
 /// also check its whole project for diagnostics, so those are off.
@@ -148,7 +213,8 @@ fn hover_on_a_std_sized_project_is_fast_enough() {
         "hover on a std-sized project: {:?} (all: {:?})",
         median, times
     );
-    assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
+    let max = limit(LIMIT);
+    assert!(median < max, "median {:?} exceeds {:?}", median, max);
 }
 
 #[test]
@@ -167,7 +233,8 @@ fn hover_in_the_largest_std_module_is_fast_enough() {
         "hover in std.net.http.server: {:?} (all: {:?})",
         median, times
     );
-    assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
+    let max = limit(LIMIT);
+    assert!(median < max, "median {:?} exceeds {:?}", median, max);
 }
 
 #[test]
@@ -192,7 +259,8 @@ fn completion_on_a_std_sized_project_is_fast_enough() {
         "completion on a std-sized project: {:?} (all: {:?})",
         median, times
     );
-    assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
+    let max = limit(LIMIT);
+    assert!(median < max, "median {:?} exceeds {:?}", median, max);
 }
 
 #[test]
@@ -248,12 +316,12 @@ fn a_worker_process_costs_little_more_than_checking_in_the_servers_thread() {
         c
     );
     assert!(
-        b.saturating_sub(a) < PROCESS_LIMIT,
+        b.saturating_sub(a) < limit(PROCESS_LIMIT),
         "a worker adds {:?}",
         b.saturating_sub(a)
     );
     assert!(
-        c < PROCESS_LIMIT,
+        c < limit(PROCESS_LIMIT),
         "a worker that doesn't check takes {:?}",
         c
     );
@@ -317,12 +385,13 @@ fn highlights_signatures_and_inlay_hints_on_a_std_sized_project_are_fast_enough(
             "{} on a std-sized project: {:?} (all: {:?})",
             method, median, times
         );
+        let max = limit(LIMIT);
         assert!(
-            median < LIMIT,
+            median < max,
             "{}: median {:?} exceeds {:?}",
             method,
             median,
-            LIMIT
+            max
         );
     }
 }
@@ -351,12 +420,13 @@ fn definition_and_type_definition_on_a_std_sized_project_are_fast_enough() {
             "{} on a std-sized project: {:?} (all: {:?})",
             method, median, times
         );
+        let max = limit(LIMIT);
         assert!(
-            median < LIMIT,
+            median < max,
             "{}: median {:?} exceeds {:?}",
             method,
             median,
-            LIMIT
+            max
         );
     }
 }
@@ -379,7 +449,8 @@ fn references_across_std_are_fast_enough() {
     let median = median(times.clone());
 
     eprintln!("references across std: {:?} (all: {:?})", median, times);
-    assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
+    let max = limit(LIMIT);
+    assert!(median < max, "median {:?} exceeds {:?}", median, max);
 }
 
 /// Queries don't wait for diagnostics, and stay under hover's limit while a
@@ -450,12 +521,13 @@ fn queries_stay_fast_while_diagnostics_are_checked() {
             "{} during a diagnostics check: {:?} (all: {:?}); the checks took {:?} ms",
             method, median, times, checks
         );
+        let max = limit(LIMIT);
         assert!(
-            median < LIMIT,
+            median < max,
             "{}: median {:?} exceeds {:?}",
             method,
             median,
-            LIMIT
+            max
         );
     }
 }
@@ -502,7 +574,8 @@ fn answers_in_code_being_edited_are_fast_enough() {
             "hover in code being edited, {}: {:?} (all: {:?})",
             name, median, times
         );
-        assert!(median < LIMIT, "median {:?} exceeds {:?}", median, LIMIT);
+        let max = limit(LIMIT);
+        assert!(median < max, "median {:?} exceeds {:?}", median, max);
     }
 }
 
@@ -598,12 +671,8 @@ fn a_burst_of_definitions_costs_one_check() {
     // The import's modules (`import` itself and the aliases' declarations
     // have none), and the names in `main`.
     assert!(found > BURST / 3, "{}", found);
-    assert!(
-        elapsed < BURST_LIMIT,
-        "{:?} exceeds {:?}",
-        elapsed,
-        BURST_LIMIT
-    );
+    let max = limit(BURST_LIMIT);
+    assert!(elapsed < max, "{:?} exceeds {:?}", elapsed, max);
 }
 
 /// How long a person typing at about 7 characters a second takes between
