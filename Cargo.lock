@@ -110,6 +110,7 @@ dependencies = [
  "compiler",
  "crossbeam-channel",
  "cuttlebone",
+ "inkwell",
  "location",
  "lsp-server",
  "lsp-types",

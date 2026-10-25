@@ -27,7 +27,7 @@ docker run --rm -i \
     -e LLVM_SYS_181_PREFIX=/usr/lib/llvm18 \
     "$alpine" sh -eu <<'EOF'
 apk add --quiet --no-progress build-base rustup python3 \
-    llvm18-dev llvm18-static libstdc++-dev zlib-static zstd-static libxml2-static
+    llvm18-dev llvm18-static libstdc++-dev libffi-dev zlib-static zstd-static libxml2-static
 export PATH="$CARGO_HOME/bin:$PATH"
 if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
     # The toolchain itself comes from rust-toolchain.toml.

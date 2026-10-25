@@ -23,6 +23,12 @@ crossbeam-channel = "0.5.17"
 url = "2"
 serde = { version = "1", features = ["derive"] }
 
+# The upstream compiler's inkwell asks for libffi as a dynamic library,
+# which a static musl build can't have. This feature (unified with the
+# compiler's) drops that, and scripts/dist-build.sh links libffi.a itself.
+[target.'cfg(target_env = "musl")'.dependencies]
+inkwell = { version = "0.8", features = ["no-libffi-linking"] }
+
 [features]
 # CUTTLEBONE_FAULT, which makes workers hang, abort or skip repaired copies (docs/lsp.md, "Testing
 # faults"). Only the tests enable it, through the dev-dependency below, so

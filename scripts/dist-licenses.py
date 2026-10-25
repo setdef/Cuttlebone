@@ -57,6 +57,7 @@ if target.endswith("-linux-musl"):
         ("musl", "MIT", "https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT"),
         ("libstdc++ and libgcc (GCC)", "GPL-3.0-or-later WITH GCC-exception-3.1", "https://gcc.gnu.org/onlinedocs/libstdc++/manual/license.html"),
         ("zlib", "Zlib", "https://zlib.net/zlib_license.html"),
+        ("libffi", "MIT", "https://github.com/libffi/libffi/blob/master/LICENSE"),
         ("libxml2", "MIT", "https://gitlab.gnome.org/GNOME/libxml2/-/blob/master/Copyright"),
     ]
 

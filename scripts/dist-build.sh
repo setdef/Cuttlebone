@@ -50,7 +50,16 @@ case "$target" in
     *-unknown-linux-musl)
         # Alpine's Rust targets musl with a static C runtime, and llvm-sys
         # then links LLVM's system libraries (libstdc++, zlib, zstd,
-        # libxml2) statically too, as Inko's own Alpine builds do.
+        # libxml2) statically too, as Inko's own Alpine builds do. Two more,
+        # after LLVM's libraries:
+        #
+        # - libffi, which inkwell would link dynamically (Cargo.toml turns
+        #   that off for musl). By file name, since rustc ends its static
+        #   libraries with -Bdynamic, and -lffi would then find libffi.so.
+        # - libgcc: on ARM64, LLVM calls __clear_cache, which is there, and
+        #   Rust links musl targets without the C compiler's default
+        #   libraries.
+        export RUSTFLAGS="${RUSTFLAGS-} -C link-arg=-l:libffi.a -C link-arg=-lgcc"
         ;;
     *)
         echo "no release build for $target (docs/releases.md)" >&2
