@@ -228,7 +228,8 @@ fn hovers_in_plain_text() {
 
 /// An answer from the last good check (repaired copies off) shows the doc
 /// comment it read only if that text is as it was: here it is, then it
-/// was edited, and there's no answer.
+/// was edited (in words no code mentions, so the rest of the answer would
+/// hold), and there's no answer.
 #[test]
 fn a_stale_hover_shows_a_doc_comment_only_if_unchanged() {
     let root = project_with_a_dependency("hover-stale");
@@ -243,7 +244,7 @@ fn a_stale_hover_shows_a_doc_comment_only_if_unchanged() {
         },
     );
     let ask = |client: &mut Client, text: &str| {
-        let (line, character) = at(text, "Counter.new(label", 8, false);
+        let (line, character) = at(text, "count: MAX)", 7, false);
         let (id, response) = client.hover(&main, line, character);
 
         (
@@ -278,8 +279,8 @@ fn a_stale_hover_shows_a_doc_comment_only_if_unchanged() {
     assert_eq!(stale["contents"], fresh["contents"]);
 
     // The doc comment edited: what the old check read isn't there.
-    let edited = broken.replace("# Makes one.", "# Makes two.");
-    let (line, character) = at(&broken, "Makes one", 6, false);
+    let edited = broken.replace("at most.", "at least.");
+    let (line, character) = at(&broken, "most.", 0, false);
 
     client.change(
         &main,
@@ -287,14 +288,14 @@ fn a_stale_hover_shows_a_doc_comment_only_if_unchanged() {
         json!([{
             "range": {
                 "start": { "line": line, "character": character },
-                "end": { "line": line, "character": character + 3 },
+                "end": { "line": line, "character": character + 4 },
             },
-            "text": "two",
+            "text": "least",
         }]),
     );
 
     let (none, status) = ask(&mut client, &edited);
 
-    assert_eq!(none, Value::Null);
+    assert_eq!(none, Value::Null, "{}", status);
     assert_eq!(status["status"], "unavailable", "{}", status);
 }

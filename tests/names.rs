@@ -522,13 +522,10 @@ fn names_in_code_being_edited() {
     assert_eq!(result, Value::Null);
     assert_eq!(status["reason"]["code"], "declarationErrors", "{}", status);
 
-    // A signature half typed elsewhere, blank in the copy: no names.
+    // A method's signature half typed, blank in the copy, outside a
+    // method's body: no names, though no code mentions the method.
     let typed = text
-        .replacen(
-            "fn pub describe(name: String) -> String {",
-            "fn pub describe(name: String) -> {",
-            1,
-        )
+        .replacen("fn total(", "fn pub helper(by: ) {}\n\nfn total(", 1)
         .replacen(
             "    counter.add(NAMES.size)\n",
             "    co\n    counter.add(NAMES.size)\n",
@@ -537,4 +534,5 @@ fn names_in_code_being_edited() {
     let (result, status) = e.complete(&typed, "    co\n");
 
     assert_eq!(result, Value::Null, "{}", status);
+    assert_eq!(status["reason"]["code"], "noHir", "{}", status);
 }
