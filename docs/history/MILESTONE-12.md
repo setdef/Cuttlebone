@@ -327,12 +327,15 @@ milestone's end, and that decided what could finish:
   corpus with and without kept checks included (formatting 1 s, clippy
   44 s, tests 70 s, the release build 20 s, the corpus 132 s, strict
   latency 23 s, no kept checks 198 s, the selection check 4 s, the
-  release tooling 33 s). Its 327 selected mutations: **320 caught**; the
-  other seven are the four in the list above, two more that only a busy
-  machine missed (none), and one that didn't build. After the fixes in
-  b16c379, each of the seven was run again (`scripts/mutate.py` with
-  their names, or applied by hand when the runner's own control couldn't
-  pass on the loaded machine): **7 of 7 caught**.
+  release tooling 33 s). Its 327 selected mutations: **320 caught**. Of the other seven, five
+weren't caught (the four in the list above, and the stale hover's
+doc-comment range, which the same new test catches), one didn't build
+(a closure's arguments, now a whole statement removed), and one timed
+out at 900 s on the loaded machine (the batch's answers out of order,
+which replays the whole corpus). After the fixes in b16c379, each of the
+seven was run again (`scripts/mutate.py` with their names, or applied by
+hand and its tests run when the runner's own control couldn't pass on
+the loaded machine): **7 of 7 caught**.
 - **The exhaustive tier**, on this report's commit with the two symbol
   latency tests running alone: every step before the mutations passed
   (strict latency at a load of about 60). The mutations didn't run: the
