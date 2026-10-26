@@ -8,6 +8,11 @@ the entry links to the milestone's report, which its last commit adds
 (AGENTS.md, "Versions"). Milestones 1 to 6 were all built as 0.1.0; their
 versions here were given afterwards.
 
+## 0.12.0
+
+Milestone 12: documentation in hover, document and workspace symbols, and
+completion of names. [Report](docs/history/MILESTONE-12.md).
+
 ## 0.11.0
 
 Milestone 11: a license, a release index, and requests from a client's
