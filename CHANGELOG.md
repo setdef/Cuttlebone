@@ -13,6 +13,29 @@ versions here were given afterwards.
 Milestone 12: documentation in hover, document and workspace symbols, and
 completion of names. [Report](docs/history/MILESTONE-12.md).
 
+- **Hover shows the declaration**, after the type: its signature as the
+  source writes it, `Defined in` its module and type, and its doc comment
+  as Markdown, the text `inko doc` reads (a trait's for an implementation
+  without its own). For std, dependencies and the project; on a
+  declaration's own name too. Sections are separated by `---`; the type
+  is still the first code block where there's an expression.
+- **`textDocument/documentSymbol`**: types, traits, `impl` blocks,
+  methods, fields, constructors and constants, nested, with their
+  signatures as `detail`, from the syntax alone: in code that doesn't type
+  check, and (from a copy with lines blank, `repaired`) in code that
+  doesn't parse. `SymbolInformation[]` for clients without hierarchy.
+- **`workspace/symbol`**: the same declarations of the project, its
+  dependencies and std, matched as clients filter (the characters in
+  order, any case), the project's first, at most 500. Fresh with every
+  file on disk and open document; nothing is written.
+- **Completion of names**: variables in scope, what `self` has, fields
+  after `@`, what the module binds, types in a type's name; public
+  symbols of modules not imported, with `additionalTextEdits` that add the
+  import as `inko fmt` would; modules and symbols in an `import`. `@` is a
+  trigger character. Names are `isIncomplete`. In code being edited, names
+  come only where no declaration differs.
+- No new extension, and the patch is unchanged.
+
 ## 0.11.0
 
 Milestone 11: a license, a release index, and requests from a client's
