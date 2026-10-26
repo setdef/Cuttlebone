@@ -158,6 +158,22 @@ const CITATIONS: &[(&str, &str)] = &[
         "types/src/lib.rs:6107-6119",
         "TypeEnum::TypeParameter(id) | TypeEnum::RigidTypeParameter(id) => {",
     ),
+    (
+        "compiler/src/hir.rs:39-90",
+        "fn documentation_for(&mut self, location: &Location)",
+    ),
+    (
+        "compiler/src/hir.rs:1320-1340",
+        "while let Some(ast::TopLevelExpression::Comment(c)) = nodes.peek()",
+    ),
+    (
+        "compiler/src/state.rs:98-135",
+        ".join(format!(\"v{}\", dep.version.major))",
+    ),
+    (
+        "types/src/lib.rs:3249-3262",
+        "if let Some(id) = self.original_method(db) {",
+    ),
 ];
 
 fn root() -> &'static Path {

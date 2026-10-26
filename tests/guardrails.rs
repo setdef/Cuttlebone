@@ -14,14 +14,24 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("walker", &[]),
     ("check", &[]),
     ("edits", &[]),
+    ("syntax", &["position"]),
+    ("index", &["syntax"]),
     ("units", &["position", "edits"]),
-    ("query", &["position", "walker", "check", "edits", "units"]),
+    (
+        "query",
+        &["position", "walker", "check", "edits", "units", "syntax"],
+    ),
     // Helpers for dump-types and the tests; nothing in the crate uses them.
     ("dump", &["walker", "check"]),
-    ("worker", &["position", "walker", "check", "edits", "query"]),
+    (
+        "worker",
+        &["position", "walker", "check", "edits", "query", "syntax"],
+    ),
     (
         "lsp",
-        &["position", "walker", "check", "edits", "query", "worker"],
+        &[
+            "position", "walker", "check", "edits", "query", "worker", "syntax", "index",
+        ],
     ),
 ];
 

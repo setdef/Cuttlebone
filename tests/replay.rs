@@ -15,6 +15,12 @@
 //! between that edit and the end are asked about, and lists (highlights,
 //! hints) are compared on that text only.
 //!
+//! Document symbols, from the text alone, are compared the same way after
+//! every edit: each symbol given mid-edit, whose name is in text that
+//! didn't change, must be one of the final text's, with the same kind,
+//! names around it, detail and ranges (where they didn't change either).
+//! One that a copy with lines blank left out is only counted.
+//!
 //! An answer from anything but the documents as they are (`Source`), or
 //! from the documents as they are past an error in a declaration
 //! (`Source::Guarded`), that disagrees with the final fresh one is
@@ -36,6 +42,7 @@ use cuttlebone::dump::upstream_std;
 use cuttlebone::edits::{Changes, Snapshots};
 use cuttlebone::position::{self, Encoding, Position, position_at};
 use cuttlebone::query::{self, Answer, Question, Reply, Request, Session, Source};
+use cuttlebone::syntax::{self, Outline};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -425,11 +432,12 @@ const REQUESTS: &[&str] = &[
     "inlayHint, whole file",
     "documentHighlight",
     "references",
+    "documentSymbol",
 ];
 
 fn request_name(q: Question) -> &'static str {
     match q {
-        Question::Type => "hover",
+        Question::Hover => "hover",
         Question::Definition => "definition",
         Question::TypeDefinition => "typeDefinition",
         Question::Complete => "completion",
@@ -462,6 +470,9 @@ struct Tally {
     /// answers say they don't cover: where milestone 5's answers looked
     /// like "no hints here".
     uncovered: usize,
+    /// Document symbols the final text has, in text that was there then,
+    /// that an answer from a copy with lines blank left out.
+    missing_symbols: usize,
 }
 
 impl Tally {
@@ -490,6 +501,7 @@ impl Tally {
         self.differs.extend(other.differs.iter().cloned());
         self.partial += other.partial;
         self.uncovered += other.uncovered;
+        self.missing_symbols += other.missing_symbols;
     }
 
     fn get(&self, request: &str, verdict: Verdict) -> usize {
@@ -709,6 +721,62 @@ fn within(covered: &[query::Range], p: Position) -> bool {
     covered.iter().any(|r| r.start <= p && p <= r.end)
 }
 
+/// A document's symbols as lines to compare: each with the names it's in,
+/// its kind, name and detail, and its name's and its own ranges. Mid-edit
+/// (`now`) ones are mapped to the final text, and left out if their names
+/// changed in between; final ones are left out if their names weren't
+/// there then. A range that changed in between is `<changed>`.
+fn symbol_lines(
+    outline: &Outline,
+    text: &str,
+    file: &Path,
+    mapping: &Mapping,
+    now: bool,
+) -> Vec<String> {
+    let range = |r: &std::ops::Range<usize>| query::Range {
+        start: position_at(text, r.start, ENCODING),
+        end: position_at(text, r.end, ENCODING),
+    };
+    let shown = |r: query::Range| -> Option<String> {
+        if now {
+            mapping.forward(file, r).map(|r| format!("{:?}", r))
+        } else {
+            mapping.existed(file, r).then(|| format!("{:?}", r))
+        }
+    };
+
+    outline
+        .all()
+        .into_iter()
+        .filter_map(|(d, parents)| {
+            let name = shown(range(&d.name_range))?;
+
+            Some(format!(
+                "{} {:?} {} | {} | {} | {}",
+                parents
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("."),
+                d.kind,
+                d.name,
+                d.detail(),
+                name,
+                shown(range(&d.range)).unwrap_or_else(|| "<changed>".to_string())
+            ))
+        })
+        .collect()
+}
+
+/// One step's document symbols, waiting for the final ones.
+struct AskedSymbols {
+    step: usize,
+    /// `None` if there was no answer: the text didn't parse, nor any copy.
+    source: Option<Source>,
+    lines: Vec<String>,
+    context: String,
+}
+
 /// A reply as something to compare: mid-edit (`now`) replies are mapped to
 /// the final text first. Items of a list in text that changed in between
 /// are left out on both sides: `now` drops what doesn't map forward, the
@@ -753,6 +821,16 @@ fn normalize(
     match reply {
         None => "null".to_string(),
         Some(Reply::Type(t)) => format!("{} {}", t.typ, range(t.range)),
+        Some(Reply::Hover(h)) => format!(
+            "{:?} {} {:?}",
+            h.typ
+                .as_ref()
+                .map(|t| format!("{} {}", t.typ, range(t.range))),
+            range(h.range),
+            h.declared
+                .as_ref()
+                .map(|d| (&d.signature, &d.path, &d.documentation))
+        ),
         Some(Reply::Members(m)) => format!(
             "{} {} {:?}",
             m.receiver,
@@ -838,6 +916,7 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
     let finals: HashMap<PathBuf, String> = docs.texts.clone();
     let file = &scenario.file;
     let mut asked: Vec<Asked> = Vec::new();
+    let mut asked_symbols: Vec<AskedSymbols> = Vec::new();
     let mut mappings: Vec<Mapping> = Vec::new();
     // What the server keeps, from a check when the files are opened (as
     // their diagnostics would be) and each check since.
@@ -924,7 +1003,7 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
             let p = at(*byte);
 
             for q in [
-                Question::Type,
+                Question::Hover,
                 Question::Definition,
                 Question::TypeDefinition,
                 Question::Highlight,
@@ -1050,6 +1129,27 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
             });
         }
 
+        // Document symbols, from the text alone.
+        let read = syntax::outline(&now);
+
+        asked_symbols.push(AskedSymbols {
+            step: mappings.len(),
+            source: read.as_ref().map(|r| match r.blank.is_empty() {
+                true => Source::Fresh,
+                false => Source::Repaired,
+            }),
+            lines: read
+                .as_ref()
+                .map(|r| symbol_lines(r, &now, file, &mapping, true))
+                .unwrap_or_default(),
+            context: format!(
+                "{} after edit {} ({:?}), documentSymbol, lines blank: {:?}",
+                scenario.name,
+                step,
+                edit.text,
+                read.as_ref().map(|r| &r.blank)
+            ),
+        });
         mappings.push(mapping);
     }
 
@@ -1072,6 +1172,46 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
 
     let finals_answered = query::ask(&scenario.session, &docs.request(file), &unique);
     let mut tally = Tally::default();
+    let last = &finals[file];
+    let final_outline =
+        syntax::parse(last).unwrap_or_else(|| panic!("{} doesn't parse at the end", scenario.name));
+
+    // A symbol given mid-edit must be one of the final text's; one left
+    // out of an answer from a copy with lines blank only counts as missing.
+    for a in &asked_symbols {
+        let expected = symbol_lines(&final_outline, last, file, &mappings[a.step], false);
+        let verdict = match a.source {
+            None => Verdict::None,
+            Some(source) => {
+                let extra: Vec<&String> =
+                    a.lines.iter().filter(|l| !expected.contains(l)).collect();
+
+                if source == Source::Repaired {
+                    tally.missing_symbols +=
+                        expected.iter().filter(|l| !a.lines.contains(l)).count();
+                }
+
+                if extra.is_empty() && (source != Source::Fresh || a.lines == expected) {
+                    Verdict::Right(source)
+                } else {
+                    let shown = format!(
+                        "{}\n  now:   {:?}\n  final: {:?}",
+                        a.context, extra, expected
+                    );
+
+                    if source != Source::Fresh {
+                        tally.wrong.push(shown);
+                    } else if tally.differs.len() < 3 {
+                        tally.differs.push(shown);
+                    }
+
+                    Verdict::Wrong(source)
+                }
+            }
+        };
+
+        tally.add("documentSymbol", verdict);
+    }
 
     for a in &asked {
         let index = unique.iter().position(|q| *q == a.question).unwrap();
@@ -1190,7 +1330,7 @@ const SAMPLE: &[(&str, usize)] = &[
 /// corpus measured. Raise these when coverage improves.
 /// The same as `COVERAGE` and the two below, for the sample.
 const SAMPLE_COVERAGE: &[(&str, usize)] = &[
-    ("hover", 1492),
+    ("hover", 1490),
     ("definition", 1505),
     ("typeDefinition", 1492),
     ("completion", 19),
@@ -1199,6 +1339,7 @@ const SAMPLE_COVERAGE: &[(&str, usize)] = &[
     ("inlayHint, whole file", 52),
     ("documentHighlight", 1426),
     ("references", 233),
+    ("documentSymbol", 52),
 ];
 const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("hover", 1426),
@@ -1210,9 +1351,10 @@ const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("inlayHint, whole file", 49),
     ("documentHighlight", 1389),
     ("references", 238),
+    ("documentSymbol", 52),
 ];
 const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
-    ("hover", 1434),
+    ("hover", 1430),
     ("definition", 1447),
     ("typeDefinition", 1434),
     ("completion", 19),
@@ -1221,10 +1363,11 @@ const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("inlayHint, whole file", 52),
     ("documentHighlight", 1377),
     ("references", 233),
+    ("documentSymbol", 52),
 ];
 
 const COVERAGE: &[(&str, usize)] = &[
-    ("hover", 11904),
+    ("hover", 11902),
     ("definition", 12311),
     ("typeDefinition", 11990),
     ("completion", 115),
@@ -1233,12 +1376,13 @@ const COVERAGE: &[(&str, usize)] = &[
     ("inlayHint, whole file", 483),
     ("documentHighlight", 10789),
     ("references", 1249),
+    ("documentSymbol", 457),
 ];
 
 /// What the server answers without older checks, from repaired copies
 /// only.
 const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
-    ("hover", 10358),
+    ("hover", 10355),
     ("definition", 10729),
     ("typeDefinition", 10408),
     ("completion", 109),
@@ -1247,11 +1391,12 @@ const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("inlayHint, whole file", 386),
     ("documentHighlight", 9622),
     ("references", 1261),
+    ("documentSymbol", 457),
 ];
 
 /// What older checks answer alone, without repaired copies.
 const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
-    ("hover", 9896),
+    ("hover", 9892),
     ("definition", 10217),
     ("typeDefinition", 9896),
     ("completion", 93),
@@ -1260,6 +1405,7 @@ const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("inlayHint, whole file", 483),
     ("documentHighlight", 9351),
     ("references", 1249),
+    ("documentSymbol", 457),
 ];
 
 #[test]
@@ -1336,11 +1482,12 @@ fn answers_mid_edit_agree_with_the_final_ones() {
 
     for ((name, ..), total) in modes.iter().zip(&totals) {
         eprintln!(
-            "\nAll scenarios{}\n\n{}\ninlay hint answers covering part of what they were asked: {}, hints of the final text, in text that was there, where they don't cover: {}",
+            "\nAll scenarios{}\n\n{}\ninlay hint answers covering part of what they were asked: {}, hints of the final text, in text that was there, where they don't cover: {}, document symbols left out with lines blank: {}",
             name,
             total.table(),
             total.partial,
-            total.uncovered
+            total.uncovered,
+            total.missing_symbols
         );
     }
 

@@ -27,7 +27,7 @@ fn members() -> (PathBuf, PathBuf, String) {
     (root, file, text)
 }
 
-/// The type a hover shows, from its Markdown code block.
+/// The type a hover shows, from its first section, a Markdown code block.
 fn hover_type(response: &Value) -> &str {
     let value = response["result"]["contents"]["value"]
         .as_str()
@@ -35,6 +35,9 @@ fn hover_type(response: &Value) -> &str {
 
     assert_eq!(response["result"]["contents"]["kind"], "markdown");
     value
+        .split("\n\n---\n\n")
+        .next()
+        .unwrap()
         .strip_prefix("```inko\n")
         .and_then(|v| v.strip_suffix("\n```"))
         .unwrap_or_else(|| panic!("not a code block: {:?}", value))
@@ -107,6 +110,7 @@ fn initialize_advertises_only_what_works() {
             "completionProvider",
             "definitionProvider",
             "documentHighlightProvider",
+            "documentSymbolProvider",
             "experimental",
             "hoverProvider",
             "inlayHintProvider",
@@ -115,6 +119,7 @@ fn initialize_advertises_only_what_works() {
             "signatureHelpProvider",
             "textDocumentSync",
             "typeDefinitionProvider",
+            "workspaceSymbolProvider",
         ]
     );
     assert_eq!(capabilities["hoverProvider"], true);
@@ -585,21 +590,21 @@ fn a_client_without_markdown_gets_plain_text() {
     for (formats, expected) in [
         (
             json!(["plaintext"]),
-            json!({ "kind": "plaintext", "value": "Int" }),
+            json!({ "kind": "plaintext", "value": "String" }),
         ),
         (
             json!(["plaintext", "markdown"]),
-            json!({ "kind": "plaintext", "value": "Int" }),
+            json!({ "kind": "plaintext", "value": "String" }),
         ),
         (
             json!(["markdown", "plaintext"]),
-            json!({ "kind": "markdown", "value": "```inko\nInt\n```" }),
+            json!({ "kind": "markdown", "value": "```inko\nString\n```" }),
         ),
     ] {
         let capabilities = json!({ "textDocument": { "hover": { "contentFormat": formats } } });
         let mut client =
             Client::initialized_with(Launch::default(), &root, json!({}), capabilities);
-        let (line, character) = at(&text, "name.size", 5, false);
+        let (line, character) = at(&text, "name.size", 0, false);
         let (_, response) = client.hover(&file, line, character);
 
         assert_eq!(response["result"]["contents"], expected, "{}", formats);

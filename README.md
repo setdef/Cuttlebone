@@ -7,8 +7,10 @@ Cuttlebone, a language server for Inko.
 It links the upstream compiler crates from a pinned release with a small
 patch (see [patches/](patches/README.md)), type checks with them, and answers
 questions about types over standard LSP, for any editor with an LSP client
-([docs/lsp.md](docs/lsp.md)): hover shows the type at a position,
-completion after `.` lists members with their signatures, and go to
+([docs/lsp.md](docs/lsp.md)): hover shows the type at a position and the
+declaration there with its doc comment, document and workspace symbols list
+declarations from the syntax alone, completion after `.` lists members with
+their signatures, and go to
 definition, go to type definition and find references locate symbols by the
 compiler's own ids. It publishes the same diagnostics as `inko check`,
 highlights a symbol's uses in a file, shows the signature of the call being
@@ -111,6 +113,13 @@ against. Without it, Cargo picks the newest versions Cargo.toml allows.
   which nodes desugaring introduced, cross-checks of the types it
   reconstructs, and every name that refers to or declares a symbol, by the
   compiler's ids.
+- `src/syntax.rs`: what a module's text alone says, without a check: its
+  declarations, with their signatures as written and doc comments as
+  `inko doc` reads them, and its imports, also from a copy with lines
+  blank where the text doesn't parse.
+- `src/index.rs`: the declarations of every module a session can import
+  (std's, the projects' and their dependencies'), kept between requests,
+  for workspace symbols and completion's imports.
 - `src/query.rs`: the checks kept for later questions about the same text,
   the type at a position, the members after a `.`
   (inserting a placeholder for completion), declarations and references,
@@ -131,7 +140,7 @@ against. Without it, Cargo picks the newest versions Cargo.toml allows.
   cancellation and debouncing, requests answered for the text they were about, and diagnostics' own queue.
 - `src/dump.rs`: helpers for dump-types and the tests only.
 
-The core (`check.rs`, `edits.rs`, `units.rs`, `query.rs`, `walker.rs`, `position.rs`) doesn't know
+The core (`check.rs`, `edits.rs`, `units.rs`, `query.rs`, `walker.rs`, `syntax.rs`, `index.rs`, `position.rs`) doesn't know
 about LSP. tests/guardrails.rs enforces the layering (see AGENTS.md).
 
 ## Tests
@@ -174,8 +183,12 @@ also fast enough for the latency limits.
 | `tests/guardrails.rs` | the layering of src/, no editor named in code, nothing named after Inko, no machine-specific paths, patches/README.md accounting for every patch line, a CHANGELOG.md entry for the version, and docs showing it |
 | `tests/repaired.rs` | fresh answers in code that doesn't parse, from a repaired copy, over LSP: the rest of the file, completion, before the edit in the method being edited, a placeholder type the blank lines could fill in, a changed declaration, and references never |
 | `tests/stale.rs` | answers from the last good check over LSP (with repaired copies off, a fault only tests have): which requests give them (and which never do), positions and ranges mapped through edits in both encodings, a changed declaration, diagnostics checks and unsaved text when opened, hints in the method being edited and the ranges they cover, a check of documents edited since it was asked for |
-| `tests/replay.rs` | the edit-replay corpus, the oracle for code being edited: real files edited as people do, every query asked at many positions after each edit (and inlay hints for each line and the whole file), and each answer compared with the fresh one at the end, hints within the ranges the answer says it covers, where they must be exactly the final ones, and none outside them. Fails on any wrong answer, or less coverage than measured. Every commit replays a sample; `CUTTLEBONE_CORPUS_FULL=1` replays all of it. `-- --nocapture` prints the tables |
+| `tests/replay.rs` | the edit-replay corpus, the oracle for code being edited: real files edited as people do, every query asked at many positions after each edit (and inlay hints for each line and the whole file, and document symbols), and each answer compared with the fresh one at the end, hints within the ranges the answer says it covers, where they must be exactly the final ones, and none outside them. Fails on any wrong answer, or less coverage than measured. Every commit replays a sample; `CUTTLEBONE_CORPUS_FULL=1` replays all of it. `-- --nocapture` prints the tables |
 | `tests/cache.rs` | checks kept between questions: questions about the same text share one, with the same answers (fresh, repaired and stale); an edit, a file changed, created or deleted on disk (also outside the editor, over LSP) is never answered from one; what may have changed during a check isn't kept; the bound and least recently used order; completion's copies and panicked checks not kept; checks with nothing to answer from (code that doesn't parse) kept apart, and never past a change to any source file; `cached` in the status; the worker replaced when it dies, stopped at `shutdown` |
+| `tests/hover.rs` | hover over LSP in both encodings: the type, the declaration as written and where it is, and its doc comment, for the project, a dependency and std, an implementation with its trait's doc comment, a module, a declaration's own name, plain text, and a stale hover after its doc comment changed |
+| `tests/syntax.rs` | outlines from the syntax alone: names and ranges against the compiler's declarations in every module of std and the fixtures, and doc comments against the installed `inko doc` |
+| `tests/symbols.rs` | document and workspace symbols over LSP in both encodings: every kind of declaration, code that doesn't parse, documents that aren't files, a dependency, files changed on disk, clients without hierarchy or the newer kinds |
+| `tests/corpus_symbols.rs` | every declaration document symbols report, in std and the fixtures, is found by workspace symbols at the same place, and is its own definition |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |
 
 `scripts/mutate.py` breaks behaviours and rules on purpose, one at a time,

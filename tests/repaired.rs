@@ -363,7 +363,10 @@ fn the_changed_line_is_blank_first() {
     );
 
     assert_repaired(&status);
-    assert_eq!(hover["contents"]["value"], "```inko\nInt\n```");
+    assert_eq!(
+        hover["contents"]["value"],
+        "```inko\nInt\n```\n\n---\n\n```inko\nlet mut @count: Int\n```\n\nDefined in `main.Counter`"
+    );
 }
 
 /// An import of a module that doesn't exist stops the check before any

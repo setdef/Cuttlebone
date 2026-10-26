@@ -12,8 +12,8 @@
 use crate::edits::Fallback;
 use crate::position::Position;
 use crate::query::{
-    self, Answer, Cache, Diagnostics, Highlight, Hints, MembersAt, Place, Question, Reply, Request,
-    Session, Signature, TypeAt, Unavailable,
+    self, Answer, Cache, Diagnostics, Highlight, Hints, HoverAt, MembersAt, Place, Question, Reply,
+    Request, Session, Signature, Unavailable,
 };
 use crossbeam_channel::{RecvTimeoutError, Sender};
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,7 @@ pub fn kept_checks() -> usize {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Query {
-    /// `query::type_at`.
+    /// `query::hover`.
     Type,
     /// `query::complete`.
     Complete,
@@ -101,7 +101,7 @@ pub struct Job {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Outcome {
-    Type(Answer<TypeAt>),
+    Hover(Answer<HoverAt>),
     Members(Answer<MembersAt>),
     Place(Answer<Place>),
     Places(Answer<Vec<Place>>),
@@ -118,7 +118,7 @@ impl Job {
     /// Runs the job in this process, with the checks `cache` kept.
     pub fn run(&self, cache: &Cache) -> Outcome {
         let question = match self.query {
-            Query::Type => Question::Type,
+            Query::Type => Question::Hover,
             Query::Complete => Question::Complete,
             Query::Definition => Question::Definition,
             Query::TypeDefinition => Question::TypeDefinition,
@@ -150,8 +150,8 @@ impl Job {
         .unwrap();
 
         match self.query {
-            Query::Type => Outcome::Type(answer.map(|r| match r {
-                Reply::Type(t) => Some(t),
+            Query::Type => Outcome::Hover(answer.map(|r| match r {
+                Reply::Hover(h) => Some(h),
                 _ => None,
             })),
             Query::Complete => Outcome::Members(answer.map(|r| match r {
@@ -191,7 +191,7 @@ impl Outcome {
     /// were sent, so the server may keep them for later answers.
     pub fn typed(&self) -> bool {
         match self {
-            Outcome::Type(a) => a.typed,
+            Outcome::Hover(a) => a.typed,
             Outcome::Members(a) => a.typed,
             Outcome::Place(a) => a.typed,
             Outcome::Places(a) => a.typed,

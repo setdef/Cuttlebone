@@ -8,7 +8,8 @@ that LSP leaves to the server, and the few [extensions](#extensions) where
 LSP has no way to do something.
 
 It sends only what the client's capabilities say the client supports
-(Markdown hovers, completion's label details and kinds, signature help's
+(Markdown hovers, completion's label details and kinds, document symbols'
+hierarchy and symbol kinds, signature help's
 parameter offsets and active parameters, diagnostic tags), and every
 message the tests receive is checked against the 3.18 specification's
 meta model (tests/common/spec.rs).
@@ -112,6 +113,8 @@ Only what works:
     "documentHighlightProvider": true,
     "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
     "inlayHintProvider": true,
+    "documentSymbolProvider": true,
+    "workspaceSymbolProvider": true,
     "experimental": {"cuttlebone": {"inko": "0.21.1", "std": "/path/to/std", "statusNotifications": false, "diagnostics": true}}
   },
   "serverInfo": {"name": "cuttlebone", "version": "0.12.0"}
@@ -135,7 +138,8 @@ Cuttlebone can't know what else is running, so turning a feature off is the
 client's job, on its side:
 
 - **Requests** (hover, completion, definition, type definition,
-  references, document highlight, signature help, inlay hints): don't send
+  references, document highlight, signature help, inlay hints, document
+  and workspace symbols): don't send
   them, or don't show their answers. A client that registers capabilities
   through its own configuration can leave them out; one that can't can drop
   the server's capability from the `InitializeResult` before its LSP layer
@@ -164,26 +168,60 @@ document's text; without it, nothing changes.
 
 ## `textDocument/hover`
 
-The type of the expression at the position, as a Markdown code block:
+The type of the expression at the position, and the declaration of what
+the name there refers to or declares, with its doc comment, as Markdown:
 
 ```json
-{"contents": {"kind": "markdown", "value": "```inko\nArray[Int]\n```"},
+{"contents": {"kind": "markdown", "value": "```inko\nResult[ref Int, OutOfBounds]\n```\n\n---\n\n```inko\nfn pub get(index: Int) -> Result[ref T, OutOfBounds]\n```\n\nDefined in `std.array.Array`\n\n---\n\nReturns an immutable reference to the value at the given index.\n..."},
  "range": {"start": {"line": 4, "character": 18}, "end": {"line": 4, "character": 26}}}
 ```
 
-- The format is the first of `markdown` and `plaintext` in the client's
-  `textDocument.hover.contentFormat`, its order of preference. A client
-  that lists neither, or sends no `contentFormat`, gets
-  `{"kind": "plaintext", "value": "Array[Int]"}`.
-- `range` is the expression's range.
+The value has up to three sections, each that there is, in this order,
+with `\n\n---\n\n` between them:
+
+1. **The type** of the expression at the position, in a code block, as
+   before this milestone. A client that wants the type alone takes the
+   first code block if it's the first section: it's there whenever the
+   position is in an expression.
+2. **The declaration**, if the name at the position (as
+   [definition](#textdocumentdefinition) finds it) is a module, type,
+   trait, method, field, constructor or constant: its signature as the
+   source writes it, up to its body, in a code block (`fn pub static new(`
+   and its parameters over several lines stay so; type arguments are as
+   written, `T`, not the call's), then `Defined in` and where it is: its
+   module, and what it's in (`std.array.Array`; a method of an `impl`
+   block is in its type). For a module, `Module` and its name instead.
+   Variables and type parameters have no declaration section: their type
+   is the first.
+3. **The doc comment**, as Markdown, the same text `inko doc` reads: the
+   comments right above the declaration, a line each, without the `#`
+   and the space after it (for a module, the comments at the start of its
+   file). A method implementing a trait's without a doc comment of its own
+   has the trait's method's, as `inko doc` gives it. Left out if there's
+   none.
+
+- **Where:** declarations in the project, in dependencies (`dep/`) and in
+  the standard library alike, from the file the compiler read.
+- **The format** is the first of `markdown` and `plaintext` in the
+  client's `textDocument.hover.contentFormat`, its order of preference. A
+  client that lists neither, or sends no `contentFormat`, gets plain text:
+  the same sections without code blocks and with `\n\n` between them
+  (`Defined in std.array.Array`).
+- **`range`** is the expression's range, or with no expression there (a
+  declaration's own name, such as `get` in `fn pub get`), the name's.
 - The type is formatted the way the compiler formats types in its
   diagnostics, e.g. `ref Array[Int]`, `Result[Int, String]`,
   `uni Future[Int]`. A type the compiler couldn't infer fully may contain
   `?`.
+- **From another check** (a repaired copy, the last good check, past a
+  declaration's error), a hover is given only if, as well as the rules
+  every answer follows, the text of the declaration's doc comment and
+  signature (and the trait's method's, for one it has) is unchanged since,
+  with the line before it: a line typed right above may be a comment.
 
 The result is `null` when nothing is there. For example, in a comment,
-between declarations, or on a method's name in its definition. It's also
-`null` when there's no answer, and [status](#status) says why.
+between declarations, or on a keyword. It's also `null` when there's no
+answer, and [status](#status) says why.
 
 Besides expressions, variable bindings count: the name in `let name = ...`,
 in a `match` or `for` pattern, and a closure's argument. Their type is the
@@ -598,6 +636,145 @@ answer covers only part of the range, and the status's
 method being edited, a client can't take "no hints" to mean there are
 none.
 
+## `textDocument/documentSymbol`
+
+The document's declarations, from its text alone: no type check, so it
+answers in code that doesn't type check, in documents that aren't files
+(an unsaved new one), and, as below, in code that doesn't parse.
+
+```json
+→ {"jsonrpc": "2.0", "id": 9, "method": "textDocument/documentSymbol", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/main.inko"}}}
+← {"jsonrpc": "2.0", "id": 9, "result": [
+    {"name": "Counter", "detail": "type pub Counter", "kind": 5,
+     "range": {"start": {"line": 11, "character": 0}, "end": {"line": 26, "character": 1}},
+     "selectionRange": {"start": {"line": 11, "character": 9}, "end": {"line": 11, "character": 16}},
+     "children": [
+       {"name": "count", "detail": "let mut @count: Int", "kind": 8,
+        "range": {"start": {"line": 12, "character": 2}, "end": {"line": 12, "character": 21}},
+        "selectionRange": {"start": {"line": 12, "character": 10}, "end": {"line": 12, "character": 16}}},
+       {"name": "new", "detail": "fn pub static new(label: String, count: Int) -> Counter", "kind": 6, ...}
+     ]}
+]}
+```
+
+| Declaration | `kind` | `name` | Children |
+|---|---|---|---|
+| a type (`type`, `type async`, `type copy`, `type extern`, ...) | Class (5) | `Counter` | its fields, constructors and methods |
+| an enum (`type enum`) | Enum (10) | `Shape` | the same |
+| a trait | Interface (11) | `Area` | its methods |
+| an `impl` block, of a trait or reopening a type | Object (19) | `impl Area for Shape`, `impl Counter` | its methods |
+| a method of a type, trait or `impl` block, static or not | Method (6) | `add`, `+` | |
+| a module's method, or an external function (`fn extern`) | Function (12) | `describe` | |
+| a field | Field (8) | `count`, for `@count` | |
+| an enum's constructor | EnumMember (22) | `Some` | |
+| a constant | Constant (14) | `MAX` | |
+
+- **`range`** is the declaration as the compiler locates it, from its first
+  keyword to its end (a method's closing brace), without its doc comment.
+  **`selectionRange`** is its name, as definition's ranges are: a field's
+  includes its `@`. An `impl` block's is the type's name.
+- **`detail`** is the declaration as the source writes it, up to its body,
+  on one line: `fn pub static new(label: String, count: Int) -> Counter`
+  for a signature written over several lines, `let pub MAX = 10` for a
+  constant. Type arguments are as written, not filled in.
+- **Kinds every client has.** A client whose
+  `documentSymbol.symbolKind.valueSet` doesn't have Object and EnumMember
+  (past Array, 18, the last every client has) gets Class (5) for an `impl`
+  block, and Constructor (9) for an enum's constructor.
+- **A client without `hierarchicalDocumentSymbolSupport`** gets
+  `SymbolInformation[]`: the same declarations, depth first, each with its
+  `location` (its `range`) and, inside another, that one's name as
+  `containerName`.
+- Imports aren't symbols.
+- **Unsaved text.** An open document's text is read, or else the file on
+  disk.
+
+**In code that doesn't parse**, the symbols are those of a copy of the text
+with the lines in the way blank: the line of a bracket nothing closes, then
+the line the parser stops at or the line before it (whichever lets it get
+further), in turn, until the copy parses (at most 16 lines). Blank lines
+keep every other line where it is, so the ranges are the text's own, in
+the negotiated encoding. A symbol is given only where the copy can't have
+changed it:
+
+- not a declaration whose signature has a blank line, nor what it contains
+  (the copy's signature isn't the source's)
+- not a top-level declaration, nor what it contains, that the blank lines
+  could have moved in or out of another: one of its lines has another
+  depth of braces in the copy than in the text, relative to its first
+  line, or the text is deeper where it starts (a blank line opened a
+  brace before it)
+- not a top-level declaration after a blank line at the top of the copy
+  that starts a type, trait or `impl` block in the text (`type pub Foo`
+  without its `{` yet): what follows may be in it
+
+So typing a statement in a method leaves every symbol there, and typing
+`if x {` without its `}` leaves out the type the method is in, until the
+brace is closed. The [status](#status) says `"repaired": true` for such an
+answer. If no copy parses, the result is `null`, with reason `noHir`.
+
+The tests check the names and ranges against the compiler's own
+declarations in every module of std (tests/syntax.rs), and the edit-replay
+corpus checks that each symbol given while code is being edited is one of
+the final text's, at the same place (tests/replay.rs).
+
+**Cost.** No check: answered at once, by the server itself, without waiting
+for a running query. On an Apple M1 Max, under `cargo test`, about
+30 ms for std's largest module (110 KB), and 80 ms when a line doesn't
+parse; tests/latency.rs holds both to 150 ms.
+
+## `workspace/symbol`
+
+The declarations, in every module the workspace's projects can import,
+whose names match the query:
+
+```json
+→ {"jsonrpc": "2.0", "id": 10, "method": "workspace/symbol", "params": {"query": "stdou"}}
+← {"jsonrpc": "2.0", "id": 10, "result": [
+    {"name": "Stdout", "kind": 5, "containerName": "std.stdio",
+     "location": {"uri": "file:///usr/local/lib/inko/std/std/stdio.inko",
+                  "range": {"start": {"line": 118, "character": 15}, "end": {"line": 118, "character": 21}}}},
+    ...
+]}
+```
+
+- **Which modules:** the standard library's (in the directory `inko print
+  std` printed), each workspace folder's own, in its `src/` and `test/`,
+  and its dependencies', in its `dep/`, where its `inko.pkg` says the
+  compiler finds them (`dep/<url>/v<major>/src`). The same declarations
+  as [document symbols](#textdocumentdocumentsymbol) (all of them, private
+  ones too), without `impl` blocks, which declare nothing themselves.
+- **From the syntax alone**, as document symbols are: the projects needn't
+  type check, or parse. An open document's text counts instead of its
+  file's, so a method typed and not saved is found.
+- **Matching**, as clients filter: the query's characters appear in the
+  name in the same order, in any case (`stou` finds `Stdout`, `cntr`
+  `Counter`). An empty query matches everything.
+- **Order:** the whole name first, then names that start with the query,
+  then those that have it in a run, then the rest; the same case as the
+  query first; then the workspace's own, then dependencies', then std's;
+  then by name. At most 500 are given, the best.
+- **`location`** is the name, as definition's ranges are, in the
+  negotiated encoding. **`containerName`** is the module and what the
+  declaration is in: `std.string.String` for `String.size`. A method of an
+  `impl` block is in its type.
+- **`kind`** is as for document symbols. A client whose
+  `workspace.symbol.symbolKind.valueSet` doesn't have EnumMember gets
+  Constructor (9) for an enum's constructor.
+- Every result has a range, so `workspaceSymbol/resolve` isn't needed.
+
+**Freshness.** The server keeps every module's declarations between
+requests. Before each answer it looks at the files again (their size and
+modification time, and the directories' contents) and reads only what
+changed, was created or is open with other text; deleted files are gone.
+Nothing is written anywhere.
+
+**Cost.** On an Apple M1 Max, under `cargo test`, for a project that
+imports all of std: about 220 ms for the first request, which reads and
+parses every module, and 6 to 35 ms for each after it as a query is typed.
+tests/latency.rs holds them to 500 ms and 50 ms.
+
 ## Diagnostics
 
 Cuttlebone publishes the errors and warnings `inko check` reports, with
@@ -728,10 +905,14 @@ a custom notification if the client opts in with
 ```
 
 - **When it's sent:** for every query (hover, completion, definition, type
-  definition, references, document highlight, signature help and inlay
-  hints) that gets a result, just before the
+  definition, references, document highlight, signature help, inlay
+  hints, document and workspace symbols) that gets a result, just before the
   response, with the request's `id`. Requests
-  answered with an error (cancelled, invalid) get none.
+  answered with an error (cancelled, invalid) get none. Document symbols,
+  which need no check, are `fresh` (with `"repaired": true` if the text
+  didn't parse), or `unavailable`: `notAFile` or `fileNotFound` if
+  there's no text to read, `noHir` if no copy of it parses. Workspace
+  symbols are always `fresh`, and their status has no `textDocument`.
 - **For diagnostics:** after each diagnostics check, with
   `"method": "textDocument/publishDiagnostics"`, no `id`, and the checked
   target's URI (a project directory, or a file) as `target` instead of
@@ -921,6 +1102,7 @@ two other checks, in this order:
 |---|---|
 | hover, definition, type definition, document highlight, signature help, inlay hints | the documents as they are, or else a repaired copy, or else the last good check (`stale`) |
 | completion | the documents as they are, or else a repaired copy: its items are inserted into the code, so never stale |
+| document symbols | the text as it is, or else a copy with the lines in the way blank, from the syntax alone ([`textDocument/documentSymbol`](#textdocumentdocumentsymbol)) |
 | references | the documents as they are only: a rename relies on them, and a blank line may have a use |
 | diagnostics | the documents as they are, always |
 

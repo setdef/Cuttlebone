@@ -8,8 +8,9 @@
 use crate::check::{Fingerprint, Reported, Target, diagnose, project_root, run, run_after_errors};
 use crate::edits::{Changes, Fallback};
 use crate::position::{
-    Encoding, HirPosition, Lines, Position, byte_offset, contains, line_end, position_at,
+    Encoding, HirPosition, Lines, Position, Positions, byte_offset, contains, line_end, position_at,
 };
+use crate::syntax::{self, blank, parse_error_line, parses, unclosed};
 use crate::units::{Effect, ErrorEffect, Outline, Unit, effect, error_effect, names};
 use crate::walker::{
     ArgumentList, Expr, ListArgument, Reference, SymbolId, Walker, declarations,
@@ -93,6 +94,39 @@ pub struct TypeAt {
     pub range: Range,
     /// The HIR node's kind, e.g. `Call`. For debugging, not for logic.
     pub kind: String,
+}
+
+/// What a hover shows (`hover`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoverAt {
+    /// The type of the expression at the position, as `type_at` gives it.
+    pub typ: Option<TypeAt>,
+    /// The declaration of what the name at the position refers to or
+    /// declares, if that's a module, type, trait, method, field,
+    /// constructor or constant.
+    pub declared: Option<Declared>,
+    /// The expression's range, or else the name's.
+    pub range: Range,
+}
+
+/// A declaration, as hover shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Declared {
+    /// As the source writes it, up to its body (`syntax::Declaration`):
+    /// `fn pub get(index: Int) -> Result[ref T, OutOfBounds]`. `None` for a
+    /// module.
+    pub signature: Option<String>,
+    /// Its module, and the names of what it's in: `std.array.Array` for
+    /// `Array.get`. For a module, the module's name.
+    pub path: String,
+    /// Its doc comment, as `inko doc` reads it: for a method that
+    /// implements a trait's without one of its own, the trait's
+    /// (`MethodId::documentation`, types/src/lib.rs:3249-3262).
+    pub documentation: Option<String>,
+    /// The text it was read from: its doc comment and signature, and the
+    /// trait's method's for a doc comment of that. An answer from another
+    /// check only holds if this text is unchanged.
+    pub read: Vec<Place>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +250,7 @@ fn allows(question: Question, source: Source) -> bool {
         Source::Stale => matches!(
             question,
             Question::Type
+                | Question::Hover
                 | Question::Definition
                 | Question::TypeDefinition
                 | Question::Highlight
@@ -236,6 +271,8 @@ fn recoverable(reason: &Unavailable) -> bool {
 pub enum Question {
     /// `type_at`.
     Type,
+    /// `hover`.
+    Hover,
     /// `members_at`.
     Members,
     /// `complete`.
@@ -258,6 +295,7 @@ pub enum Question {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
     Type(TypeAt),
+    Hover(HoverAt),
     Members(MembersAt),
     Place(Place),
     Places(Vec<Place>),
@@ -421,6 +459,108 @@ pub fn type_at(session: &Session, request: &Request) -> Answer<TypeAt> {
     ask_one(session, request, Question::Type).map(|r| match r {
         Reply::Type(t) => Some(t),
         _ => None,
+    })
+}
+
+/// What a hover at a position shows: the type of the expression there
+/// (as `type_at`), and the declaration of what the name there refers to or
+/// declares (`declared`), as `definition` finds it. `None` if neither is
+/// there.
+pub fn hover(session: &Session, request: &Request) -> Answer<HoverAt> {
+    ask_one(session, request, Question::Hover).map(|r| match r {
+        Reply::Hover(h) => Some(h),
+        _ => None,
+    })
+}
+
+fn hover_in(scope: &Scope) -> Result<Option<HoverAt>, Unavailable> {
+    let typ = type_at_in(scope)?;
+    let name = symbol_at(
+        &scope.walker.references,
+        &scope.walker.declarations,
+        scope.at,
+    );
+    let declared = name.and_then(|r| declared(scope, r.symbol));
+    let range = match (&typ, name) {
+        (Some(t), _) => t.range,
+        (None, Some(r)) if declared.is_some() => range(scope.lines, &r.location),
+        _ => return Ok(None),
+    };
+
+    Ok(Some(HoverAt {
+        typ,
+        declared,
+        range,
+    }))
+}
+
+/// A symbol's declaration as hover shows it, read from the text of the
+/// file the check declares it in (`syntax::parse`). `None` for variables
+/// and type parameters, which have no doc comment or module, and for
+/// what the check doesn't declare.
+fn declared(scope: &Scope, symbol: SymbolId) -> Option<Declared> {
+    let db = scope.db;
+
+    if matches!(symbol, SymbolId::Variable(_) | SymbolId::TypeParameter(_)) {
+        return None;
+    }
+
+    let (file, location) = scope.declaration(symbol)?;
+    let module = scope.checked.modules[*scope.checked.files.get(&file)?].module_id;
+    let text = scope.checked.text(&file);
+    let outline = syntax::parse(&text)?;
+    let positions = Positions::new(&text, scope.encoding);
+    let place = |bytes: std::ops::Range<usize>| Place {
+        file: file.clone(),
+        range: Range {
+            start: positions.at(bytes.start),
+            end: positions.at(bytes.end),
+        },
+    };
+    let mut path = module.name(db).to_string();
+
+    if let SymbolId::Module(_) = symbol {
+        // The module's doc comment is its first lines.
+        let lines = outline
+            .documentation
+            .as_ref()
+            .map_or(0, |d| d.split('\n').count());
+        let end: usize = text.split_inclusive('\n').take(lines).map(str::len).sum();
+
+        return Some(Declared {
+            signature: None,
+            path,
+            documentation: outline.documentation.clone(),
+            read: vec![place(0..end)],
+        });
+    }
+
+    let start = Lines::new(&text).offset(location.line_start, location.column_start)?;
+    let (d, parents) = outline.named_at(start)?;
+    let mut documentation = d.documentation.clone();
+    let mut read = vec![place(d.header.clone())];
+
+    for p in parents {
+        path.push('.');
+        path.push_str(p.owner());
+    }
+
+    // An implementation without its own has the trait's method's.
+    if documentation.is_none()
+        && let SymbolId::Method(id) = symbol
+        && let Some(original) = id.original_method(db)
+        && original != id
+        && let Some(inherited) = declared(scope, SymbolId::Method(original))
+    {
+        documentation = inherited.documentation;
+        read.extend(inherited.read);
+    }
+
+    Some(Declared {
+        signature: Some(d.signature.clone()),
+        path,
+        documentation,
+        read,
     })
 }
 
@@ -1109,13 +1249,6 @@ pub fn signature_help(session: &Session, request: &Request) -> Answer<Signature>
     })
 }
 
-/// Whether a module's source parses.
-fn parses(text: &str) -> bool {
-    ast::parser::Parser::new(text.as_bytes().to_vec(), PathBuf::from("check.inko"))
-        .parse()
-        .is_ok()
-}
-
 fn signature(scope: &Scope) -> Option<Signature> {
     let db = scope.db;
     let at = (scope.at.line, scope.at.column);
@@ -1565,6 +1698,7 @@ fn pipeline(
 fn inspect(question: Question, scope: &Scope) -> Result<Option<Reply>, Unavailable> {
     Ok(match question {
         Question::Type => type_at_in(scope)?.map(Reply::Type),
+        Question::Hover => hover_in(scope)?.map(Reply::Hover),
         Question::Members | Question::Complete => members_in(scope)?.map(Reply::Members),
         Question::Definition => definition_in(scope)?.map(Reply::Places),
         Question::TypeDefinition => type_definition_in(scope)?.map(Reply::Place),
@@ -2580,73 +2714,6 @@ fn changed_lines(
     (changed, declarations)
 }
 
-/// `text` with `lines` (0-based) blank: empty, apart from their `\n`.
-fn blank(text: &str, lines: &BTreeSet<usize>) -> String {
-    text.split_inclusive('\n')
-        .enumerate()
-        .map(|(i, l)| {
-            if !lines.contains(&i) {
-                l
-            } else if l.ends_with('\n') {
-                "\n"
-            } else {
-                ""
-            }
-        })
-        .collect()
-}
-
-/// The line (0-based) of the bracket nothing closes: the one a closing
-/// bracket of another kind meets, or the innermost left open at the end.
-/// The parser reports these where it notices, which may be lines later.
-/// Strings and comments are skipped.
-fn unclosed(text: &str) -> Option<usize> {
-    let mut open: Vec<(char, usize)> = Vec::new();
-    let mut quote = None;
-
-    for (number, line) in text.lines().enumerate() {
-        let mut chars = line.chars();
-
-        while let Some(c) = chars.next() {
-            match (quote, c) {
-                (Some(_), '\\') => {
-                    chars.next();
-                }
-                (Some(q), c) if c == q => quote = None,
-                (Some(_), _) => {}
-                (None, '"' | '\'') => quote = Some(c),
-                (None, '#') => break,
-                (None, '(' | '[' | '{') => open.push((c, number)),
-                (None, ')' | ']' | '}') => {
-                    let expected = match c {
-                        ')' => '(',
-                        ']' => '[',
-                        _ => '{',
-                    };
-
-                    match open.pop() {
-                        Some((o, _)) if o == expected => {}
-                        Some((_, line)) => return Some(line),
-                        None => return Some(number),
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    open.last().map(|(_, line)| *line)
-}
-
-/// The line (0-based) where parsing a module's source stops, or `None` if
-/// it parses.
-fn parse_error_line(text: &str) -> Option<usize> {
-    ast::parser::Parser::new(text.as_bytes().to_vec(), PathBuf::from("check.inko"))
-        .parse()
-        .err()
-        .map(|e| e.location.line_start.saturating_sub(1) as usize)
-}
-
 /// An answer from another check, or `None` where it doesn't hold.
 type Found = Option<Result<Option<Reply>, Unavailable>>;
 
@@ -3114,6 +3181,28 @@ impl<'a> Guard<'a> {
             Some(Reply::Type(t)) => Some(Reply::Type(TypeAt {
                 range: self.range(t.range)?,
                 ..t
+            })),
+            // What the declaration was read from must be as it was.
+            Some(Reply::Hover(h)) => Some(Reply::Hover(HoverAt {
+                typ: match h.typ {
+                    Some(t) => Some(TypeAt {
+                        range: self.range(t.range)?,
+                        ..t
+                    }),
+                    None => None,
+                },
+                declared: match h.declared {
+                    Some(d) => Some(Declared {
+                        read: d
+                            .read
+                            .into_iter()
+                            .map(|p| self.place(p))
+                            .collect::<Option<_>>()?,
+                        ..d
+                    }),
+                    None => None,
+                },
+                range: self.range(h.range)?,
             })),
             Some(Reply::Members(m)) => Some(Reply::Members(MembersAt {
                 receiver_range: self.range(m.receiver_range)?,

@@ -220,6 +220,52 @@ pub fn position_at(text: &str, offset: usize, encoding: Encoding) -> Position {
     }
 }
 
+/// `position_at` for many offsets in one text: where each line starts is
+/// found once.
+pub struct Positions<'a> {
+    text: &'a str,
+    /// Where each of LSP's lines starts.
+    starts: Vec<usize>,
+    encoding: Encoding,
+}
+
+impl<'a> Positions<'a> {
+    pub fn new(text: &'a str, encoding: Encoding) -> Self {
+        let mut starts = vec![0];
+
+        while let Some(next) = next_line(text, *starts.last().unwrap()) {
+            starts.push(next);
+        }
+
+        Positions {
+            text,
+            starts,
+            encoding,
+        }
+    }
+
+    /// `position_at(text, offset, encoding)`.
+    pub fn at(&self, offset: usize) -> Position {
+        let bytes = self.text.as_bytes();
+        let mut offset = offset.min(self.text.len());
+
+        while !self.text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+
+        if offset > 0 && bytes[offset - 1] == b'\r' && bytes.get(offset) == Some(&b'\n') {
+            offset -= 1;
+        }
+
+        let line = self.starts.partition_point(|s| *s <= offset) - 1;
+
+        Position {
+            line: line as u32,
+            character: self.encoding.len(&self.text[self.starts[line]..offset]),
+        }
+    }
+}
+
 /// Where the line after the one starting at `start` starts, if there's
 /// one: after the next `\n`, `\r\n` or lone `\r`, LSP's line ends.
 pub fn next_line(text: &str, start: usize) -> Option<usize> {
@@ -285,6 +331,24 @@ mod tests {
 
     fn pos(line: u32, character: u32) -> Position {
         Position { line, character }
+    }
+
+    #[test]
+    fn positions_are_position_at() {
+        let text = "a\r\nb日本\rc👩\nd\n\r\ne";
+
+        for encoding in [Encoding::Utf8, Encoding::Utf16] {
+            let positions = Positions::new(text, encoding);
+
+            for offset in 0..=text.len() + 2 {
+                assert_eq!(
+                    positions.at(offset),
+                    position_at(text, offset, encoding),
+                    "{}",
+                    offset
+                );
+            }
+        }
     }
 
     #[test]

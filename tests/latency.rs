@@ -5,7 +5,7 @@
 #![allow(clippy::print_stderr)]
 mod common;
 
-use common::client::{Client, Launch, at};
+use common::client::{Client, Launch, at, uri};
 use cuttlebone::dump::upstream_std;
 use cuttlebone::position::{Encoding, Position};
 use cuttlebone::query::{self, Request, Session};
@@ -235,6 +235,123 @@ fn hover_in_the_largest_std_module_is_fast_enough() {
     );
     let max = limit(LIMIT);
     assert!(median < max, "median {:?} exceeds {:?}", median, max);
+}
+
+/// How long document symbols may take for the largest std module: no
+/// check, only parsing, and for text that doesn't parse, parsing copies
+/// with lines blank until one does.
+const SYMBOLS_LIMIT: Duration = Duration::from_millis(150);
+
+#[test]
+fn document_symbols_of_the_largest_std_module_are_fast_enough() {
+    let _shared = shared();
+    let std = upstream_std();
+    // The largest module of std.
+    let file = std.join("std/net/http/server.inko");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut client = uncached(std.parent().unwrap(), QUERIES_ONLY.clone());
+    let params = json!({ "textDocument": { "uri": uri(&file) } });
+
+    client.open(&file, &text);
+
+    let parsed = median(request_times(
+        &mut client,
+        "textDocument/documentSymbol",
+        params.clone(),
+    ));
+    // A statement half typed, in the middle of the module.
+    let (line, _) = at(&text, "LimitReader.new(file, limit: range.size)", 0, false);
+
+    client.change(
+        &file,
+        2,
+        json!([{
+            "range": {
+                "start": { "line": line, "character": 0 },
+                "end": { "line": line, "character": 0 },
+            },
+            "text": "    let x = foo(\n",
+        }]),
+    );
+
+    let repaired = median(request_times(
+        &mut client,
+        "textDocument/documentSymbol",
+        params,
+    ));
+
+    eprintln!(
+        "document symbols of std.string: {:?}, with a line that doesn't parse: {:?}",
+        parsed, repaired
+    );
+
+    let max = limit(SYMBOLS_LIMIT);
+
+    assert!(parsed < max, "median {:?} exceeds {:?}", parsed, max);
+    assert!(
+        repaired < max,
+        "with a line that doesn't parse, median {:?} exceeds {:?}",
+        repaired,
+        max
+    );
+}
+
+/// How long workspace symbols may take while a query is typed, on a
+/// project that imports all of std: every module's declarations, read
+/// before, matched again.
+const WORKSPACE_SYMBOLS_LIMIT: Duration = Duration::from_millis(50);
+
+/// How long the first workspace symbols may take: every module of std and
+/// the project read and parsed.
+const FIRST_WORKSPACE_SYMBOLS_LIMIT: Duration = Duration::from_millis(500);
+
+#[test]
+fn workspace_symbols_are_fast_enough_to_type_into() {
+    let _shared = shared();
+    let (root, _) = std_sized_project();
+    let mut client = uncached(&root, QUERIES_ONLY.clone());
+    let ask = |client: &mut Client, query: &str| {
+        let start = Instant::now();
+        let response = client.request("workspace/symbol", json!({ "query": query }));
+
+        assert!(
+            !response["result"].as_array().unwrap().is_empty(),
+            "{}",
+            query
+        );
+        start.elapsed()
+    };
+    let first = ask(&mut client, "S");
+    let typed: Vec<Duration> = [
+        "St", "Std", "Stdo", "Stdou", "Stdout", "m", "ma", "map", "map_",
+    ]
+    .iter()
+    .map(|q| ask(&mut client, q))
+    .collect();
+    let slowest = *typed.iter().max().unwrap();
+
+    eprintln!(
+        "workspace symbols on a std-sized project: the first {:?}, then at most {:?} (all: {:?})",
+        first, slowest, typed
+    );
+
+    let max = limit(FIRST_WORKSPACE_SYMBOLS_LIMIT);
+
+    assert!(
+        first < max,
+        "the first took {:?}, more than {:?}",
+        first,
+        max
+    );
+
+    let max = limit(WORKSPACE_SYMBOLS_LIMIT);
+
+    assert!(
+        slowest < max,
+        "the slowest took {:?}, more than {:?}",
+        slowest,
+        max
+    );
 }
 
 #[test]

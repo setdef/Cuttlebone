@@ -1,0 +1,52 @@
+# Every kind of declaration, for document and workspace symbols.
+import shapes (Area, Shape)
+import std.stdio (Stdout)
+
+# How many there are at most.
+let pub MAX = 10
+let NAMES = ["日本", "👩‍👩‍👦"]
+
+# A counter.
+#
+# It counts.
+type pub Counter {
+  let mut @count: Int
+  let pub @label: String
+
+  # Makes one.
+  fn pub static new(
+    label: String,
+    count: Int,
+  ) -> Counter {
+    Counter(count: count, label: label)
+  }
+
+  fn pub mut add(amount: Int) {
+    @count += amount
+  }
+}
+
+impl Counter {
+  fn pub same(other: ref Counter) -> Bool {
+    @count == other.count
+  }
+}
+
+fn pub describe(name: String) -> String {
+  "日本 ${name}"
+}
+
+fn total(shape: ref Shape) -> Float {
+  shape.area + shape.double
+}
+
+type async Main {
+  fn async main {
+    let out = Stdout.new
+    let mut counter = Counter.new(label: "a", count: MAX)
+
+    counter.add(NAMES.size)
+    let _ = out.print("日本 ${describe(counter.label)}")
+    let _ = total(Shape.Square)
+  }
+}

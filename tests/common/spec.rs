@@ -437,6 +437,57 @@ fn gates(method: &str, value: &Value, capabilities: &Value) -> Result<(), String
                 }
             }
         }
+        "textDocument/documentSymbol" => {
+            let hierarchical = supports(
+                capabilities,
+                "textDocument.documentSymbol.hierarchicalDocumentSymbolSupport",
+            );
+            let kinds = capability(
+                capabilities,
+                "textDocument.documentSymbol.symbolKind.valueSet",
+            );
+            let mut stack: Vec<&Value> = value.as_array().into_iter().flatten().collect();
+
+            while let Some(symbol) = stack.pop() {
+                if symbol.get("location").is_some() == hierarchical {
+                    return Err(format!(
+                        "{} with hierarchicalDocumentSymbolSupport {}",
+                        if hierarchical {
+                            "SymbolInformation"
+                        } else {
+                            "DocumentSymbol"
+                        },
+                        hierarchical
+                    ));
+                }
+
+                symbol_kind(&symbol["kind"], kinds)?;
+
+                if let (Some(range), Some(selection)) =
+                    (symbol.get("range"), symbol.get("selectionRange"))
+                    && !(position(&range["start"]) <= position(&selection["start"])
+                        && position(&selection["end"]) <= position(&range["end"]))
+                {
+                    return Err(format!(
+                        "selectionRange {} isn't in range {}",
+                        selection, range
+                    ));
+                }
+
+                stack.extend(symbol["children"].as_array().into_iter().flatten());
+            }
+        }
+        "workspace/symbol" => {
+            let kinds = capability(capabilities, "workspace.symbol.symbolKind.valueSet");
+
+            for symbol in value.as_array().into_iter().flatten() {
+                symbol_kind(&symbol["kind"], kinds)?;
+
+                if symbol["location"].get("range").is_none() {
+                    return Err("a workspace symbol without a range".to_string());
+                }
+            }
+        }
         "textDocument/publishDiagnostics" => {
             let tags = capability(
                 capabilities,
@@ -470,6 +521,26 @@ fn gates(method: &str, value: &Value, capabilities: &Value) -> Result<(), String
     Ok(())
 }
 
+/// Checks that a symbol kind is one the client has: in its value set, or
+/// without one, File (1) to Array (18).
+fn symbol_kind(kind: &Value, kinds: &Value) -> Result<(), String> {
+    if kinds.as_array().is_some_and(|k| k.contains(kind))
+        || (kinds.is_null() && kind.as_u64().is_some_and(|k| (1..=18).contains(&k)))
+    {
+        Ok(())
+    } else {
+        Err(format!("symbol kind {} isn't supported", kind))
+    }
+}
+
+/// A position as a pair to compare.
+fn position(p: &Value) -> (u64, u64) {
+    (
+        p["line"].as_u64().unwrap_or(0),
+        p["character"].as_u64().unwrap_or(0),
+    )
+}
+
 /// The capabilities of a client that supports everything Cuttlebone uses
 /// when a client says it can: what most tests send, merged under their
 /// own. Tests of what a client without them gets send their own instead.
@@ -489,6 +560,13 @@ pub fn capable_client() -> Value {
                 },
             },
             "publishDiagnostics": { "tagSupport": { "valueSet": [1, 2] } },
+            "documentSymbol": {
+                "hierarchicalDocumentSymbolSupport": true,
+                "symbolKind": { "valueSet": (1..=26).collect::<Vec<u32>>() },
+            },
+        },
+        "workspace": {
+            "symbol": { "symbolKind": { "valueSet": (1..=26).collect::<Vec<u32>>() } },
         },
     })
 }

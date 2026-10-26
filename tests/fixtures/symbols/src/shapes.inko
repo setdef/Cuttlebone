@@ -1,0 +1,27 @@
+# Shapes.
+
+# A shape.
+type pub enum Shape {
+  # A circle, by its radius.
+  case Circle(Float)
+  case Square
+}
+
+# What has an area.
+trait pub Area {
+  # The area.
+  fn pub area -> Float
+
+  fn pub double -> Float {
+    area * 2.0
+  }
+}
+
+impl Area for Shape {
+  fn pub area -> Float {
+    match self {
+      case Circle(r) -> r * r * 3.14
+      case Square -> 1.0
+    }
+  }
+}

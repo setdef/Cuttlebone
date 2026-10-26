@@ -9,17 +9,22 @@
 //! first (`Frozen`). `$/cancelRequest` cancels one, and a query waits until
 //! its document has been still for a moment (`debounce`) before it starts.
 //!
+//! Document and workspace symbols need no check: they're answered at
+//! once, from the text alone (`syntax`, `index`).
+//!
 //! Diagnostics have a slot of their own: a full check of a whole project
 //! (`query::diagnostics`) in a second worker, after a longer debounce, so a
 //! query never waits for one. See `Diagnoser`, and docs/lsp.md,
 //! "Diagnostics".
 use crate::check::{VERSION, upstream_version};
 use crate::edits::{Fallback, Snapshots};
-use crate::position::{Encoding, Position, byte_offset};
+use crate::index::{self, Index};
+use crate::position::{Encoding, Position, Positions, byte_offset};
 use crate::query::{
-    self, Access, Answer, Diagnostics, HintKind, MemberKind, MembersAt, Place, Session, Source,
-    TypeAt, Unavailable,
+    self, Access, Answer, Diagnostics, HintKind, HoverAt, MemberKind, MembersAt, Place, Session,
+    Source, Unavailable,
 };
+use crate::syntax::{self, Declaration, Kind, Outline};
 use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query, Worker};
 use crossbeam_channel::{Receiver, Sender, select};
 use lsp_server::{
@@ -263,6 +268,14 @@ struct Support {
     no_active_parameter: bool,
     /// The `Unnecessary` diagnostic tag.
     unnecessary_tag: bool,
+    /// `DocumentSymbol[]` for document symbols, rather than
+    /// `SymbolInformation[]`.
+    hierarchical_symbols: bool,
+    /// The symbol kinds past Array (18), the last every client has: Object
+    /// and EnumMember, for document symbols.
+    symbol_kinds: bool,
+    /// The same, for workspace symbols.
+    workspace_symbol_kinds: bool,
 }
 
 impl Support {
@@ -301,6 +314,15 @@ impl Support {
                 "/textDocument/publishDiagnostics/tagSupport/valueSet",
                 json!(lsp::DiagnosticTag::UNNECESSARY),
             ),
+            hierarchical_symbols: yes(
+                "/textDocument/documentSymbol/hierarchicalDocumentSymbolSupport",
+            ),
+            symbol_kinds: [lsp::SymbolKind::OBJECT, lsp::SymbolKind::ENUM_MEMBER]
+                .iter()
+                .all(|k| lists("/textDocument/documentSymbol/symbolKind/valueSet", json!(k))),
+            workspace_symbol_kinds: [lsp::SymbolKind::OBJECT, lsp::SymbolKind::ENUM_MEMBER]
+                .iter()
+                .all(|k| lists("/workspace/symbol/symbolKind/valueSet", json!(k))),
         }
     }
 }
@@ -337,6 +359,8 @@ struct Server {
     shut_down: bool,
     /// The client's process, which started the server (`watched`).
     parent: Option<u32>,
+    /// Every module's declarations, for workspace symbols.
+    index: Index,
 }
 
 impl Server {
@@ -366,6 +390,7 @@ impl Server {
             finished: crossbeam_channel::unbounded(),
             shut_down: false,
             parent: None,
+            index: Index::default(),
         })
     }
 
@@ -400,6 +425,8 @@ impl Server {
                 references_provider: Some(lsp::OneOf::Left(true)),
                 document_highlight_provider: Some(lsp::OneOf::Left(true)),
                 inlay_hint_provider: Some(lsp::OneOf::Left(true)),
+                document_symbol_provider: Some(lsp::OneOf::Left(true)),
+                workspace_symbol_provider: Some(lsp::OneOf::Left(true)),
                 signature_help_provider: Some(lsp::SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
                     retrigger_characters: None,
@@ -535,6 +562,8 @@ impl Server {
                         .unwrap_or(false),
                 },
             ),
+            "textDocument/documentSymbol" => return self.document_symbols(connection, request),
+            "workspace/symbol" => return self.workspace_symbols(connection, request),
             "shutdown" => {
                 self.shut_down = true;
                 self.cancel_all(connection);
@@ -1332,7 +1361,7 @@ impl Server {
         // What an answer for a range covers of it (docs/lsp.md, "Status").
         let mut covered: Option<Vec<query::Range>> = None;
         let (result, status) = match outcome {
-            Outcome::Type(answer) => {
+            Outcome::Hover(answer) => {
                 let status = status_of(&answer);
 
                 (self.hover(answer.result), status)
@@ -1511,25 +1540,285 @@ impl Server {
         reply(connection, pending.id, result);
     }
 
-    fn hover(&self, result: Result<Option<TypeAt>, Unavailable>) -> Value {
-        let Ok(Some(t)) = result else {
+    /// `textDocument/documentSymbol`, answered at once from the document's
+    /// text alone (`syntax::outline`): no check, so it answers in code that
+    /// doesn't type check, and, from a copy with lines blank, in code that
+    /// doesn't parse. An open document needn't be a file.
+    fn document_symbols(&self, connection: &Connection, request: Request) {
+        let start = Instant::now();
+        let params: lsp::DocumentSymbolParams = match serde_json::from_value(request.params) {
+            Ok(p) => p,
+            Err(e) => {
+                return reply_error(
+                    connection,
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    &e.to_string(),
+                );
+            }
+        };
+        let uri = params.text_document.uri;
+        let text = match (self.documents.get(&uri), uri.to_file_path()) {
+            (Some(document), _) => Ok(document.text.clone()),
+            (None, Ok(path)) => std::fs::read_to_string(&path).map_err(|e| {
+                Unavailable::new("fileNotFound", format!("{}: {}", path.display(), e))
+            }),
+            (None, Err(_)) => Err(Unavailable::new(
+                "notAFile",
+                format!("{} isn't open, and isn't a file", uri),
+            )),
+        };
+        let read = text.and_then(|text| {
+            let outline = query::guarded(|| syntax::outline(&text))
+                .map_err(|message| Unavailable::new("compilerPanic", message))?
+                .ok_or_else(|| {
+                    Unavailable::new(
+                        "noHir",
+                        "the document doesn't parse, nor any copy with lines blank",
+                    )
+                })?;
+
+            Ok((text, outline))
+        });
+        let (result, state) = match read {
+            Ok((text, outline)) => (
+                self.symbols(&uri, &text, &outline),
+                Ok(!outline.blank.is_empty()),
+            ),
+            Err(reason) => (Value::Null, Err(reason)),
+        };
+
+        self.syntax_status(
+            connection,
+            &request.id,
+            "textDocument/documentSymbol",
+            Some(&uri),
+            state,
+            start.elapsed(),
+        );
+        reply(connection, request.id, result);
+    }
+
+    /// `workspace/symbol`, answered at once from the index of every
+    /// module the session's projects can import (`index`), brought up to
+    /// date with the files and the open documents first: the declarations
+    /// whose names match the query, best first, at most
+    /// `WORKSPACE_SYMBOLS`. No check, so the projects needn't type check.
+    fn workspace_symbols(&mut self, connection: &Connection, request: Request) {
+        let start = Instant::now();
+        let params: lsp::WorkspaceSymbolParams = match serde_json::from_value(request.params) {
+            Ok(p) => p,
+            Err(e) => {
+                return reply_error(
+                    connection,
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    &e.to_string(),
+                );
+            }
+        };
+        let roots = index::roots(&self.session.std, &self.session.projects);
+        let open: HashMap<PathBuf, String> = self
+            .documents
+            .values()
+            .filter_map(|d| Some((d.path.clone()?.canonicalize().ok()?, d.text.clone())))
+            .collect();
+
+        self.index.refresh(&roots, &open);
+
+        let kinds = Support {
+            symbol_kinds: self.support.workspace_symbol_kinds,
+            ..self.support
+        };
+        let mut positions: HashMap<&std::path::Path, Positions> = HashMap::new();
+        let found: Vec<Value> = self
+            .index
+            .search(&params.query, WORKSPACE_SYMBOLS)
+            .into_iter()
+            .filter_map(|f| {
+                let positions = positions
+                    .entry(&f.module.file)
+                    .or_insert_with(|| Positions::new(&f.module.text, self.encoding));
+                let r = &f.declaration.name_range;
+
+                Some(json!({
+                    "name": f.declaration.name,
+                    "kind": symbol_kind(f.declaration.kind, kinds),
+                    "containerName": f.container(),
+                    "location": {
+                        "uri": Url::from_file_path(&f.module.file).ok()?,
+                        "range": lsp::Range {
+                            start: lsp_position(positions, r.start),
+                            end: lsp_position(positions, r.end),
+                        },
+                    },
+                }))
+            })
+            .collect();
+
+        self.syntax_status(
+            connection,
+            &request.id,
+            "workspace/symbol",
+            None,
+            Ok(false),
+            start.elapsed(),
+        );
+        reply(connection, request.id, Value::Array(found));
+    }
+
+    /// A document's declarations as `DocumentSymbol[]`, or as
+    /// `SymbolInformation[]` (with each one's container) for a client
+    /// without hierarchical document symbols.
+    fn symbols(&self, uri: &Url, text: &str, outline: &Outline) -> Value {
+        let positions = Positions::new(text, self.encoding);
+        let range = |r: &std::ops::Range<usize>| lsp::Range {
+            start: lsp_position(&positions, r.start),
+            end: lsp_position(&positions, r.end),
+        };
+
+        if !self.support.hierarchical_symbols {
+            let flat: Vec<Value> = outline
+                .all()
+                .into_iter()
+                .map(|(d, parents)| {
+                    let mut info = json!({
+                        "name": d.name,
+                        "kind": symbol_kind(d.kind, self.support),
+                        "location": { "uri": uri, "range": range(&d.range) },
+                    });
+
+                    if let Some(parent) = parents.last() {
+                        info["containerName"] = json!(parent.name);
+                    }
+
+                    info
+                })
+                .collect();
+
+            return Value::Array(flat);
+        }
+
+        fn nested(
+            list: &[Declaration],
+            range: &impl Fn(&std::ops::Range<usize>) -> lsp::Range,
+            support: Support,
+        ) -> Vec<Value> {
+            list.iter()
+                .map(|d| {
+                    let mut symbol = json!({
+                        "name": d.name,
+                        "detail": d.detail(),
+                        "kind": symbol_kind(d.kind, support),
+                        "range": range(&d.range),
+                        "selectionRange": range(&d.name_range),
+                    });
+
+                    if !d.children.is_empty() {
+                        symbol["children"] = json!(nested(&d.children, range, support));
+                    }
+
+                    symbol
+                })
+                .collect()
+        }
+
+        Value::Array(nested(&outline.declarations, &range, self.support))
+    }
+
+    /// The `cuttlebone/status` notification for a request answered from
+    /// text alone, with no check: `fresh` (with `repaired` if lines were
+    /// blank, `Ok(true)`), or `unavailable` with the reason.
+    fn syntax_status(
+        &self,
+        connection: &Connection,
+        id: &RequestId,
+        method: &str,
+        uri: Option<&Url>,
+        state: Result<bool, Unavailable>,
+        elapsed: Duration,
+    ) {
+        if !self.options.status {
+            return;
+        }
+
+        let mut params = json!({
+            "id": id,
+            "method": method,
+            "status": if state.is_ok() { "fresh" } else { "unavailable" },
+            "elapsedMs": (elapsed.as_secs_f64() * 10000.0).round() / 10.0,
+        });
+
+        if let Some(uri) = uri {
+            params["textDocument"] = json!({ "uri": uri });
+        }
+
+        match state {
+            Ok(true) => params["repaired"] = json!(true),
+            Ok(false) => {}
+            Err(reason) => {
+                params["reason"] = json!({ "code": reason.code, "message": reason.message })
+            }
+        }
+
+        let _ = connection
+            .sender
+            .send(Message::Notification(Notification::new(
+                STATUS.to_string(),
+                params,
+            )));
+    }
+
+    /// A hover, in Markdown or plain text (docs/lsp.md,
+    /// "textDocument/hover"): the type, the declaration and where it is,
+    /// and its doc comment, each that there is, apart.
+    fn hover(&self, result: Result<Option<HoverAt>, Unavailable>) -> Value {
+        let Ok(Some(h)) = result else {
             return Value::Null;
         };
-        let contents = if self.support.markdown {
-            lsp::MarkupContent {
-                kind: lsp::MarkupKind::Markdown,
-                value: format!("```inko\n{}\n```", t.typ),
+        let markdown = self.support.markdown;
+        let code = |text: &str| {
+            if markdown {
+                format!("```inko\n{}\n```", text)
+            } else {
+                text.to_string()
             }
-        } else {
-            lsp::MarkupContent {
-                kind: lsp::MarkupKind::PlainText,
-                value: t.typ,
+        };
+        let mut sections: Vec<String> = Vec::new();
+
+        if let Some(t) = &h.typ {
+            sections.push(code(&t.typ));
+        }
+
+        if let Some(d) = &h.declared {
+            let place = if markdown {
+                format!("`{}`", d.path)
+            } else {
+                d.path.clone()
+            };
+
+            sections.push(match &d.signature {
+                Some(signature) => format!("{}\n\nDefined in {}", code(signature), place),
+                None => format!("Module {}", place),
+            });
+
+            if let Some(doc) = &d.documentation {
+                sections.push(doc.clone());
             }
+        }
+
+        let contents = lsp::MarkupContent {
+            kind: if markdown {
+                lsp::MarkupKind::Markdown
+            } else {
+                lsp::MarkupKind::PlainText
+            },
+            value: sections.join(if markdown { "\n\n---\n\n" } else { "\n\n" }),
         };
 
         serde_json::to_value(lsp::Hover {
             contents: lsp::HoverContents::Markup(contents),
-            range: Some(range(t.range)),
+            range: Some(range(h.range)),
         })
         .unwrap()
     }
@@ -1630,6 +1919,38 @@ fn slice_units(text: &str, start: u32, end: u32, encoding: Encoding) -> String {
     }
 
     out
+}
+
+/// How many workspace symbols an answer has at most, the best matches.
+const WORKSPACE_SYMBOLS: usize = 500;
+
+/// What LSP calls a declaration of a kind. A client without the kinds
+/// past Array (18) gets the nearest it has: Class for an `impl` block
+/// (Object), Constructor for an enum's constructor (EnumMember).
+fn symbol_kind(kind: Kind, support: Support) -> lsp::SymbolKind {
+    match kind {
+        Kind::Type => lsp::SymbolKind::CLASS,
+        Kind::Enum => lsp::SymbolKind::ENUM,
+        Kind::Trait => lsp::SymbolKind::INTERFACE,
+        Kind::Implementation if support.symbol_kinds => lsp::SymbolKind::OBJECT,
+        Kind::Implementation => lsp::SymbolKind::CLASS,
+        Kind::Method | Kind::StaticMethod => lsp::SymbolKind::METHOD,
+        Kind::ModuleMethod => lsp::SymbolKind::FUNCTION,
+        Kind::Field => lsp::SymbolKind::FIELD,
+        Kind::Constructor if support.symbol_kinds => lsp::SymbolKind::ENUM_MEMBER,
+        Kind::Constructor => lsp::SymbolKind::CONSTRUCTOR,
+        Kind::Constant => lsp::SymbolKind::CONSTANT,
+    }
+}
+
+/// A byte offset as an LSP position.
+fn lsp_position(positions: &Positions, offset: usize) -> lsp::Position {
+    let p = positions.at(offset);
+
+    lsp::Position {
+        line: p.line,
+        character: p.character,
+    }
 }
 
 /// A place as an LSP `Location`, or `null` for a path that can't be a
