@@ -318,9 +318,40 @@ Two brace-depth rules and the doc comment rules each got unit tests after
 their mutations survived.
 
 **The tiers.** scripts/mutate.py, tests/main.rs and tests/common/spec.rs
-changed, so the exhaustive tier is required (AGENTS.md); it runs
-everything the milestone tier does. It runs on this report's first
-commit, and the next commit says how it went.
+changed, so the exhaustive tier is required (AGENTS.md). Other work kept
+this Mac at load averages of 20 to 200 (on 10 cores) for most of the
+milestone's end, and that decided what could finish:
+
+- **The milestone tier**, `scripts/check.sh --milestone 35ff3dc`, on
+  b980d82: every step passed, the strict latency limits and the whole
+  corpus with and without kept checks included (formatting 1 s, clippy
+  44 s, tests 70 s, the release build 20 s, the corpus 132 s, strict
+  latency 23 s, no kept checks 198 s, the selection check 4 s, the
+  release tooling 33 s). Its 327 selected mutations: **320 caught**; the
+  other seven are the four in the list above, two more that only a busy
+  machine missed (none), and one that didn't build. After the fixes in
+  b16c379, each of the seven was run again (`scripts/mutate.py` with
+  their names, or applied by hand when the runner's own control couldn't
+  pass on the loaded machine): **7 of 7 caught**.
+- **The exhaustive tier**, on this report's commit with the two symbol
+  latency tests running alone: every step before the mutations passed
+  (strict latency at a load of about 60). The mutations didn't run: the
+  runner first checks every test unmutated, and at loads of 150 to 200
+  that check failed on timing tests that pass alone
+  (`checks_wait_until_typing_pauses`, and once a cancelled check's test);
+  an earlier attempt's `sh:` mutation that runs the control itself hit the
+  runner's 900 s timeout. **The exhaustive tier's mutations are still to
+  run on a quiet machine.**
+- **Two latency tests now run alone.** At a load of 40 to 70, document
+  symbols in broken code measured 160 ms in the full latency run against
+  its 150 ms limit, and 84 ms alone: the test measures parsing, tens of
+  milliseconds, which the other tests' checks share the cores with. Like
+  the other small measurements, it and workspace symbols' test now take
+  the exclusive lock. The limits are as written.
+
+Every commit's check passed through the pre-commit hook (once only on a
+second try, at a load of 180, where a latency test took longer than its
+scaled limit once and passed when run again).
 
 ## Every patch line added, and why
 

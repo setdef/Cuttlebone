@@ -279,7 +279,9 @@ const SYMBOLS_LIMIT: Duration = Duration::from_millis(150);
 
 #[test]
 fn document_symbols_of_the_largest_std_module_are_fast_enough() {
-    let _shared = shared();
+    // Tens of milliseconds: alone, so the other tests' checks don't
+    // share the cores.
+    let _alone = alone();
     let std = upstream_std();
     // The largest module of std.
     let file = std.join("std/net/http/server.inko");
@@ -342,7 +344,9 @@ const FIRST_WORKSPACE_SYMBOLS_LIMIT: Duration = Duration::from_millis(500);
 
 #[test]
 fn workspace_symbols_are_fast_enough_to_type_into() {
-    let _shared = shared();
+    // Tens of milliseconds: alone, so the other tests' checks don't
+    // share the cores.
+    let _alone = alone();
     let (root, _) = std_sized_project();
     let mut client = uncached(&root, QUERIES_ONLY.clone());
     let ask = |client: &mut Client, query: &str| {
