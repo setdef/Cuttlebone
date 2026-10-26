@@ -407,6 +407,7 @@ M = [
  ("workspace symbols keep deleted files", "src/index.rs", "        self.modules.retain(|path, _| seen.contains_key(path));\n", "", "--test symbols workspace_symbols_in_code"),
  ("workspace symbols ignore open documents", "src/lsp.rs", "        self.index.refresh(&roots, &open);", "        self.index.refresh(&roots, &HashMap::new());\n        let _ = open;", "--test symbols workspace_symbols_in_code"),
  ("workspace symbols without dependencies", "src/index.rs", "            for dep in manifest.into_dependencies() {", "            for dep in manifest.into_dependencies().into_iter().filter(|_| false) {", "--test symbols workspace_symbols_from"),
+ ("workspace symbols create a missing manifest", "src/index.rs", "        if manifest.is_file()\n            && let Ok(manifest)", "        if true\n            && let Ok(manifest)", "--test symbols workspace_symbols_for_a_client"),
  ("workspace symbols without tests", "src/index.rs", "        out.push(Root {\n            dir: project.join(\"test\"),", "        out.push(Root {\n            dir: project.join(\"\\0test\"),", "--test symbols workspace_symbols_from"),
  ("impl blocks are workspace symbols", "src/index.rs", "                if declaration.kind == Kind::Implementation {\n                    continue;\n                }\n", "", "--test symbols workspace_symbols_from"),
  ("newer workspace symbol kinds for every client", "src/lsp.rs", "            symbol_kinds: self.support.workspace_symbol_kinds,", "            symbol_kinds: true,", "--test symbols workspace_symbols_for_a_client"),

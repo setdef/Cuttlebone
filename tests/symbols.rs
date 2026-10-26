@@ -619,4 +619,6 @@ fn workspace_symbols_for_a_client_without_newer_kinds() {
     let (_, found) = workspace(&mut client, &root, "Circle", false);
 
     assert_eq!(found[0], "9 Circle shapes.Shape src/shapes.inko:5:Circle");
+    // Nothing is written: a project without a manifest still has none.
+    assert!(!root.join("inko.pkg").exists());
 }

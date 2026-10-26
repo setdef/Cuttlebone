@@ -60,7 +60,12 @@ pub fn roots(std: &Path, projects: &[PathBuf]) -> Vec<Root> {
 
         // Where the compiler looks for a dependency's modules
         // (`Packages::source_directory`, compiler/src/state.rs:98-135).
-        if let Ok(manifest) = Manifest::load(&project.join(MANIFEST_FILE)) {
+        // `Manifest::load` creates a file that isn't there.
+        let manifest = project.join(MANIFEST_FILE);
+
+        if manifest.is_file()
+            && let Ok(manifest) = Manifest::load(&manifest)
+        {
             for dep in manifest.into_dependencies() {
                 out.push(Root {
                     dir: project
