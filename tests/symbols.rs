@@ -133,6 +133,8 @@ fn check_fixture(utf8: bool) {
             "  6 double | fn pub double -> Float | double | fn pub double -> Float { ... }",
             "19 impl Area for Shape | impl Area for Shape | Shape | impl Area for Shape { ... }",
             "  6 area | fn pub area -> Float | area | fn pub area -> Float { ... }",
+            "12 shape_count | fn pub shape_count -> Int | shape_count | fn pub shape_count -> Int { ... }",
+            "12 shape_helper | fn shape_helper -> Int | shape_helper | fn shape_helper -> Int { ... }",
         ]
     );
 }
@@ -327,6 +329,8 @@ fn document_symbols_for_a_client_without_hierarchy() {
             "6 double Area",
             "5 impl Area for Shape -",
             "6 area impl Area for Shape",
+            "12 shape_count -",
+            "12 shape_helper -",
         ]
     );
 }

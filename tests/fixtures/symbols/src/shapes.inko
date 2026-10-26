@@ -25,3 +25,11 @@ impl Area for Shape {
     }
   }
 }
+
+fn pub shape_count -> Int {
+  2
+}
+
+fn shape_helper -> Int {
+  1
+}

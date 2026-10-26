@@ -10,7 +10,8 @@ questions about types over standard LSP, for any editor with an LSP client
 ([docs/lsp.md](docs/lsp.md)): hover shows the type at a position and the
 declaration there with its doc comment, document and workspace symbols list
 declarations from the syntax alone, completion after `.` lists members with
-their signatures, and go to
+their signatures, and completion of names lists what's in scope and what
+to import, with the import, and go to
 definition, go to type definition and find references locate symbols by the
 compiler's own ids. It publishes the same diagnostics as `inko check`,
 highlights a symbol's uses in a file, shows the signature of the call being
@@ -185,6 +186,7 @@ also fast enough for the latency limits.
 | `tests/stale.rs` | answers from the last good check over LSP (with repaired copies off, a fault only tests have): which requests give them (and which never do), positions and ranges mapped through edits in both encodings, a changed declaration, diagnostics checks and unsaved text when opened, hints in the method being edited and the ranges they cover, a check of documents edited since it was asked for |
 | `tests/replay.rs` | the edit-replay corpus, the oracle for code being edited: real files edited as people do, every query asked at many positions after each edit (and inlay hints for each line and the whole file, and document symbols), and each answer compared with the fresh one at the end, hints within the ranges the answer says it covers, where they must be exactly the final ones, and none outside them. Fails on any wrong answer, or less coverage than measured. Every commit replays a sample; `CUTTLEBONE_CORPUS_FULL=1` replays all of it. `-- --nocapture` prints the tables |
 | `tests/cache.rs` | checks kept between questions: questions about the same text share one, with the same answers (fresh, repaired and stale); an edit, a file changed, created or deleted on disk (also outside the editor, over LSP) is never answered from one; what may have changed during a check isn't kept; the bound and least recently used order; completion's copies and panicked checks not kept; checks with nothing to answer from (code that doesn't parse) kept apart, and never past a change to any source file; `cached` in the status; the worker replaced when it dies, stopped at `shutdown` |
+| `tests/names.rs` | completion of names over LSP in both encodings: variables, arguments, closures' and cases' bindings in scope and not out of it, `self`'s methods, fields after `@`, types in a signature, symbols to import with their edits (not private, not a test module's), modules and symbols in an `import`, and code being edited |
 | `tests/hover.rs` | hover over LSP in both encodings: the type, the declaration as written and where it is, and its doc comment, for the project, a dependency and std, an implementation with its trait's doc comment, a module, a declaration's own name, plain text, and a stale hover after its doc comment changed |
 | `tests/syntax.rs` | outlines from the syntax alone: names and ranges against the compiler's declarations in every module of std and the fixtures, and doc comments against the installed `inko doc` |
 | `tests/symbols.rs` | document and workspace symbols over LSP in both encodings: every kind of declaration, code that doesn't parse, documents that aren't files, a dependency, files changed on disk, clients without hierarchy or the newer kinds |

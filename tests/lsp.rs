@@ -134,7 +134,7 @@ fn initialize_advertises_only_what_works() {
     );
     assert_eq!(
         capabilities["completionProvider"],
-        json!({ "triggerCharacters": ["."], "resolveProvider": false })
+        json!({ "triggerCharacters": [".", "@"], "resolveProvider": false })
     );
     assert_eq!(
         capabilities["textDocumentSync"],

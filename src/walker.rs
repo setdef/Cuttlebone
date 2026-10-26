@@ -91,6 +91,18 @@ pub struct ListArgument {
     pub variable: Option<String>,
 }
 
+/// A variable, and where code can refer to it by its name: after a
+/// `let`, to the end of its block; a method's or closure's argument, in
+/// it; a `match` case's binding, in that case. For completion.
+#[derive(Clone, Debug)]
+pub struct Visible {
+    pub variable: VariableId,
+    /// From after this position (line and column, as the compiler counts
+    /// them) up to and including this one.
+    pub from: (u32, u32),
+    pub to: (u32, u32),
+}
+
 /// A variable whose type isn't written in the source, for inlay hints: one
 /// a `let` binds to a name without a type annotation, or a closure's
 /// argument without one.
@@ -542,6 +554,14 @@ pub struct Walker<'a> {
     /// Where a reference assigns a new value: `x = 1`, `x := 1`, `x += 1`,
     /// `@x = 1`, `a.x = 1` and so on.
     pub writes: Vec<Location>,
+    /// Every variable, and where it can be referred to.
+    pub visible: Vec<Visible>,
+    /// Each method with a body, at its location.
+    pub methods: Vec<(Location, MethodId)>,
+    /// Where each type name is written.
+    pub type_names: Vec<Location>,
+    /// Where each block being walked ends.
+    ends: Vec<(u32, u32)>,
 }
 
 impl<'a> Walker<'a> {
@@ -558,6 +578,10 @@ impl<'a> Walker<'a> {
             references: Vec::new(),
             declarations: Vec::new(),
             writes: Vec::new(),
+            visible: Vec::new(),
+            methods: Vec::new(),
+            type_names: Vec::new(),
+            ends: Vec::new(),
         }
     }
 
@@ -588,6 +612,8 @@ impl<'a> Walker<'a> {
     /// The symbol a type name refers to, and the module it's qualified
     /// with, if any.
     fn type_name(&mut self, node: &hir::TypeName) {
+        self.type_names.push(node.name.location);
+
         if let Some(src) = &node.source {
             let module = self.module_named(&src.name);
 
@@ -737,15 +763,15 @@ impl<'a> Walker<'a> {
                     match expr {
                         hir::TypeExpression::InstanceMethod(m) => {
                             self.signature(&m.type_parameters, &m.arguments, &m.return_type);
-                            self.body(&m.body);
+                            self.method_body(m.method_id, m.location, &m.body);
                         }
                         hir::TypeExpression::StaticMethod(m) => {
                             self.signature(&m.type_parameters, &m.arguments, &m.return_type);
-                            self.body(&m.body);
+                            self.method_body(m.method_id, m.location, &m.body);
                         }
                         hir::TypeExpression::AsyncMethod(m) => {
                             self.signature(&m.type_parameters, &m.arguments, &m.return_type);
-                            self.body(&m.body);
+                            self.method_body(m.method_id, m.location, &m.body);
                         }
                         hir::TypeExpression::Field(f) => self.type_node(&f.value_type),
                         hir::TypeExpression::Constructor(c) => {
@@ -757,7 +783,7 @@ impl<'a> Walker<'a> {
             hir::TopLevelExpression::Constant(n) => self.constant(&n.value),
             hir::TopLevelExpression::ModuleMethod(n) => {
                 self.signature(&n.type_parameters, &n.arguments, &n.return_type);
-                self.body(&n.body);
+                self.method_body(n.method_id, n.location, &n.body);
             }
             hir::TopLevelExpression::Trait(n) => {
                 self.type_parameter_requirements(&n.type_parameters);
@@ -767,7 +793,7 @@ impl<'a> Walker<'a> {
                     match expr {
                         hir::TraitExpression::InstanceMethod(m) => {
                             self.signature(&m.type_parameters, &m.arguments, &m.return_type);
-                            self.body(&m.body);
+                            self.method_body(m.method_id, m.location, &m.body);
                         }
                         hir::TraitExpression::RequiredMethod(m) => {
                             self.signature(&m.type_parameters, &m.arguments, &m.return_type);
@@ -784,7 +810,7 @@ impl<'a> Walker<'a> {
 
                 for m in &n.body {
                     self.signature(&m.type_parameters, &m.arguments, &m.return_type);
-                    self.body(&m.body);
+                    self.method_body(m.method_id, m.location, &m.body);
                 }
             }
             hir::TopLevelExpression::Reopen(n) => {
@@ -795,15 +821,15 @@ impl<'a> Walker<'a> {
                     match expr {
                         hir::ReopenTypeExpression::InstanceMethod(m) => {
                             self.signature(&m.type_parameters, &m.arguments, &m.return_type);
-                            self.body(&m.body);
+                            self.method_body(m.method_id, m.location, &m.body);
                         }
                         hir::ReopenTypeExpression::StaticMethod(m) => {
                             self.signature(&m.type_parameters, &m.arguments, &m.return_type);
-                            self.body(&m.body);
+                            self.method_body(m.method_id, m.location, &m.body);
                         }
                         hir::ReopenTypeExpression::AsyncMethod(m) => {
                             self.signature(&m.type_parameters, &m.arguments, &m.return_type);
-                            self.body(&m.body);
+                            self.method_body(m.method_id, m.location, &m.body);
                         }
                     }
                 }
@@ -999,8 +1025,50 @@ impl<'a> Walker<'a> {
     }
 
     fn body(&mut self, nodes: &[hir::Expression]) {
+        let Some(last) = nodes.last() else {
+            return;
+        };
+
+        self.ends
+            .push((last.location().line_end, last.location().column_end + 1));
+
         for n in nodes {
             self.expression(n);
+        }
+
+        self.ends.pop();
+    }
+
+    /// A method's body, where its arguments can be referred to.
+    fn method_body(&mut self, id: Option<MethodId>, location: Location, body: &[hir::Expression]) {
+        if let Some(id) = id {
+            self.methods.push((location, id));
+
+            for arg in id.arguments(self.db) {
+                self.visible.push(Visible {
+                    variable: arg.variable,
+                    from: (location.line_start, location.column_start),
+                    to: (location.line_end, location.column_end),
+                });
+            }
+        }
+
+        self.body(body);
+    }
+
+    /// The variables declared since the `before`th declaration, which can
+    /// be referred to after `from`, up to `to`.
+    fn see(&mut self, before: usize, from: (u32, u32), to: (u32, u32)) {
+        let found: Vec<VariableId> = self.declarations[before..]
+            .iter()
+            .filter_map(|d| match d.symbol {
+                SymbolId::Variable(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+
+        for variable in found {
+            self.visible.push(Visible { variable, from, to });
         }
     }
 
@@ -1404,6 +1472,11 @@ impl<'a> Walker<'a> {
 
                     if let Some(a) = args.iter().find(|a| a.index == i) {
                         self.declare(arg.name.location, SymbolId::Variable(a.variable));
+                        self.visible.push(Visible {
+                            variable: a.variable,
+                            from: (n.location.line_start, n.location.column_start),
+                            to: (n.location.line_end, n.location.column_end),
+                        });
                     }
 
                     if let Some(t) = &arg.value_type {
@@ -1454,7 +1527,15 @@ impl<'a> Walker<'a> {
                     Some(n.resolved_type),
                     synthetic || generated_var,
                 );
+
+                let before = self.declarations.len();
+
                 self.pattern(&n.pattern, synthetic);
+
+                // After the whole `let`, its `else` too, to its block's end.
+                if let Some(end) = self.ends.last().copied() {
+                    self.see(before, (n.location.line_end, n.location.column_end), end);
+                }
 
                 if let hir::Pattern::Identifier(p) = &n.pattern
                     && p.value_type.is_none()
@@ -1543,7 +1624,19 @@ impl<'a> Walker<'a> {
                 self.expression(&n.expression);
 
                 for case in &n.cases {
+                    let before = self.declarations.len();
+
                     self.pattern(&case.pattern, synthetic);
+
+                    if let Some(last) = case.body.last() {
+                        let l = case.pattern.location();
+
+                        self.see(
+                            before,
+                            (l.line_end, l.column_end),
+                            (last.location().line_end, last.location().column_end + 1),
+                        );
+                    }
 
                     if let Some(g) = &case.guard {
                         self.expression(g);

@@ -167,6 +167,14 @@ const CITATIONS: &[(&str, &str)] = &[
         "while let Some(ast::TopLevelExpression::Comment(c)) = nodes.peek()",
     ),
     (
+        "compiler/src/format.rs:578-620",
+        "imports.sort_by(|a, b| a.path.cmp(&b.path));",
+    ),
+    (
+        "compiler/src/type_check/expressions.rs:2544-2772",
+        "if let Some((var, typ, _)) =",
+    ),
+    (
         "compiler/src/state.rs:98-135",
         ".join(format!(\"v{}\", dep.version.major))",
     ),

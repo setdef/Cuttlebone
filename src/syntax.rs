@@ -325,6 +325,175 @@ impl Outline {
     }
 }
 
+/// What an `import` being typed needs next.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImportContext {
+    /// A module's name: the names before the last `.` (`["std"]` in
+    /// `import std.fm`).
+    Module(Vec<String>),
+    /// A name in the symbol list of the module (`std.stdio`), and the
+    /// names listed already.
+    Symbol(String, Vec<String>),
+}
+
+/// What's being typed at the end of `before` (a text up to a position),
+/// if it's an import: on the line of an `import` at the start of a line,
+/// after its path's start, or in its symbol list, which may go over
+/// lines. `None` for anything else, `import extern`, and an import's
+/// build tags.
+pub fn import_context(before: &str) -> Option<ImportContext> {
+    let start = before
+        .rfind("\nimport ")
+        .map(|i| i + 1)
+        .or_else(|| before.starts_with("import ").then_some(0))?;
+    let rest = &before[start + "import ".len()..];
+    let name = |s: &str| s.chars().all(|c| c.is_alphanumeric() || c == '_');
+
+    match rest.split_once('(') {
+        Some((path, list)) => {
+            let path = path.trim();
+
+            if list.contains(')') || path.is_empty() || !path.split('.').all(name) {
+                return None;
+            }
+
+            let listed: Vec<String> = list
+                .split(',')
+                .map(|s| s.split_whitespace().next().unwrap_or("").to_string())
+                .collect();
+
+            if !listed.iter().all(|n| name(n)) {
+                return None;
+            }
+
+            let done = listed.len() - 1;
+
+            Some(ImportContext::Symbol(
+                path.to_string(),
+                listed.into_iter().take(done).collect(),
+            ))
+        }
+        // A path is names and dots: an import of a path that's done, or
+        // `import extern "..."`, has more.
+        None => {
+            let segments: Vec<&str> = rest.split('.').collect();
+
+            if !segments.iter().all(|s| name(s)) {
+                return None;
+            }
+
+            Some(ImportContext::Module(
+                segments[..segments.len() - 1]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ))
+        }
+    }
+}
+
+/// The edit that imports `symbol` from `module` (`std.stdio`) into `text`
+/// (outlined by `outline`), as `inko fmt` orders imports
+/// (compiler/src/format.rs:578-620): the import paths in string order, and
+/// in a symbol list `self` first, then the names in string order. Into the
+/// module's import's list, if it has one (`import std.stdio (Stdin)`
+/// becomes `import std.stdio (Stdin, Stdout)`); an import of the module
+/// without one gets `(self, Stdout)`; or else a new import, in the first
+/// group of imports, or before the first declaration (and its doc
+/// comment), followed by a blank line. An import with build tags isn't
+/// added to. The bytes to replace, and their replacement.
+pub fn import_edit(
+    text: &str,
+    outline: &Outline,
+    module: &str,
+    symbol: &str,
+) -> (Range<usize>, String) {
+    let path: Vec<&str> = module.split('.').collect();
+    let existing = outline
+        .imports
+        .iter()
+        .find(|i| !i.tagged && i.path.iter().map(String::as_str).eq(path.iter().copied()));
+
+    if let Some(import) = existing {
+        let Some(symbols) = &import.symbols else {
+            let end = import.range.end;
+
+            return (end..end, format!(" (self, {})", symbol));
+        };
+
+        // Before the first name that sorts after it (`self` first).
+        let after = symbols
+            .iter()
+            .find(|(name, _, _)| name != "self" && name.as_str() > symbol);
+
+        return match (after, symbols.last()) {
+            (Some((_, _, r)), _) => (r.start..r.start, format!("{}, ", symbol)),
+            (None, Some((_, _, r))) => (r.end..r.end, format!(", {}", symbol)),
+            (None, None) => {
+                let at = import
+                    .list
+                    .as_ref()
+                    .map_or(import.range.end, |l| l.start + 1);
+
+                (at..at, symbol.to_string())
+            }
+        };
+    }
+
+    let line = format!("import {} ({})\n", module, symbol);
+    let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let next_line = |at: usize| text[at..].find('\n').map_or(text.len(), |i| at + i + 1);
+    // The first group: imports on consecutive lines.
+    let mut group: Vec<&Import> = Vec::new();
+
+    for import in &outline.imports {
+        if let Some(last) = group.last()
+            && text[last.range.end..import.range.start]
+                .matches('\n')
+                .count()
+                > 1
+        {
+            break;
+        }
+
+        group.push(import);
+    }
+
+    if let Some(first) = group.first() {
+        let at = match group.iter().find(|i| i.path.join(".").as_str() > module) {
+            Some(i) => line_start(i.range.start),
+            None => next_line(group.last().unwrap_or(first).range.end),
+        };
+        let line = if at == text.len() && !text.ends_with('\n') {
+            format!("\n{}", line.trim_end())
+        } else {
+            line
+        };
+
+        return (at..at, line);
+    }
+
+    // Before the first declaration, and its doc comment.
+    let first = outline
+        .items
+        .first()
+        .map(|(doc, at)| doc.unwrap_or(*at))
+        .and_then(|l| {
+            text.split_inclusive('\n')
+                .take(l)
+                .map(str::len)
+                .sum::<usize>()
+                .into()
+        });
+
+    match first {
+        Some(at) => (at..at, format!("{}\n", line)),
+        None if text.is_empty() => (0..0, line),
+        None if text.ends_with('\n') => (text.len()..text.len(), format!("\n{}", line)),
+        None => (text.len()..text.len(), format!("\n\n{}", line.trim_end())),
+    }
+}
+
 /// How many lines the parser may stop at, in turn, before `outline` gives
 /// up on a text.
 const ATTEMPTS: usize = 16;
@@ -1144,6 +1313,107 @@ fn pub main {}
             [None, Some("This.".to_string())]
         );
         assert_eq!(docs("fn a {}\n# Not this.\n\nfn b {}\n"), [None, None]);
+    }
+
+    #[test]
+    fn imports_being_typed() {
+        let module = |s: &[&str]| {
+            Some(ImportContext::Module(
+                s.iter().map(|s| s.to_string()).collect(),
+            ))
+        };
+
+        assert_eq!(import_context("import "), module(&[]));
+        assert_eq!(import_context("fn a {}\nimport std.fm"), module(&["std"]));
+        assert_eq!(import_context("import std.net.ht"), module(&["std", "net"]));
+        assert_eq!(
+            import_context("import std.stdio (Stdout, STDIN as IN, St"),
+            Some(ImportContext::Symbol(
+                "std.stdio".to_string(),
+                vec!["Stdout".to_string(), "STDIN".to_string()]
+            ))
+        );
+        assert_eq!(
+            import_context("import std.stdio (\n  Stdout,\n  "),
+            Some(ImportContext::Symbol(
+                "std.stdio".to_string(),
+                vec!["Stdout".to_string()]
+            ))
+        );
+        assert_eq!(import_context("import std.stdio (Stdout)\nfn a"), None);
+        assert_eq!(import_context("import std.stdio\nfn a"), None);
+        assert_eq!(import_context("import extern \"m"), None);
+        assert_eq!(import_context("  let import = 1\n  im"), None);
+        assert_eq!(import_context("import std.stdio if li"), None);
+    }
+
+    #[test]
+    fn imports_are_added_as_inko_fmt_orders_them() {
+        let edit = |text: &str, module: &str, symbol: &str| {
+            let (range, with) = import_edit(text, &parse(text).unwrap(), module, symbol);
+            let mut out = text.to_string();
+
+            out.replace_range(range, &with);
+            out
+        };
+        let main = "fn main {}\n";
+
+        // Into an existing list, in order, `self` first.
+        assert_eq!(
+            edit(
+                "import std.stdio (self, STDIN, Stdout)\n\n",
+                "std.stdio",
+                "Stderr"
+            ),
+            "import std.stdio (self, STDIN, Stderr, Stdout)\n\n"
+        );
+        assert_eq!(
+            edit("import std.stdio (Stdin)\n", "std.stdio", "Stdout"),
+            "import std.stdio (Stdin, Stdout)\n"
+        );
+        assert_eq!(
+            edit("import std.stdio (Stdout)\n", "std.stdio", "Stdin"),
+            "import std.stdio (Stdin, Stdout)\n"
+        );
+        // An import of the module alone keeps it.
+        assert_eq!(
+            edit("import std.stdio\n", "std.stdio", "Stdout"),
+            "import std.stdio (self, Stdout)\n"
+        );
+        // A new import, in the first group, by path.
+        assert_eq!(
+            edit(
+                "import std.fmt\nimport std.string (StringBuffer)\n\nfn main {}\n",
+                "std.stdio",
+                "Stdout"
+            ),
+            "import std.fmt\nimport std.stdio (Stdout)\nimport std.string (StringBuffer)\n\nfn main {}\n"
+        );
+        assert_eq!(
+            edit("import std.fmt\n\nfn main {}\n", "std.stdio", "Stdout"),
+            "import std.fmt\nimport std.stdio (Stdout)\n\nfn main {}\n"
+        );
+        assert_eq!(
+            edit("import std.stdio if linux\n", "std.stdio", "Stdout"),
+            "import std.stdio if linux\nimport std.stdio (Stdout)\n"
+        );
+        // None yet: before the first declaration and its doc comment.
+        assert_eq!(
+            edit(main, "std.stdio", "Stdout"),
+            "import std.stdio (Stdout)\n\nfn main {}\n"
+        );
+        assert_eq!(
+            edit(
+                "# The module.\n\n# Main.\nfn main {}\n",
+                "std.stdio",
+                "Stdout"
+            ),
+            "# The module.\n\nimport std.stdio (Stdout)\n\n# Main.\nfn main {}\n"
+        );
+        assert_eq!(
+            edit("", "std.stdio", "Stdout"),
+            "import std.stdio (Stdout)\n"
+        );
     }
 
     #[test]

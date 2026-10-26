@@ -106,7 +106,7 @@ Only what works:
     "positionEncoding": "utf-16",
     "textDocumentSync": {"openClose": true, "change": 2, "save": {"includeText": true}},
     "hoverProvider": true,
-    "completionProvider": {"triggerCharacters": ["."], "resolveProvider": false},
+    "completionProvider": {"triggerCharacters": [".", "@"], "resolveProvider": false},
     "definitionProvider": true,
     "typeDefinitionProvider": true,
     "referencesProvider": true,
@@ -270,8 +270,14 @@ What that gives for each desugared construct:
 
 ## `textDocument/completion`
 
-The members available after a `.`. `.` is the trigger character, and
-completion invoked by hand works too, after a `.` and any typed prefix.
+Three kinds: the members after a `.`, a name being typed (with symbols to
+import), and the modules and symbols of an `import`. `.` and `@` are the
+trigger characters; completion invoked by hand, or as a client asks while
+a name is typed, works too.
+
+### Members, after a `.`
+
+The members available after a `.` and any typed prefix.
 
 A buffer with nothing after a `.` doesn't parse. Cuttlebone therefore inserts
 an identifier at the cursor in its own copy of the document, so the
@@ -313,7 +319,82 @@ for `receiver.name`:
 - Methods that need a `mut` or owned receiver aren't listed on a `ref`
   receiver.
 
-The result is `null` when the cursor isn't after a `.`, or when there's no
+### Names
+
+Anywhere else in code a name is typed (or about to be), the names it could
+be, as the compiler resolves a name without a receiver: the same
+placeholder is inserted after what's typed (`am|` is checked as
+`amcuttlebone_completion_placeholder`), and the check says what's in scope
+there.
+
+```json
+{"isIncomplete": true, "items": [
+  {"label": "amount", "kind": 6, "detail": "let amount: Int", "sortText": "0amount", "labelDetails": {"description": "main"}},
+  {"label": "add", "kind": 2, "detail": "fn pub mut add(amount: Int)", "sortText": "1add", "labelDetails": {"description": "main"}},
+  {"label": "Counter", "kind": 7, "detail": "type Counter", "sortText": "2Counter", "labelDetails": {"description": "main"}},
+  {"label": "StringBuffer", "kind": 7, "detail": "type pub StringBuffer", "sortText": "3StringBuffer",
+   "labelDetails": {"description": "std.string"},
+   "additionalTextEdits": [{"range": {"start": {"line": 3, "character": 0}, "end": {"line": 3, "character": 0}},
+                            "newText": "import std.string (StringBuffer)\n"}]}
+]}
+```
+
+| Group (`sortText`'s first digit) | What | `kind` |
+|---|---|---|
+| 0 | The variables in scope at the position: a method's or closure's arguments in it, a `let`'s from after it to the end of its block, a `match` case's bindings in that case. The innermost of a name. | Variable (6) |
+| 1 | What the type of the method the position is in has, as `self` calls it without a receiver: an instance method's instance methods (and those of the traits it implements, private ones too), a static method's static methods, a module method's module's methods. | Method (2) |
+| 2 | What the module binds: its own types, traits, constants and methods, what it imports (modules, and symbols), and the prelude's (`Int`, `String`, `Array`, `Option`, `panic`, ...). | Class (7), Interface (8), Constant (21, or Value), Function (3), Module (9) |
+| 3 | Public types, traits, methods and constants of the modules the file can import but doesn't, whose names match what's typed (as [workspace symbols](#workspacesymbol) match), at most 100, each with the edit that imports it. Not while nothing's typed. | as above |
+
+- **After `@`**, the fields of the type of the method it's in, private
+  ones too, and nothing else (`isIncomplete` `false`).
+- **In a type's name** (a signature, a field's type, an annotation), only
+  types, traits, modules and the type parameters of the method it's in
+  and of its type (TypeParameter, 25, or Class).
+- **Never what's out of scope:** a variable declared after the position,
+  in another method, or in another closure or case; nothing private from
+  another module; no symbol whose name the module binds already (it'd
+  clash, or is there); nothing a module can't import: a project's
+  `test/` modules only from its tests, a dependency's only from the
+  project that requires it, by its name.
+- **The import edit** (`additionalTextEdits`) is as `inko fmt` orders
+  imports: into the module's import's symbol list, in order (`self`
+  first), if it has one; `(self, Name)` after an import of the module
+  alone; or else a new `import module (Name)` line in the first group of
+  imports, by path, or before the first declaration and its doc comment,
+  with a blank line after it. An import with build tags isn't added to.
+- `isIncomplete` is `true`: what to import depends on what's typed, so the
+  client asks again as more is.
+- `null` in a comment, a string, or anywhere else that isn't code.
+
+### In an `import`
+
+On a line starting with `import`, or in its symbol list over several
+lines, the answer comes at once from the [index](#workspacesymbol) of
+modules, with no check (so in code that doesn't type check or parse):
+
+- after `import ` and in the path, the next name of each module the file
+  can import (`import std.` lists `fmt`, `net`, ...), as Module (9), with
+  the module's name as `detail`
+- in the symbol list, `self` and the module's public types, traits,
+  methods and constants that aren't listed yet
+
+### In code being edited
+
+| Answer from | Members | Names |
+|---|---|---|
+| the documents as they are | yes | yes |
+| past an error in a declaration ([Errors in declarations](#errors-in-declarations)) | where the error can't matter | only if no declaration has an error (but the placeholder's own, a type that doesn't exist yet in a signature): any may bind another name, or none |
+| a repaired copy ([Answers in code being edited](#answers-in-code-being-edited)) | where the blank lines can't matter | the same, and only if every blank line is in a method's body: one outside may bind a name |
+| the last good check (`stale`) | never: items are inserted into the code | never |
+
+So names are answered while a method's body is typed (the unfinished line
+is blank in the copy, before the position), and not while a signature,
+an import or another declaration is unfinished, or has an error. The
+symbols to import and the `import` lines come from the text alone, as
+[document symbols](#textdocumentdocumentsymbol) do.
+
+The result is `null` when the position isn't code, or when there's no
 answer ([status](#status) says why). It's never a guess.
 
 ## `textDocument/definition`
@@ -1101,7 +1182,7 @@ two other checks, in this order:
 | Request | Answers from |
 |---|---|
 | hover, definition, type definition, document highlight, signature help, inlay hints | the documents as they are, or else a repaired copy, or else the last good check (`stale`) |
-| completion | the documents as they are, or else a repaired copy: its items are inserted into the code, so never stale |
+| completion | the documents as they are, or else a repaired copy: its items are inserted into the code, so never stale. Names only from a copy whose blank lines are in method bodies ([Completion](#in-code-being-edited)) |
 | document symbols | the text as it is, or else a copy with the lines in the way blank, from the syntax alone ([`textDocument/documentSymbol`](#textdocumentdocumentsymbol)) |
 | references | the documents as they are only: a rename relies on them, and a blank line may have a use |
 | diagnostics | the documents as they are, always |

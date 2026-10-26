@@ -131,10 +131,31 @@ pub struct Declared {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MembersAt {
-    /// The receiver's type.
+    /// The receiver's type. Empty for names.
     pub receiver: String,
+    /// The receiver's range, or for names, the position.
     pub receiver_range: Range,
     pub members: Vec<Member>,
+    /// For a name being typed rather than a member after a `.`: what
+    /// else it could be (`names_in`).
+    #[serde(default)]
+    pub names: Option<Names>,
+}
+
+/// A name being typed, for completion of names (`names_in`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Names {
+    /// What's typed of it before the position.
+    pub prefix: String,
+    /// Whether it's a field, after `@`.
+    pub field: bool,
+    /// Whether it's a type's name (in a signature, an annotation): only
+    /// types, traits, type parameters and modules.
+    pub types: bool,
+    /// Every name the module binds (its own symbols, its imports, the
+    /// prelude's) and every name in scope: a symbol imported as one of
+    /// these would clash, or is there already.
+    pub bound: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +178,13 @@ pub enum MemberKind {
     Field,
     Constant,
     Type,
+    /// A local variable or an argument.
+    Variable,
+    /// A module's method, by its name alone.
+    Function,
+    Trait,
+    Module,
+    TypeParameter,
 }
 
 impl MemberKind {
@@ -166,6 +194,11 @@ impl MemberKind {
             MemberKind::Field => "field",
             MemberKind::Constant => "constant",
             MemberKind::Type => "type",
+            MemberKind::Variable => "variable",
+            MemberKind::Function => "function",
+            MemberKind::Trait => "trait",
+            MemberKind::Module => "module",
+            MemberKind::TypeParameter => "type parameter",
         }
     }
 }
@@ -616,8 +649,265 @@ fn members_in(scope: &Scope) -> Result<Option<MembersAt>, Unavailable> {
             receiver: receiver_type,
             receiver_range: range(lines, &receiver.location),
             members,
+            names: None,
         }))
     }
+}
+
+/// What a name being typed at the position in a completion's copy (where
+/// `PLACEHOLDER` is) could be, as the compiler resolves names
+/// (`identifier` and `constant`, compiler/src/type_check/expressions.rs:2544-2772):
+///
+/// - after `@`, the fields of the type of the method it's in
+/// - otherwise, the variables in scope there (`Walker::visible`, the
+///   innermost of a name), the methods that the type of the method it's
+///   in has (`members` on its receiver, as `self` can call them: an
+///   instance method's instance methods, a static method's static ones, a
+///   module method's module's), and every symbol the module binds (its
+///   own types, traits, constants and methods, what it imports, the
+///   prelude's)
+/// - in a type's name, only types, traits, modules and the type
+///   parameters of the method it's in and its type
+///
+/// `None` if the position isn't a completion's placeholder, or follows a
+/// `.` (a member that didn't resolve).
+fn names_in(scope: &Scope) -> Result<Option<MembersAt>, Unavailable> {
+    let (db, walker, at) = (scope.db, scope.walker, scope.at);
+    let text = scope.checked.text(&scope.file);
+    let Some(offset) = Lines::new(&text).offset(at.line, at.column) else {
+        return Ok(None);
+    };
+
+    if !text[offset..].starts_with(PLACEHOLDER) {
+        return Ok(None);
+    }
+
+    let start = text[..offset]
+        .trim_end_matches(|c: char| c.is_alphanumeric() || c == '_')
+        .len();
+    let prefix = text[start..offset].to_string();
+    let before = text[..start].chars().next_back();
+
+    if before == Some('.') {
+        return Ok(None);
+    }
+
+    let field = before == Some('@');
+    // The name being typed is code: an expression or a type's name starts
+    // where it does, not a comment or a string.
+    let first = (
+        at.line,
+        at.column - prefix.chars().count() as u32 - u32::from(field),
+    );
+
+    if !walker
+        .out
+        .iter()
+        .map(|e| &e.location)
+        .chain(&walker.type_names)
+        .any(|l| (l.line_start, l.column_start) == first)
+    {
+        return Ok(None);
+    }
+
+    let here = (at.line, at.column);
+    let module = scope.module;
+    let own = module.name(db).to_string();
+    let method = walker
+        .methods
+        .iter()
+        .filter(|(l, _)| contains(l, at))
+        .max_by_key(|(l, _)| (l.line_start, l.column_start))
+        .map(|(_, id)| *id);
+    let types = !field && walker.type_names.iter().any(|l| contains(l, at));
+    let mut out: Vec<Member> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut add = |out: &mut Vec<Member>, m: Member| {
+        if !m.name.starts_with('$') && !m.name.contains(PLACEHOLDER) && seen.insert(m.name.clone())
+        {
+            out.push(m);
+        }
+    };
+
+    if field {
+        if let Some(id) = method
+            && let TypeEnum::TypeInstance(ins) = id.receiver_id(db)
+        {
+            let typ = ins.instance_of();
+
+            for f in typ.fields(db) {
+                let value = format_type(db, f.value_type(db));
+                let visibility = if f.is_public(db) { "pub " } else { "" };
+
+                add(
+                    &mut out,
+                    Member {
+                        name: f.name(db).clone(),
+                        kind: MemberKind::Field,
+                        signature: format!("let {}@{}: {}", visibility, f.name(db), value),
+                        typ: value,
+                        module: typ.module(db).name(db).to_string(),
+                    },
+                );
+            }
+        }
+
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+
+        return Ok(Some(MembersAt {
+            receiver: String::new(),
+            receiver_range: Range {
+                start: scope.lines.from_hir(at.line, at.column),
+                end: scope.lines.from_hir(at.line, at.column),
+            },
+            members: out,
+            names: Some(Names {
+                prefix,
+                field: true,
+                types: false,
+                bound: Vec::new(),
+            }),
+        }));
+    }
+
+    if !types {
+        // The innermost variable of each name, in scope here.
+        let mut variables: Vec<&crate::walker::Visible> = walker
+            .visible
+            .iter()
+            .filter(|v| v.from < here && here <= v.to)
+            .collect();
+
+        variables.sort_by_key(|v| std::cmp::Reverse(v.from));
+
+        for v in variables {
+            let typ = format_type(db, v.variable.value_type(db));
+            let name = v.variable.name(db).clone();
+
+            add(
+                &mut out,
+                Member {
+                    signature: format!("let {}: {}", name, typ),
+                    name,
+                    kind: MemberKind::Variable,
+                    typ,
+                    module: own.clone(),
+                },
+            );
+        }
+
+        if let Some(id) = method {
+            let receiver = id.receiver_id(db);
+
+            for m in members(db, id.receiver(db), receiver, module, true) {
+                if m.kind != MemberKind::Field {
+                    add(&mut out, m);
+                }
+            }
+        }
+    } else if let Some(id) = method {
+        let mut params = id.type_parameters(db);
+
+        match id.receiver_id(db) {
+            TypeEnum::TypeInstance(ins) => params.extend(ins.instance_of().type_parameters(db)),
+            TypeEnum::Type(t) => params.extend(t.type_parameters(db)),
+            TypeEnum::TraitInstance(ins) => params.extend(ins.instance_of().type_parameters(db)),
+            _ => {}
+        }
+
+        for p in params {
+            let name = p.name(db).clone();
+
+            add(
+                &mut out,
+                Member {
+                    signature: name.clone(),
+                    typ: name.clone(),
+                    name,
+                    kind: MemberKind::TypeParameter,
+                    module: own.clone(),
+                },
+            );
+        }
+    }
+
+    let mut bound: Vec<String> = Vec::new();
+
+    for (name, symbol) in module.symbols(db) {
+        bound.push(name.clone());
+
+        let (kind, signature, typ, owner) = match symbol {
+            Symbol::Type(t) => {
+                let typ = format_type(db, t);
+
+                (MemberKind::Type, format!("type {}", typ), typ, t.module(db))
+            }
+            Symbol::Trait(t) => {
+                let typ = format_type(db, t);
+
+                (
+                    MemberKind::Trait,
+                    format!("trait {}", typ),
+                    typ,
+                    t.module(db),
+                )
+            }
+            Symbol::Module(m) => {
+                let name = m.name(db).to_string();
+
+                (MemberKind::Module, format!("import {}", name), name, m)
+            }
+            Symbol::Constant(c) if !types => {
+                let typ = format_type(db, c.value_type(db));
+                let visibility = if c.is_public(db) { "pub " } else { "" };
+
+                (
+                    MemberKind::Constant,
+                    format!("let {}{}: {}", visibility, name, typ),
+                    typ,
+                    c.module(db),
+                )
+            }
+            Symbol::Method(m) if !types => (
+                MemberKind::Function,
+                TypeFormatter::new(db, None, None).format(m),
+                format_type(db, m.return_type(db)),
+                m.module(db),
+            ),
+            _ => continue,
+        };
+
+        add(
+            &mut out,
+            Member {
+                name,
+                kind,
+                signature,
+                typ,
+                module: owner.name(db).to_string(),
+            },
+        );
+    }
+
+    bound.extend(out.iter().map(|m| m.name.clone()));
+    bound.sort();
+    bound.dedup();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(Some(MembersAt {
+        receiver: String::new(),
+        receiver_range: Range {
+            start: scope.lines.from_hir(at.line, at.column),
+            end: scope.lines.from_hir(at.line, at.column),
+        },
+        members: out,
+        names: Some(Names {
+            prefix,
+            field: false,
+            types,
+            bound,
+        }),
+    }))
 }
 
 /// Where the symbol at a position is declared: a method (for a call, the
@@ -1124,7 +1414,7 @@ fn edited_question(
                 copy.insert_str(offset, PLACEHOLDER);
                 Some(copy)
             }),
-            Question::Members,
+            Question::Complete,
         ),
         _ => (
             edited(&request, |text, offset| {
@@ -1699,7 +1989,12 @@ fn inspect(question: Question, scope: &Scope) -> Result<Option<Reply>, Unavailab
     Ok(match question {
         Question::Type => type_at_in(scope)?.map(Reply::Type),
         Question::Hover => hover_in(scope)?.map(Reply::Hover),
-        Question::Members | Question::Complete => members_in(scope)?.map(Reply::Members),
+        Question::Members => members_in(scope)?.map(Reply::Members),
+        Question::Complete => match members_in(scope)? {
+            Some(members) => Some(members),
+            None => names_in(scope)?,
+        }
+        .map(Reply::Members),
         Question::Definition => definition_in(scope)?.map(Reply::Places),
         Question::TypeDefinition => type_definition_in(scope)?.map(Reply::Place),
         Question::References {
@@ -1904,6 +2199,21 @@ fn analyze(
             .declaration_errors()
             .ok_or_else(declaration_errors)?
             .to_vec();
+        // A completion's placeholder may be a type that doesn't exist, in
+        // a signature, which is no error in the code.
+        let placeholders: Vec<std::ops::Range<usize>> = text
+            .match_indices(PLACEHOLDER)
+            .map(|(i, p)| i..i + p.len())
+            .collect();
+
+        errors.retain(|(path, e, _)| {
+            *path != file
+                || !e.old.as_ref().is_some_and(|old| {
+                    placeholders
+                        .iter()
+                        .any(|p| old.start < p.end && p.start < old.end)
+                })
+        });
 
         errors.extend(changed.ok_or_else(declaration_errors)?);
 
@@ -2880,7 +3190,17 @@ fn through(
     scope: &Scope,
 ) -> Found {
     if !matches!(question, Question::InlayHints { .. }) && !guard.safe(offset) {
-        return None;
+        // A type's name typed in a signature: the method's body doesn't
+        // type with the unfinished type, but the types in scope don't
+        // depend on its unit.
+        return match inspect(question, scope) {
+            Ok(Some(Reply::Members(m)))
+                if m.names.as_ref().is_some_and(|n| n.types) && guard.bodies_only() =>
+            {
+                guard.reply(Some(Reply::Members(m))).map(Ok)
+            }
+            _ => None,
+        };
     }
 
     let reply = inspect(question, scope).ok()?;
@@ -2889,6 +3209,10 @@ fn through(
         (Question::InlayHints { end }, Some(Reply::Hints(hints))) => {
             guard.hints(hints, position, end).map(|h| Ok(Some(h)))
         }
+        // Names list what every declaration in scope binds: any change
+        // outside a method's body (or error in a declaration) may bind
+        // another, or none.
+        (_, Some(Reply::Members(m))) if m.names.is_some() && !guard.bodies_only() => None,
         (_, reply) => guard.reply(reply).map(Ok),
     }
 }
@@ -3006,6 +3330,12 @@ impl<'a> Guard<'a> {
             limits: RefCell::new(HashMap::new()),
             encoding,
         })
+    }
+
+    /// Whether every change since the check, and every error in it, is
+    /// inside a method's body: no declaration is different.
+    fn bodies_only(&self) -> bool {
+        self.all.iter().all(|(e, _)| e.body)
     }
 
     /// Whether the unit the old text's byte `offset` is in means what it

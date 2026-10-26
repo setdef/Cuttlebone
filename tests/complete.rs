@@ -132,7 +132,8 @@ fn where_nothing_has_members_there_is_no_result() {
     let p = Project::new("members");
     let text = p.read(MAIN);
 
-    assert_eq!(complete_in(&p, &text, "# Receivers", 0), Ok(None));
+    // In a comment.
+    assert_eq!(complete_in(&p, &text, "# Receivers", 3), Ok(None));
 }
 
 #[test]

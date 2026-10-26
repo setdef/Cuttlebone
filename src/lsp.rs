@@ -21,8 +21,8 @@ use crate::edits::{Fallback, Snapshots};
 use crate::index::{self, Index};
 use crate::position::{Encoding, Position, Positions, byte_offset};
 use crate::query::{
-    self, Access, Answer, Diagnostics, HintKind, HoverAt, MemberKind, MembersAt, Place, Session,
-    Source, Unavailable,
+    self, Access, Answer, Diagnostics, HintKind, HoverAt, MemberKind, MembersAt, Names, Place,
+    Session, Source, Unavailable,
 };
 use crate::syntax::{self, Declaration, Kind, Outline};
 use crate::worker::{Check, DEADLINE_MARGIN, Finished, Job, Outcome, Query, Worker};
@@ -260,6 +260,8 @@ struct Support {
     /// `CompletionItemKind.Constant`, which isn't one of the kinds every
     /// client has (Text to Reference).
     constant_kind: bool,
+    /// `CompletionItemKind.TypeParameter`, the same.
+    type_parameter_kind: bool,
     /// Parameter labels as offsets into the signature's label.
     label_offsets: bool,
     /// `SignatureInformation.activeParameter`.
@@ -300,6 +302,10 @@ impl Support {
             constant_kind: lists(
                 "/textDocument/completion/completionItemKind/valueSet",
                 json!(lsp::CompletionItemKind::CONSTANT),
+            ),
+            type_parameter_kind: lists(
+                "/textDocument/completion/completionItemKind/valueSet",
+                json!(lsp::CompletionItemKind::TYPE_PARAMETER),
             ),
             label_offsets: yes(&format!(
                 "{}/parameterInformation/labelOffsetSupport",
@@ -416,7 +422,7 @@ impl Server {
                 )),
                 hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
                 completion_provider: Some(lsp::CompletionOptions {
-                    trigger_characters: Some(vec![".".to_string()]),
+                    trigger_characters: Some(vec![".".to_string(), "@".to_string()]),
                     resolve_provider: Some(false),
                     ..Default::default()
                 }),
@@ -533,7 +539,13 @@ impl Server {
 
         let (method, query) = match request.method.as_str() {
             "textDocument/hover" => ("textDocument/hover", Query::Type),
-            "textDocument/completion" => ("textDocument/completion", Query::Complete),
+            "textDocument/completion" => {
+                if self.import_completion(connection, &request) {
+                    return;
+                }
+
+                ("textDocument/completion", Query::Complete)
+            }
             "textDocument/definition" => ("textDocument/definition", Query::Definition),
             "textDocument/typeDefinition" => ("textDocument/typeDefinition", Query::TypeDefinition),
             "textDocument/signatureHelp" => ("textDocument/signatureHelp", Query::SignatureHelp),
@@ -1368,8 +1380,17 @@ impl Server {
             }
             Outcome::Members(answer) => {
                 let status = status_of(&answer);
+                let names = match &answer.result {
+                    Ok(Some(m)) => m.names.clone(),
+                    _ => None,
+                };
+                let mut result = completion(answer.result, self.support);
 
-                (completion(answer.result, self.support), status)
+                if let Some(names) = names {
+                    self.imports(&pending, &names, &mut result);
+                }
+
+                (result, status)
             }
             Outcome::Place(answer) => {
                 let status = status_of(&answer);
@@ -1540,6 +1561,227 @@ impl Server {
         reply(connection, pending.id, result);
     }
 
+    /// The text a query is about: its file's, as the documents were when
+    /// it arrived (`Frozen`), or are, or on disk. The file canonical.
+    fn query_text(&self, pending: &Pending) -> Option<(PathBuf, String)> {
+        let file = self.file(pending).ok()?;
+        let canonical = file.canonicalize().ok()?;
+        let text = match &pending.frozen {
+            Some(f) => f.contents.get(&file).cloned(),
+            None => self.documents.get(&pending.uri).map(|d| d.text.clone()),
+        };
+
+        Some((
+            canonical.clone(),
+            text.or_else(|| std::fs::read_to_string(&canonical).ok())?,
+        ))
+    }
+
+    /// The index (`index`), up to date with the files and the open
+    /// documents.
+    fn refreshed_index(&mut self) -> &Index {
+        let roots = index::roots(&self.session.std, &self.session.projects);
+        let open: HashMap<PathBuf, String> = self
+            .documents
+            .values()
+            .filter_map(|d| Some((d.path.clone()?.canonicalize().ok()?, d.text.clone())))
+            .collect();
+
+        self.index.refresh(&roots, &open);
+        &self.index
+    }
+
+    /// Adds to a completion of names (`query::Names`) the public types,
+    /// traits, methods and constants of the modules the file can import
+    /// (`index::Module::importable_from`) but doesn't, whose names match
+    /// what's typed (`index::matches`), as the best `IMPORTABLE`, each
+    /// with the edit that imports it (`syntax::import_edit`). None while
+    /// nothing's typed, after `@`, or if the file doesn't parse, nor any
+    /// copy of it, so there's nowhere certain to put an import.
+    fn imports(&mut self, pending: &Pending, names: &Names, result: &mut Value) {
+        if names.field || names.prefix.is_empty() || !result["items"].is_array() {
+            return;
+        }
+
+        let Some((file, text)) = self.query_text(pending) else {
+            return;
+        };
+        let Some(outline) = query::guarded(|| syntax::outline(&text)).ok().flatten() else {
+            return;
+        };
+        let (support, encoding) = (self.support, self.encoding);
+        let index = self.refreshed_index();
+        let mut found: Vec<(index::Score, &str, &Declaration)> = Vec::new();
+
+        for module in index.modules() {
+            if module.file == file || !module.importable_from(&file) {
+                continue;
+            }
+
+            let Some(o) = &module.outline else {
+                continue;
+            };
+
+            for d in &o.declarations {
+                let kind_fits = match names.types {
+                    true => matches!(d.kind, Kind::Type | Kind::Enum | Kind::Trait),
+                    false => d.kind.importable(),
+                };
+
+                if !d.public || !kind_fits || names.bound.contains(&d.name) {
+                    continue;
+                }
+
+                if let Some(score) = index::matches(&names.prefix, &d.name) {
+                    found.push((score, &module.name, d));
+                }
+            }
+        }
+
+        found.sort_by(|a, b| (a.0, &a.2.name, a.1).cmp(&(b.0, &b.2.name, b.1)));
+        found.truncate(IMPORTABLE);
+
+        let positions = Positions::new(&text, encoding);
+        let items: Vec<Value> = found
+            .into_iter()
+            .map(|(_, module, d)| {
+                let (range, with) = syntax::import_edit(&text, &outline, module, &d.name);
+                let mut item = json!({
+                    "label": d.name,
+                    "kind": completion_kind(declaration_kind(d.kind), support),
+                    "detail": d.detail(),
+                    "sortText": format!("3{}", d.name),
+                    "additionalTextEdits": [{
+                        "range": {
+                            "start": lsp_position(&positions, range.start),
+                            "end": lsp_position(&positions, range.end),
+                        },
+                        "newText": with,
+                    }],
+                });
+
+                if support.label_details {
+                    item["labelDetails"] = json!({ "description": module });
+                }
+
+                item
+            })
+            .collect();
+
+        result["items"].as_array_mut().unwrap().extend(items);
+    }
+
+    /// Completion in an `import` (`syntax::import_context`), answered at
+    /// once from the index, with no check: the next name of the modules
+    /// the file can import, or in a symbol list, the module's public
+    /// types, traits, methods and constants not listed yet, and `self`.
+    /// `false` if the position isn't in an import.
+    fn import_completion(&mut self, connection: &Connection, request: &Request) -> bool {
+        let start = Instant::now();
+        let Ok(params) =
+            serde_json::from_value::<lsp::TextDocumentPositionParams>(request.params.clone())
+        else {
+            return false;
+        };
+        let uri = params.text_document.uri;
+        let Some(file) = uri.to_file_path().ok().and_then(|p| p.canonicalize().ok()) else {
+            return false;
+        };
+        let text = match self.documents.get(&uri) {
+            Some(d) => d.text.clone(),
+            None => match std::fs::read_to_string(&file) {
+                Ok(t) => t,
+                Err(_) => return false,
+            },
+        };
+        let position = Position {
+            line: params.position.line,
+            character: params.position.character,
+        };
+        let Some(offset) = byte_offset(&text, position, self.encoding) else {
+            return false;
+        };
+        let Some(context) = syntax::import_context(&text[..offset]) else {
+            return false;
+        };
+        let support = self.support;
+        let index = self.refreshed_index();
+        let importable: Vec<&index::Module> = index
+            .modules()
+            .into_iter()
+            .filter(|m| m.file != file && m.importable_from(&file))
+            .collect();
+        let mut items: Vec<Value> = Vec::new();
+
+        match context {
+            syntax::ImportContext::Module(typed) => {
+                let mut seen = HashSet::new();
+
+                for m in &importable {
+                    let path: Vec<&str> = m.name.split('.').collect();
+
+                    if path.len() <= typed.len()
+                        || !path.iter().zip(&typed).all(|(a, b)| a == b)
+                        || !seen.insert(path[typed.len()])
+                    {
+                        continue;
+                    }
+
+                    let name = path[..=typed.len()].join(".");
+
+                    items.push(json!({
+                        "label": path[typed.len()],
+                        "kind": lsp::CompletionItemKind::MODULE,
+                        "detail": name,
+                    }));
+                }
+            }
+            syntax::ImportContext::Symbol(module, listed) => {
+                if let Some(m) = importable.iter().find(|m| m.name == module) {
+                    if !listed.iter().any(|l| l == "self") {
+                        items.push(json!({
+                            "label": "self",
+                            "kind": lsp::CompletionItemKind::MODULE,
+                            "detail": module,
+                        }));
+                    }
+
+                    for d in m.outline.iter().flat_map(|o| &o.declarations) {
+                        if d.public && d.kind.importable() && !listed.contains(&d.name) {
+                            let mut item = json!({
+                                "label": d.name,
+                                "kind": completion_kind(declaration_kind(d.kind), support),
+                                "detail": d.detail(),
+                            });
+
+                            if support.label_details {
+                                item["labelDetails"] = json!({ "description": module });
+                            }
+
+                            items.push(item);
+                        }
+                    }
+                }
+            }
+        }
+
+        items.sort_by(|a, b| a["label"].as_str().cmp(&b["label"].as_str()));
+        self.syntax_status(
+            connection,
+            &request.id,
+            "textDocument/completion",
+            Some(&uri),
+            Ok(false),
+            start.elapsed(),
+        );
+        reply(
+            connection,
+            request.id.clone(),
+            json!({ "isIncomplete": false, "items": items }),
+        );
+        true
+    }
+
     /// `textDocument/documentSymbol`, answered at once from the document's
     /// text alone (`syntax::outline`): no check, so it answers in code that
     /// doesn't type check, and, from a copy with lines blank, in code that
@@ -1617,14 +1859,7 @@ impl Server {
                 );
             }
         };
-        let roots = index::roots(&self.session.std, &self.session.projects);
-        let open: HashMap<PathBuf, String> = self
-            .documents
-            .values()
-            .filter_map(|d| Some((d.path.clone()?.canonicalize().ok()?, d.text.clone())))
-            .collect();
-
-        self.index.refresh(&roots, &open);
+        self.refreshed_index();
 
         let kinds = Support {
             symbol_kinds: self.support.workspace_symbol_kinds,
@@ -1837,18 +2072,16 @@ fn completion(result: Result<Option<MembersAt>, Unavailable>, support: Support) 
     let Ok(Some(members)) = result else {
         return Value::Null;
     };
+    // Names complete as they're typed, and the symbols to import depend on
+    // what's typed so far, so the client asks again. Members and fields
+    // are all there are.
+    let incomplete = members.names.as_ref().is_some_and(|n| !n.field);
+    let names = members.names.is_some();
     let items = members
         .members
         .into_iter()
         .map(|m| lsp::CompletionItem {
-            kind: Some(match m.kind {
-                MemberKind::Method => lsp::CompletionItemKind::METHOD,
-                MemberKind::Field => lsp::CompletionItemKind::FIELD,
-                MemberKind::Constant if support.constant_kind => lsp::CompletionItemKind::CONSTANT,
-                // The nearest of the kinds every client has.
-                MemberKind::Constant => lsp::CompletionItemKind::VALUE,
-                MemberKind::Type => lsp::CompletionItemKind::CLASS,
-            }),
+            kind: Some(completion_kind(m.kind, support)),
             detail: Some(m.signature),
             label_details: support
                 .label_details
@@ -1856,16 +2089,59 @@ fn completion(result: Result<Option<MembersAt>, Unavailable>, support: Support) 
                     detail: None,
                     description: Some(m.module),
                 }),
+            // Names: variables first, then what the type of the method
+            // has, then what the module binds, then what it doesn't yet.
+            sort_text: names.then(|| {
+                let group = match m.kind {
+                    MemberKind::Variable => 0,
+                    MemberKind::Method | MemberKind::Field | MemberKind::TypeParameter => 1,
+                    _ => 2,
+                };
+
+                format!("{}{}", group, m.name)
+            }),
             label: m.name,
             ..Default::default()
         })
         .collect();
 
     serde_json::to_value(lsp::CompletionList {
-        is_incomplete: false,
+        is_incomplete: incomplete,
         items,
     })
     .unwrap()
+}
+
+/// What LSP calls a completion of a kind. A client without the kinds past
+/// Reference (18) gets the nearest it has: Value for a constant, Class for
+/// a type parameter.
+fn completion_kind(kind: MemberKind, support: Support) -> lsp::CompletionItemKind {
+    match kind {
+        MemberKind::Method => lsp::CompletionItemKind::METHOD,
+        MemberKind::Field => lsp::CompletionItemKind::FIELD,
+        MemberKind::Constant if support.constant_kind => lsp::CompletionItemKind::CONSTANT,
+        // The nearest of the kinds every client has.
+        MemberKind::Constant => lsp::CompletionItemKind::VALUE,
+        MemberKind::Type => lsp::CompletionItemKind::CLASS,
+        MemberKind::Variable => lsp::CompletionItemKind::VARIABLE,
+        MemberKind::Function => lsp::CompletionItemKind::FUNCTION,
+        MemberKind::Trait => lsp::CompletionItemKind::INTERFACE,
+        MemberKind::Module => lsp::CompletionItemKind::MODULE,
+        MemberKind::TypeParameter if support.type_parameter_kind => {
+            lsp::CompletionItemKind::TYPE_PARAMETER
+        }
+        MemberKind::TypeParameter => lsp::CompletionItemKind::CLASS,
+    }
+}
+
+/// The completion kind of a declaration that can be imported.
+fn declaration_kind(kind: Kind) -> MemberKind {
+    match kind {
+        Kind::Trait => MemberKind::Trait,
+        Kind::ModuleMethod => MemberKind::Function,
+        Kind::Constant => MemberKind::Constant,
+        _ => MemberKind::Type,
+    }
 }
 
 /// A signature as `SignatureHelp`, with what the client supports: each
@@ -1920,6 +2196,10 @@ fn slice_units(text: &str, start: u32, end: u32, encoding: Encoding) -> String {
 
     out
 }
+
+/// How many symbols to import a completion of names has at most, the best
+/// matches.
+const IMPORTABLE: usize = 100;
 
 /// How many workspace symbols an answer has at most, the best matches.
 const WORKSPACE_SYMBOLS: usize = 500;

@@ -237,6 +237,41 @@ fn hover_in_the_largest_std_module_is_fast_enough() {
     assert!(median < max, "median {:?} exceeds {:?}", median, max);
 }
 
+/// Completion of a name on a project that imports all of std, with the
+/// symbols of every module to import that match it: a check of the
+/// document, and the index read before.
+#[test]
+fn completion_of_names_on_a_std_sized_project_is_fast_enough() {
+    let _shared = shared();
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let typed = text.replacen("    let doubled", "    Stri\n    let doubled", 1);
+    let mut client = uncached(&root, QUERIES_ONLY.clone());
+
+    client.open(&file, &typed);
+
+    let (line, character) = at(&typed, "    Stri\n", 8, false);
+    let times: Vec<_> = (0..RUNS)
+        .map(|_| {
+            let start = Instant::now();
+            let (_, response) = client.complete(&file, line, character);
+            let items = response["result"]["items"].as_array().unwrap();
+
+            assert!(items.iter().any(|i| i["label"] == "value"));
+            assert!(items.iter().any(|i| i.get("additionalTextEdits").is_some()));
+            start.elapsed()
+        })
+        .collect();
+    let median = median(times.clone());
+
+    eprintln!(
+        "completion of a name on a std-sized project: {:?} (all: {:?})",
+        median, times
+    );
+    let max = limit(LIMIT);
+    assert!(median < max, "median {:?} exceeds {:?}", median, max);
+}
+
 /// How long document symbols may take for the largest std module: no
 /// check, only parsing, and for text that doesn't parse, parsing copies
 /// with lines blank until one does.

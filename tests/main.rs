@@ -27,6 +27,7 @@ mod inlay;
 mod lsp;
 mod manifest;
 mod members;
+mod names;
 mod navigation;
 mod overlay;
 mod panic;

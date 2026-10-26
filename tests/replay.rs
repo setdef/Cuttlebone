@@ -15,6 +15,9 @@
 //! between that edit and the end are asked about, and lists (highlights,
 //! hints) are compared on that text only.
 //!
+//! Completion is asked after a `.` and at the end of a name, as one is
+//! typed (`completion, names`).
+//!
 //! Document symbols, from the text alone, are compared the same way after
 //! every edit: each symbol given mid-edit, whose name is in text that
 //! didn't change, must be one of the final text's, with the same kind,
@@ -427,6 +430,7 @@ const REQUESTS: &[&str] = &[
     "definition",
     "typeDefinition",
     "completion",
+    "completion, names",
     "signatureHelp",
     "inlayHint",
     "inlayHint, whole file",
@@ -588,10 +592,15 @@ fn is_ident(c: char) -> bool {
 /// (for completion) and after a `(` or `, ` (for signature help). Only
 /// those whose text is unchanged at the end (`changes`), spread over the
 /// file, with every one near the edit at `near`.
-fn positions(text: &str, changes: &Changes, near: usize) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+fn positions(
+    text: &str,
+    changes: &Changes,
+    near: usize,
+) -> (Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>) {
     let mut names = Vec::new();
     let mut dots = Vec::new();
     let mut calls = Vec::new();
+    let mut ends = Vec::new();
     let mut previous = '\n';
 
     for (i, c) in text.char_indices() {
@@ -599,6 +608,19 @@ fn positions(text: &str, changes: &Changes, near: usize) -> (Vec<usize>, Vec<usi
 
         if unchanged && (is_ident(c) || c == '@') && !is_ident(previous) && previous != '@' {
             names.push(i);
+        }
+
+        // Right after a name, not after a `.`'s: as a name is typed.
+        if unchanged
+            && is_ident(previous)
+            && !is_ident(c)
+            && changes.new_range(i - previous.len_utf8()..i).is_some()
+        {
+            let start = text[..i].trim_end_matches(is_ident).len();
+
+            if !text[..start].ends_with('.') {
+                ends.push(i);
+            }
         }
 
         if unchanged && previous == '.' && is_ident(c) {
@@ -631,6 +653,7 @@ fn positions(text: &str, changes: &Changes, near: usize) -> (Vec<usize>, Vec<usi
         spread(names, POSITIONS),
         spread(dots, EDITED_POSITIONS),
         spread(calls, EDITED_POSITIONS),
+        spread(ends, EDITED_POSITIONS),
     )
 }
 
@@ -994,7 +1017,7 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
         };
         let changes = &mapping.files[file].2;
         let near = if &edit.file == file { edit.start } else { 0 };
-        let (names, dots, calls) = positions(&now, changes, near);
+        let (names, dots, calls, ends) = positions(&now, changes, near);
         let at = |byte: usize| position_at(&now, byte, ENCODING);
         let mut questions: Vec<(Question, Position)> = Vec::new();
         let mut lines = Vec::new();
@@ -1054,6 +1077,7 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
 
         if step % EVERY == 0 {
             questions.extend(dots.iter().map(|b| (Question::Complete, at(*b))));
+            questions.extend(ends.iter().map(|b| (Question::Complete, at(*b))));
             questions.extend(calls.iter().map(|b| (Question::SignatureHelp, at(*b))));
         }
 
@@ -1108,6 +1132,11 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
                 step: mappings.len(),
                 request: if whole {
                     "inlayHint, whole file"
+                } else if question == Question::Complete
+                    && !position::byte_offset(&now, p, ENCODING)
+                        .is_some_and(|b| now[..b].trim_end_matches(is_ident).ends_with('.'))
+                {
+                    "completion, names"
                 } else {
                     request_name(question)
                 },
@@ -1334,6 +1363,7 @@ const SAMPLE_COVERAGE: &[(&str, usize)] = &[
     ("definition", 1505),
     ("typeDefinition", 1492),
     ("completion", 19),
+    ("completion, names", 41),
     ("signatureHelp", 41),
     ("inlayHint", 770),
     ("inlayHint, whole file", 52),
@@ -1346,6 +1376,7 @@ const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("definition", 1439),
     ("typeDefinition", 1426),
     ("completion", 19),
+    ("completion, names", 41),
     ("signatureHelp", 41),
     ("inlayHint", 723),
     ("inlayHint, whole file", 49),
@@ -1358,6 +1389,7 @@ const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("definition", 1447),
     ("typeDefinition", 1434),
     ("completion", 19),
+    ("completion, names", 39),
     ("signatureHelp", 41),
     ("inlayHint", 747),
     ("inlayHint, whole file", 52),
@@ -1371,6 +1403,7 @@ const COVERAGE: &[(&str, usize)] = &[
     ("definition", 12311),
     ("typeDefinition", 11990),
     ("completion", 115),
+    ("completion, names", 265),
     ("signatureHelp", 382),
     ("inlayHint", 6652),
     ("inlayHint, whole file", 483),
@@ -1386,6 +1419,7 @@ const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("definition", 10729),
     ("typeDefinition", 10408),
     ("completion", 109),
+    ("completion, names", 214),
     ("signatureHelp", 311),
     ("inlayHint", 5792),
     ("inlayHint, whole file", 386),
@@ -1400,6 +1434,7 @@ const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("definition", 10217),
     ("typeDefinition", 9896),
     ("completion", 93),
+    ("completion, names", 148),
     ("signatureHelp", 298),
     ("inlayHint", 5831),
     ("inlayHint, whole file", 483),
