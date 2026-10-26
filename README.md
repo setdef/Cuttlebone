@@ -48,6 +48,8 @@ Reports, in docs/history/:
 - [MILESTONE-11.md](docs/history/MILESTONE-11.md): a license, a release
   index, and a client's requests (ids for declaration errors, missing
   modules, compound assignments, saves, references outside the project).
+- [MILESTONE-12.md](docs/history/MILESTONE-12.md): documentation in
+  hover, document and workspace symbols, and completion of names.
 
 Each milestone has its own version; what changed in each:
 [CHANGELOG.md](CHANGELOG.md).

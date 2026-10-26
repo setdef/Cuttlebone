@@ -316,7 +316,7 @@ fn document_symbols_of_the_largest_std_module_are_fast_enough() {
     ));
 
     eprintln!(
-        "document symbols of std.string: {:?}, with a line that doesn't parse: {:?}",
+        "document symbols of std.net.http.server: {:?}, with a line that doesn't parse: {:?}",
         parsed, repaired
     );
 
