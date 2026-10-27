@@ -7,6 +7,7 @@
 //! without the rest of the tests loading the machine.
 mod common;
 
+mod actions;
 mod broken;
 mod cache;
 mod citations;

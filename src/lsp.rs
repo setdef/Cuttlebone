@@ -216,6 +216,9 @@ struct Pending {
     ready: Instant,
     /// The documents it's about, if they changed since it arrived.
     frozen: Option<Frozen>,
+    /// For code actions: the imports the index offers for the names the
+    /// request's diagnostics say are undefined.
+    imports: Vec<query::ImportFix>,
 }
 
 /// The documents as they were when a query arrived, kept for it when an
@@ -283,6 +286,11 @@ struct Support {
     import_folds: bool,
     /// The most folding ranges the client wants, if it says.
     folding_limit: Option<usize>,
+    /// Code actions as literals (`codeActionLiteralSupport`), rather than
+    /// commands, which Cuttlebone has none of.
+    code_actions: bool,
+    /// `CodeAction.isPreferred`.
+    preferred_actions: bool,
 }
 
 impl Support {
@@ -345,6 +353,8 @@ impl Support {
             folding_limit: at("/textDocument/foldingRange/rangeLimit")
                 .as_u64()
                 .map(|n| n as usize),
+            code_actions: at("/textDocument/codeAction/codeActionLiteralSupport").is_object(),
+            preferred_actions: yes("/textDocument/codeAction/isPreferredSupport"),
         }
     }
 }
@@ -450,6 +460,12 @@ impl Server {
                 document_symbol_provider: Some(lsp::OneOf::Left(true)),
                 folding_range_provider: Some(lsp::FoldingRangeProviderCapability::Simple(true)),
                 document_formatting_provider: Some(lsp::OneOf::Left(true)),
+                code_action_provider: self.support.code_actions.then(|| {
+                    lsp::CodeActionProviderCapability::Options(lsp::CodeActionOptions {
+                        code_action_kinds: Some(vec![lsp::CodeActionKind::QUICKFIX]),
+                        ..Default::default()
+                    })
+                }),
                 workspace_symbol_provider: Some(lsp::OneOf::Left(true)),
                 signature_help_provider: Some(lsp::SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
@@ -595,6 +611,21 @@ impl Server {
             "textDocument/documentSymbol" => return self.document_symbols(connection, request),
             "textDocument/foldingRange" => return self.folding_ranges(connection, request),
             "textDocument/formatting" => return self.formatting(connection, request),
+            "textDocument/codeAction" => {
+                if !self.code_action_wanted(connection, &request) {
+                    return;
+                }
+
+                (
+                    "textDocument/codeAction",
+                    Query::Fixes {
+                        end: Position {
+                            line: json_u32(&request.params, "/range/end/line"),
+                            character: json_u32(&request.params, "/range/end/character"),
+                        },
+                    },
+                )
+            }
             "workspace/symbol" => return self.workspace_symbols(connection, request),
             "shutdown" => {
                 self.shut_down = true;
@@ -637,6 +668,11 @@ impl Server {
             }
         };
         let uri = params.text_document.uri;
+        let imports = if method == "textDocument/codeAction" {
+            self.import_fixes(&uri, &request.params)
+        } else {
+            Vec::new()
+        };
         let ready = self
             .documents
             .get(&uri)
@@ -656,6 +692,7 @@ impl Server {
             },
             ready,
             frozen: None,
+            imports,
         });
     }
 
@@ -949,6 +986,7 @@ impl Server {
         self.checks += 1;
 
         let job = Job {
+            imports: Vec::new(),
             query: Query::Diagnostics,
             session: self.session.clone(),
             request: query::Request {
@@ -993,22 +1031,9 @@ impl Server {
         let mut files: BTreeMap<PathBuf, Vec<lsp::Diagnostic>> = BTreeMap::new();
 
         for d in diagnostics.diagnostics {
-            let unnecessary = d.id == "unused-symbol" || d.id == "unreachable";
+            let lsp = self.lsp_diagnostic(&d);
 
-            files.entry(d.file).or_default().push(lsp::Diagnostic {
-                range: range(d.range),
-                severity: Some(if d.error {
-                    lsp::DiagnosticSeverity::ERROR
-                } else {
-                    lsp::DiagnosticSeverity::WARNING
-                }),
-                code: Some(lsp::NumberOrString::String(d.id)),
-                source: Some("cuttlebone".to_string()),
-                message: d.message,
-                tags: (unnecessary && self.support.unnecessary_tag)
-                    .then(|| vec![lsp::DiagnosticTag::UNNECESSARY]),
-                ..Default::default()
-            });
+            files.entry(d.file).or_default().push(lsp);
         }
 
         let mut published = HashSet::new();
@@ -1036,6 +1061,148 @@ impl Server {
         };
 
         self.diagnostics_status(connection, &target, state, elapsed);
+    }
+
+    /// A diagnostic as it's published.
+    fn lsp_diagnostic(&self, d: &query::Diagnostic) -> lsp::Diagnostic {
+        let unnecessary = d.id == "unused-symbol" || d.id == "unreachable";
+
+        lsp::Diagnostic {
+            range: range(d.range),
+            severity: Some(if d.error {
+                lsp::DiagnosticSeverity::ERROR
+            } else {
+                lsp::DiagnosticSeverity::WARNING
+            }),
+            code: Some(lsp::NumberOrString::String(d.id.clone())),
+            source: Some("cuttlebone".to_string()),
+            message: d.message.clone(),
+            tags: (unnecessary && self.support.unnecessary_tag)
+                .then(|| vec![lsp::DiagnosticTag::UNNECESSARY]),
+            ..Default::default()
+        }
+    }
+
+    /// Whether a code action request needs the worker: a client that can
+    /// take code actions as literals (the server advertises them only to
+    /// those), asking for quick fixes or for any kind. Otherwise it's
+    /// answered here, with none.
+    fn code_action_wanted(&self, connection: &Connection, request: &Request) -> bool {
+        let only = request
+            .params
+            .pointer("/context/only")
+            .and_then(Value::as_array);
+        let quickfix = only.is_none_or(|kinds| {
+            kinds.iter().filter_map(Value::as_str).any(|k| {
+                k.is_empty() || k == "quickfix" || "quickfix".starts_with(&format!("{}.", k))
+            })
+        });
+
+        if self.support.code_actions && quickfix {
+            return true;
+        }
+
+        reply(connection, request.id.clone(), json!([]));
+        false
+    }
+
+    /// The imports the index offers for each name a diagnostic in a code
+    /// action request's context says is undefined, as completion offers
+    /// them: public types, traits, methods and constants of the modules the
+    /// file can import, by name.
+    fn import_fixes(&mut self, uri: &Url, params: &Value) -> Vec<query::ImportFix> {
+        let names: Vec<String> = params
+            .pointer("/context/diagnostics")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|d| d["code"] == "invalid-symbol")
+            .filter_map(|d| {
+                d["message"]
+                    .as_str()?
+                    .strip_prefix("the symbol '")?
+                    .strip_suffix("' is undefined")
+                    .map(str::to_string)
+            })
+            .collect();
+        let Ok(file) = uri.to_file_path() else {
+            return Vec::new();
+        };
+        let Some(text) = self.documents.get(uri).map(|d| d.text.clone()) else {
+            return Vec::new();
+        };
+
+        if names.is_empty() {
+            return Vec::new();
+        }
+
+        let Some(outline) = query::guarded(|| syntax::outline(&text)).ok().flatten() else {
+            return Vec::new();
+        };
+        let file = file.canonicalize().unwrap_or(file);
+        let index = self.refreshed_index();
+        let mut out = Vec::new();
+
+        for module in index.modules() {
+            if module.file == file || !module.importable_from(&file) {
+                continue;
+            }
+
+            for d in module.outline.iter().flat_map(|o| &o.declarations) {
+                if d.public && d.kind.importable() && names.contains(&d.name) {
+                    let (range, with) = syntax::import_edit(&text, &outline, &module.name, &d.name);
+
+                    out.push(query::ImportFix {
+                        name: d.name.clone(),
+                        module: module.name.clone(),
+                        range,
+                        text: with,
+                    });
+                }
+            }
+        }
+
+        out.sort_by(|a, b| (&a.name, &a.module).cmp(&(&b.name, &b.module)));
+        out
+    }
+
+    /// The quick fixes the worker found (`query::fixes`), as code actions:
+    /// each with the diagnostic it fixes, as published, and its edits.
+    fn code_actions(&self, found: Vec<(query::Diagnostic, Vec<query::Fix>)>) -> Value {
+        let mut actions = Vec::new();
+
+        for (d, fixes) in found {
+            let diagnostic = self.lsp_diagnostic(&d);
+            let only = fixes.len() == 1;
+
+            for fix in fixes {
+                let mut changes: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+
+                for (file, r, text) in fix.edits {
+                    if let Ok(uri) = Url::from_file_path(&file) {
+                        changes.entry(uri.to_string()).or_default().push(json!({
+                            "range": range(r),
+                            "newText": text,
+                        }));
+                    }
+                }
+
+                let mut action = json!({
+                    "title": fix.title,
+                    "kind": "quickfix",
+                    "diagnostics": [diagnostic],
+                    "edit": { "changes": changes },
+                });
+
+                if only && self.support.preferred_actions {
+                    action["isPreferred"] = json!(true);
+                }
+
+                actions.push(action);
+            }
+        }
+
+        Value::Array(actions)
     }
 
     /// The `cuttlebone/status` notification for a diagnostics check.
@@ -1220,6 +1387,7 @@ impl Server {
         };
 
         Ok(Job {
+            imports: pending.imports.clone(),
             query: pending.query,
             session: self.session.clone(),
             fallback,
@@ -1508,6 +1676,15 @@ impl Server {
                             .collect::<Vec<_>>(),
                     )
                     .unwrap(),
+                    _ => Value::Null,
+                };
+
+                (result, status)
+            }
+            Outcome::Fixes(answer) => {
+                let status = status_of(&answer);
+                let result = match answer.result {
+                    Ok(Some(found)) => self.code_actions(found),
                     _ => Value::Null,
                 };
 

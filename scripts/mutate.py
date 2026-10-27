@@ -216,7 +216,7 @@ M = [
  ("files without diagnostics not cleared", "src/lsp.rs", "        for uri in before.difference(&published) {", "        for uri in before.difference(&before) {", "--test publish diagnostics_follow"),
  ("closing doesn't recheck", "src/lsp.rs", "                    self.edited(connection, &path, unsaved, true);\n", "                    let _ = (path, unsaved);\n", "--test publish diagnostics_follow"),
  ("no unnecessary tags", "src/lsp.rs", "let unnecessary = d.id == \"unused-symbol\" || d.id == \"unreachable\";", "let unnecessary = false;", "--test publish every_file_with_diagnostics"),
- ("warnings published as errors", "src/lsp.rs", "                    lsp::DiagnosticSeverity::WARNING", "                    lsp::DiagnosticSeverity::ERROR", "--test publish every_file_with_diagnostics"),
+ ("warnings published as errors", "src/lsp.rs", "                lsp::DiagnosticSeverity::WARNING", "                lsp::DiagnosticSeverity::ERROR", "--test publish every_file_with_diagnostics"),
  ("diagnostics not superseded", "src/lsp.rs", "        if changed\n            && let Some((target, check))", "        if false\n            && let Some((target, check))", "--test publish superseded"),
  ("no diagnostics debounce", "src/lsp.rs", "            Instant::now() + self.options.diagnostics_debounce", "            Instant::now()", "--test publish diagnostics_wait_for_their"),
  ("diagnostics don't wait for queries", "src/lsp.rs", "        if self.diagnoser.running.is_some()\n            || self.running.is_some()\n            || self.abandoned.is_some()\n            || !self.queue.is_empty()\n        {", "        if self.diagnoser.running.is_some() {", "--test publish diagnostics_wait_for_running"),
@@ -256,7 +256,7 @@ M = [
  ("operators get signature help", "src/walker.rs", "                if n.parens && !synthetic && !operator {", "                if n.parens && !synthetic {", "--test signature null_outside"),
  ("enum constructors' generated names", "src/query.rs", "                .filter(|(m, _)| m.kind(db) != MethodKind::Constructor)", "                .filter(|_| true)", "--test inlay parameter_names"),
  ("hints past the range", "src/query.rs", "hints.hints.retain(|h| inside(h.position));", "hints.hints.retain(|h| *position <= h.position);", "--test inlay only_the_requested_range"),
- ("the range's end not read", "src/lsp.rs", "                        line: json_u32(&request.params, \"/range/end/line\"),", "                        line: u32::MAX,", "--test inlay only_the_requested_range"),
+ ("the range's end not read", "src/lsp.rs", "                Query::InlayHints {\n                    end: Position {\n                        line: json_u32(&request.params, \"/range/end/line\"),", "                Query::InlayHints {\n                    end: Position {\n                        line: u32::MAX,", "--test inlay only_the_requested_range"),
  ("parameter hints without padding", "src/lsp.rs", "                                padding_right: Some(h.kind == HintKind::Parameter),", "                                padding_right: None,", "--test inlay only_the_requested_range"),
  ("no inlayHintProvider", "src/lsp.rs", "                inlay_hint_provider: Some(lsp::OneOf::Left(true)),\n", "", "--test lsp initialize_advertises"),
  # Answers in code being edited (milestone 5).
@@ -407,7 +407,7 @@ M = [
  ("flat document symbols without containers", "src/lsp.rs", "                    if let Some(parent) = parents.last() {\n                        info[\"containerName\"] = json!(parent.name);\n                    }\n", "", "--test symbols document_symbols_for_a_client_without"),
  ("document symbols read from disk", "src/lsp.rs", "            (Some(document), _) => Ok(document.text.clone()),", "            (Some(_), Ok(path)) => std::fs::read_to_string(&path)\n                .map_err(|e| Unavailable::new(\"fileNotFound\", e.to_string())),\n            (Some(document), _) => Ok(document.text.clone()),", "--test symbols document_symbols_in_code"),
  ("document symbols not repaired in the status", "src/lsp.rs", "            Ok(true) => params[\"repaired\"] = json!(true),", "            Ok(true) => {}", "--test symbols document_symbols_in_code"),
- ("document symbols when nothing parses", "src/lsp.rs", "                .ok_or_else(|| {\n                    Unavailable::new(\n                        \"noHir\",", "                .or_else(|| (!text.is_empty()).then(Default::default))\n                .ok_or_else(|| {\n                    Unavailable::new(\n                        \"noHir\",", "--test symbols document_symbols_of_a_document"),
+ ("document symbols when nothing parses", "src/lsp.rs", "                .ok_or_else(|| {\n                    Unavailable::new(\n                        \"noHir\",\n                        \"the document doesn't parse, nor any copy", "                .or_else(|| (!text.is_empty()).then(Default::default))\n                .ok_or_else(|| {\n                    Unavailable::new(\n                        \"noHir\",\n                        \"the document doesn't parse, nor any copy", "--test symbols document_symbols_of_a_document"),
  # Workspace symbols, from an index of every module (milestone 12).
  ("workspace symbols not advertised", "src/lsp.rs", "                workspace_symbol_provider: Some(lsp::OneOf::Left(true)),", "                workspace_symbol_provider: None,", "--test symbols workspace_symbols_for_a_client"),
  ("workspace symbols match the case", "src/index.rs", "    let lower = |s: &str| s.to_lowercase();", "    let lower = |s: &str| s.to_string();", "--test symbols workspace_symbols_from"),
@@ -451,7 +451,7 @@ M = [
  ("symbols to import with nothing typed", "src/lsp.rs", "        if names.field || names.prefix.is_empty() || !result[\"items\"].is_array() {", "        if names.field || !result[\"items\"].is_array() {", "--test names symbols_to_import"),
  ("symbols to import that are bound", "src/lsp.rs", "                if !d.public || !kind_fits || names.bound.contains(&d.name) {", "                if !d.public || !kind_fits {", "--test names symbols_to_import"),
  ("private symbols to import", "src/lsp.rs", "                if !d.public || !kind_fits || names.bound.contains(&d.name) {", "                if !kind_fits || names.bound.contains(&d.name) {", "--test names symbols_to_import"),
- ("symbols to import from any module", "src/lsp.rs", "            if module.file == file || !module.importable_from(&file) {", "            if module.file == file {", "--test names symbols_to_import"),
+ ("symbols to import from any module", "src/lsp.rs", "            if module.file == file || !module.importable_from(&file) {\n                continue;\n            }\n\n            let Some(o)", "            if module.file == file {\n                continue;\n            }\n\n            let Some(o)", "--test names symbols_to_import"),
  ("names are complete", "src/lsp.rs", "    let incomplete = members.names.as_ref().is_some_and(|n| !n.field);", "    let incomplete = false && members.names.as_ref().is_some_and(|n| !n.field);", "--test names names_in_scope"),
  ("imports not completed", "src/lsp.rs", "        let Some(context) = syntax::import_context(&text[..offset]) else {", "        let Some(context) = None::<syntax::ImportContext> else {", "--test names modules_and_symbols"),
  ("listed symbols offered again", "src/lsp.rs", "                        if d.public && d.kind.importable() && !listed.contains(&d.name) {", "                        if d.public && d.kind.importable() {", "--test names modules_and_symbols"),
@@ -480,6 +480,24 @@ M = [
  ("formatted text gets an edit", "src/lsp.rs", "            Ok((text, formatted)) if text == formatted => (json!([]), Ok(false)),\n", "", "--test formatting formatting_over_lsp"),
  ("formatting edits in UTF-16 regardless", "src/lsp.rs", "                let positions = Positions::new(&text, self.encoding);\n\n                (\n                    json!([{", "                let positions = Positions::new(&text, Encoding::Utf16);\n\n                (\n                    json!([{", "--test formatting formatting_over_lsp"),
  ("formatting not advertised", "src/lsp.rs", "                document_formatting_provider: Some(lsp::OneOf::Left(true)),", "                document_formatting_provider: None,", "--test lsp initialize_advertises"),
+ # Quick fixes (milestone 13).
+ ("fixes not checked", "src/query.rs", "                if after.iter().any(|a| a.error) || after.iter().filter(|a| same(a)).count() >= 1 {", "                if false {", "--test actions no_fix_is_offered"),
+ ("one fix only", "src/query.rs", "                if tried == MAX_FIXES {", "                if tried == 1 {", "--test actions several_imports"),
+ ("fixes outside the range", "src/query.rs", "                    && d.range.start <= asked.end\n                    && asked.start <= d.range.end", "", "--test actions unused_imports"),
+ ("a listed symbol removes its import", "src/query.rs", "                    Some(i) if listed.len() > 1 => {", "                    Some(i) if false => {", "--test actions unused_imports"),
+ ("unused variables not renamed", "src/query.rs", "            if text[start..].starts_with(&name) {", "            if false {", "--test actions unused_imports"),
+ ("no let _ for unused results", "src/query.rs", "            vec![edit(start..start, \"let _ = \")],", "            vec![edit(start..start, \"let _ =\")],", "--test actions unused_imports"),
+ ("public fields not made mutable", "src/query.rs", "(t[..at].ends_with(\"let \") || t[..at].ends_with(\"let pub \"))", "t[..at].ends_with(\"let \")", "--test actions an_immutable"),
+ ("refused assignments go nowhere", "src/query.rs", "        && let Some((file, location)) = assigned(scope)", "        && let Some((file, location)) = None::<(PathBuf, Location)>", "--test definition a_refused"),
+ ("refused field assignments go to variables", "src/query.rs", "    if text[..start].ends_with('@') {\n        let method", "    if false {\n        let method", "--test definition a_refused"),
+ ("a field's @ isn't skipped", "src/query.rs", "    let skip = usize::from(text[at..].starts_with('@'));", "    let skip = 0;", "--test definition a_refused"),
+ ("the outermost variable assigned", "src/query.rs", "        .max_by_key(|v| v.from)\n        .map(|v| (scope.file.clone(), v.variable.location(db)))", "        .min_by_key(|v| v.from)\n        .map(|v| (scope.file.clone(), v.variable.location(db)))", "--test definition a_refused"),
+ ("code actions for clients without literals", "src/lsp.rs", "        if self.support.code_actions && quickfix {", "        if quickfix {", "--test actions code_actions_are_only"),
+ ("quick fixes for any kind", "src/lsp.rs", "        let quickfix = only.is_none_or(|kinds| {", "        let quickfix = true || only.is_none_or(|kinds| {", "--test actions code_actions_are_only"),
+ ("isPreferred for every client", "src/lsp.rs", "                if only && self.support.preferred_actions {", "                if only {", "--test actions code_actions_are_only"),
+ ("every fix preferred", "src/lsp.rs", "            let only = fixes.len() == 1;", "            let only = true;", "--test actions several_imports"),
+ ("no imports offered", "src/lsp.rs", "                if d.public && d.kind.importable() && names.contains(&d.name) {", "                if false {", "--test actions an_undefined_symbol"),
+ ("code actions not advertised", "src/lsp.rs", "                code_action_provider: self.support.code_actions.then(|| {", "                code_action_provider: false.then(|| {", "--test lsp initialize_advertises"),
  # After an undo (milestone 13).
  ("an undo answered from a check of other text", "src/query.rs", "list.iter().position(|k| k.target == *target)", "list.iter().position(|k| k.target.root == target.root && k.target.file == target.file && k.target.tests == target.tests)", "--test undo undone_incremental"),
  ("an undo answered from a check of a module since restored", "src/query.rs", "            if entry.fingerprint.current() {", "            if true {", "--test undo a_module_changed"),
@@ -816,9 +834,16 @@ def main(argv):
         pool = ThreadPoolExecutor(max_workers=jobs)
         futures = []
 
+        # The copies are made before any mutation in the tree itself, so
+        # that none copies one.
+        copied = threading.Barrier(trees + 1)
+
         def builder(k):
             root = os.path.join(work_root, "trees", str(k))
-            make_tree(root)
+            try:
+                make_tree(root)
+            finally:
+                copied.wait()
             while True:
                 with lock:
                     if not queue:
@@ -856,6 +881,7 @@ def main(argv):
         threads = [threading.Thread(target=builder, args=(k,)) for k in range(trees)]
         for t in threads:
             t.start()
+        copied.wait()
         for m in here:
             in_place(m)
         for t in threads:

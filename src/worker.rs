@@ -12,8 +12,8 @@
 use crate::edits::Fallback;
 use crate::position::Position;
 use crate::query::{
-    self, Answer, Cache, Diagnostics, Highlight, Hints, HoverAt, MembersAt, Place, Question, Reply,
-    Request, Session, Signature, Unavailable,
+    self, Answer, Cache, Diagnostic, Diagnostics, Fix, Highlight, Hints, HoverAt, ImportFix,
+    MembersAt, Place, Question, Reply, Request, Session, Signature, Unavailable,
 };
 use crossbeam_channel::{RecvTimeoutError, Sender};
 use serde::{Deserialize, Serialize};
@@ -81,6 +81,9 @@ pub enum Query {
     InlayHints { end: Position },
     /// `query::diagnostics`, for the target in the request's `file`.
     Diagnostics,
+    /// `query::fixes`, for the diagnostics from the request's position to
+    /// `end`, with the job's `imports`.
+    Fixes { end: Position },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -97,6 +100,10 @@ pub struct Job {
     /// server dies first (say from SIGKILL), nothing would stop a hung
     /// worker.
     pub deadline: Option<Duration>,
+    /// For `Query::Fixes`: the imports the server offers for names in the
+    /// file, from its index.
+    #[serde(default)]
+    pub imports: Vec<ImportFix>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -109,6 +116,7 @@ pub enum Outcome {
     Signature(Answer<Signature>),
     Hints(Answer<Hints>),
     Diagnostics(Answer<Diagnostics>),
+    Fixes(Answer<Vec<(Diagnostic, Vec<Fix>)>>),
     /// The worker didn't produce an answer: it timed out, crashed or
     /// couldn't be started.
     Failed(Unavailable),
@@ -132,6 +140,14 @@ impl Job {
             Query::InlayHints { end } => Question::InlayHints { end },
             Query::Diagnostics => {
                 return Outcome::Diagnostics(query::diagnostics(&self.session, &self.request));
+            }
+            Query::Fixes { end } => {
+                return Outcome::Fixes(query::fixes(
+                    &self.session,
+                    &self.request,
+                    end,
+                    &self.imports,
+                ));
             }
         };
         #[cfg(feature = "fault-injection")]
@@ -176,7 +192,7 @@ impl Job {
                 Reply::Signature(s) => Some(s),
                 _ => None,
             })),
-            Query::InlayHints { .. } | Query::Diagnostics => {
+            Query::InlayHints { .. } | Query::Diagnostics | Query::Fixes { .. } => {
                 Outcome::Hints(answer.map(|r| match r {
                     Reply::Hints(h) => Some(h),
                     _ => None,
@@ -199,6 +215,7 @@ impl Outcome {
             Outcome::Signature(a) => a.typed,
             Outcome::Hints(a) => a.typed,
             Outcome::Diagnostics(a) => a.typed,
+            Outcome::Fixes(a) => a.typed,
             Outcome::Failed(_) => false,
         }
     }

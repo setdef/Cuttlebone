@@ -707,3 +707,57 @@ fn references_at_a_declaration_outside_the_project_are_the_projects_uses() {
         vec![]
     );
 }
+
+/// An assignment the compiler refuses (to an immutable variable or field)
+/// records no reference, but the compiler looked the name up: definition
+/// goes there, the innermost variable of the name, or the method's type's
+/// field. Code actions make it mutable there (tests/actions.rs).
+#[test]
+fn a_refused_assignment_goes_to_what_it_assigns() {
+    let project = Project::new("navigation");
+    let text = "type Counter {
+  let @count: Int
+
+  fn mut add {
+    @count = @count + 1
+  }
+}
+
+type async Main {
+  fn async main {
+    let x = 1
+    let f = fn {
+      let x = 2
+
+      x = 3
+    }
+
+    x = 4
+    f.call
+    let _ = x == 5
+  }
+}
+";
+    let file = project.path("src/main.inko");
+    let ask = |needle: &str, offset: u32| {
+        let request = Request {
+            file: file.clone(),
+            position: position_of(text, needle, offset),
+            encoding: Encoding::Utf16,
+            contents: HashMap::from([(file.clone(), text.to_string())]),
+        };
+
+        query::definition(&project.session, &request)
+            .result
+            .unwrap()
+            .map(|p| one(p).range.start.line)
+    };
+
+    assert_eq!(ask("x = 3", 0), Some(12));
+    assert_eq!(ask("x = 4", 0), Some(10));
+    assert_eq!(ask("@count = @count", 0), Some(1));
+    assert_eq!(ask("@count = @count", 1), Some(1));
+    // Not an assignment.
+    assert_eq!(ask("x == 5", 0), Some(10));
+    assert_eq!(ask("x == 5", 1), None);
+}

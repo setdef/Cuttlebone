@@ -107,6 +107,7 @@ fn initialize_advertises_only_what_works() {
     assert_eq!(
         keys,
         [
+            "codeActionProvider",
             "completionProvider",
             "definitionProvider",
             "documentFormattingProvider",
@@ -132,6 +133,10 @@ fn initialize_advertises_only_what_works() {
     assert_eq!(capabilities["inlayHintProvider"], true);
     assert_eq!(capabilities["foldingRangeProvider"], true);
     assert_eq!(capabilities["documentFormattingProvider"], true);
+    assert_eq!(
+        capabilities["codeActionProvider"],
+        json!({ "codeActionKinds": ["quickfix"] })
+    );
     assert_eq!(
         capabilities["signatureHelpProvider"],
         json!({ "triggerCharacters": ["(", ","] })

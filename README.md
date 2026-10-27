@@ -15,7 +15,10 @@ to import, with the import, and go to
 definition, go to type definition and find references locate symbols by the
 compiler's own ids. It publishes the same diagnostics as `inko check`,
 highlights a symbol's uses in a file, shows the signature of the call being
-typed, and shows inferred types and parameter names as inlay hints. Where a
+typed, and shows inferred types and parameter names as inlay hints. It
+folds blocks, comments and imports, formats exactly as `inko fmt` does,
+and offers quick fixes for its diagnostics, each checked to leave no
+error. Where a
 declaration has an error, it type checks the method bodies anyway, and
 answers wherever the error can't matter. In code being edited that
 doesn't parse, it answers from a repaired copy of the documents or from
@@ -194,6 +197,9 @@ also fast enough for the latency limits.
 | `tests/syntax.rs` | outlines from the syntax alone: names and ranges against the compiler's declarations in every module of std and the fixtures, and doc comments against the installed `inko doc` |
 | `tests/symbols.rs` | document and workspace symbols over LSP in both encodings: every kind of declaration, code that doesn't parse, documents that aren't files, a dependency, files changed on disk, clients without hierarchy or the newer kinds |
 | `tests/corpus_symbols.rs` | every declaration document symbols report, in std and the fixtures, is found by workspace symbols at the same place, and is its own definition |
+| `tests/folding.rs` | folding ranges over LSP in both encodings: blocks, comment lines, imports, code that doesn't parse, `\r\n` and lone `\r`, clients without kinds or with a limit; every declaration's body and doc comment in std folds |
+| `tests/formatting.rs` | formatting against the installed `inko fmt` over every module of std and the fixtures, as they are and flattened; over LSP in both encodings, with nothing written, and text that doesn't parse |
+| `tests/actions.rs` | quick fixes over LSP in both encodings, each checked by the installed `inko check` on a copy of the project with it applied: imports, unused imports, variables and results, `mut` for variables and fields; none where an error would be left, for other kinds, or for clients without literals |
 | `tests/undo.rs` | answers after edits are undone over LSP, in both encodings: incremental and whole-text changes, several in one notification, closing and opening again, with and without a save between, a module changed on disk and restored; every answer from the documents as they are is a new server's, at every step |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |
 

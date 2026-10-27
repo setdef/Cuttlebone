@@ -11,7 +11,7 @@ It sends only what the client's capabilities say the client supports
 (Markdown hovers, completion's label details and kinds, document symbols'
 hierarchy and symbol kinds, signature help's
 parameter offsets and active parameters, diagnostic tags, folding range
-kinds and limits), and every
+kinds and limits, code actions as literals and which is preferred), and every
 message the tests receive is checked against the 3.18 specification's
 meta model (tests/common/spec.rs).
 
@@ -117,6 +117,7 @@ Only what works:
     "documentSymbolProvider": true,
     "foldingRangeProvider": true,
     "documentFormattingProvider": true,
+    "codeActionProvider": {"codeActionKinds": ["quickfix"]},
     "workspaceSymbolProvider": true,
     "experimental": {"cuttlebone": {"inko": "0.21.1", "std": "/path/to/std", "statusNotifications": false, "diagnostics": true}}
   },
@@ -435,6 +436,14 @@ the whole declaration. A module's range is empty, at the start of its file.
 
 Symbols are matched by the compiler's ids, never by name, so two modules'
 `Error` types are never confused.
+
+### A refused assignment
+
+At an assignment the compiler refused (to an immutable variable or field,
+or a variable a non-moving closure captured), the compiler recorded no
+reference, but it did look the name up: definition gives the innermost
+variable of that name in scope there, or for `@x`, the field of the
+method's type, as the compiler found it.
 
 ### A compound assignment to a setter
 
@@ -881,6 +890,60 @@ stdin, so it writes nothing) for every module of std and the fixtures, as
 they are and with their indentation taken away (tests/formatting.rs).
 
 **Cost.** No check: answered at once, by the server itself.
+
+## `textDocument/codeAction`
+
+Quick fixes for the [diagnostics](#diagnostics) in the requested range,
+chosen by each diagnostic's ID and what its message names. **Every fix is
+checked before it's offered:** its edits are applied to a copy of the
+documents, which is checked in full, as `inko check` checks (to MIR, as
+diagnostics are), and the fix is given only if that reports no error at
+all, and not the diagnostic it fixes. So a file with another error gets
+no fixes until that's fixed too. Nothing is written: the client applies
+the edit.
+
+| ID | Message | Fix (`title`) |
+|---|---|---|
+| `invalid-symbol` | the symbol 'X' is undefined | `Import X from M`: for each module the file can import with a public X (type, trait, method or constant), the import added as completion adds it, as `inko fmt` orders imports |
+| `unused-symbol` | the symbol 'X' is unused, in an import | `Remove X from the import` if its list has others, or else `Remove the unused import` (its line) |
+| `unused-symbol` | the symbol 'x' is unused, a variable | `Rename x to _x`, which the compiler doesn't count as unused |
+| `unused-result` | the result of this expression is unused | `Assign the result to _`: `let _ = ` before it |
+| `invalid-assign` | the variable (or field) 'x' is immutable and can't be assigned a new value | `Make x mutable`: `mut` in the `let` that defines it, where the compiler looked the name up (the innermost variable of that name in scope, or the field of the method's type), in whichever file it is |
+
+```json
+→ {"jsonrpc": "2.0", "id": 12, "method": "textDocument/codeAction", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/main.inko"},
+    "range": {"start": {"line": 4, "character": 32}, "end": {"line": 4, "character": 38}},
+    "context": {"diagnostics": [...], "only": ["quickfix"]}}}
+← {"jsonrpc": "2.0", "id": 12, "result": [
+    {"title": "Import helper from lib", "kind": "quickfix", "isPreferred": true,
+     "diagnostics": [{"range": ..., "severity": 1, "code": "invalid-symbol", "source": "cuttlebone", "message": "the symbol 'helper' is undefined"}],
+     "edit": {"changes": {"file:///home/me/hello/src/main.inko": [
+       {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "import lib (helper)\n"}]}}}
+]}
+```
+
+- **Which diagnostics:** those the check of the documents as they are
+  reports in the document, overlapping the range, whatever the client's
+  `context.diagnostics` says. The client's are read only for the names
+  to import (`invalid-symbol`), which the server's index of modules
+  offers. Each action's `diagnostics` is the one it fixes, as published.
+- **Only for clients that take literals:** the server advertises
+  `codeActionProvider` only to a client with `codeActionLiteralSupport`,
+  since it has no commands, and answers others `[]`. A request whose
+  `context.only` has no kind that includes `quickfix` gets `[]` at once.
+- **`isPreferred`**, for a client with `isPreferredSupport`, marks the
+  only fix for a diagnostic.
+- **Edits** are `WorkspaceEdit.changes`, by URI, in the negotiated
+  encoding.
+- **Cost:** one full check of the documents, and one for each fix (at
+  most 8 per request), each like a diagnostics check: about 100 to
+  300 ms each on a small project. The check timeout applies to the whole
+  request.
+
+The tests apply every fix offered to a copy of the project and run the
+installed `inko check` on it: no error, and not the diagnostic
+(tests/actions.rs).
 
 ## `workspace/symbol`
 

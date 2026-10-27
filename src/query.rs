@@ -934,7 +934,66 @@ fn definition_in(scope: &Scope) -> Result<Option<Vec<Place>>, Unavailable> {
     .map(|(file, location)| scope.place(&file, location))
     .collect();
 
+    if places.is_empty()
+        && let Some((file, location)) = assigned(scope)
+    {
+        return Ok(Some(vec![scope.place(&file, location)]));
+    }
+
     Ok((!places.is_empty()).then_some(places))
+}
+
+/// The variable or field a name being assigned to (`x = 2`, `@x = 2`) is,
+/// where the compiler refused the assignment (it's immutable, or a closure
+/// captured it) and so recorded no reference, as the compiler looked it
+/// up: the innermost variable of that name in scope there, or the field of
+/// that name of the method's type. Where it's declared.
+fn assigned(scope: &Scope) -> Option<(PathBuf, Location)> {
+    let db = scope.db;
+    let text = scope.checked.text(&scope.file);
+    let at = Lines::new(&text).offset(scope.at.line, scope.at.column)?;
+    // On a field's `@`, its name.
+    let skip = usize::from(text[at..].starts_with('@'));
+    let offset = at + skip;
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let start = text[..offset].trim_end_matches(ident).len();
+    let rest = &text[start..];
+    let name = &rest[..rest.find(|c: char| !ident(c)).unwrap_or(rest.len())];
+    let after = rest[name.len()..].trim_start_matches([' ', '\t']);
+    let column = scope.at.column + skip as u32 - text[start..offset].chars().count() as u32;
+    let here = (scope.at.line, column);
+
+    if name.is_empty() || !after.starts_with('=') || after.starts_with("==") {
+        return None;
+    }
+
+    if text[..start].ends_with('@') {
+        let method = scope
+            .walker
+            .methods
+            .iter()
+            .filter(|(l, _)| contains(l, scope.at))
+            .max_by_key(|(l, _)| (l.line_start, l.column_start))
+            .map(|(_, id)| *id)?;
+        let TypeEnum::TypeInstance(ins) = method.receiver_id(db) else {
+            return None;
+        };
+        let field = ins
+            .instance_of()
+            .fields(db)
+            .into_iter()
+            .find(|f| *f.name(db) == name)?;
+
+        return scope.declaration(SymbolId::Field(field));
+    }
+
+    scope
+        .walker
+        .visible
+        .iter()
+        .filter(|v| v.from < here && here <= v.to && *v.variable.name(db) == name)
+        .max_by_key(|v| v.from)
+        .map(|v| (scope.file.clone(), v.variable.location(db)))
 }
 
 /// Where the type of the expression at a position is declared, without
@@ -1083,6 +1142,334 @@ pub struct Diagnostics {
     /// Why the list may be incomplete: the compiler panicked
     /// (`compilerPanic`), and these are what it reported before that.
     pub incomplete: Option<Unavailable>,
+}
+
+/// The most fixes `fixes` checks for one request: each is a full check.
+pub const MAX_FIXES: usize = 8;
+
+/// A quick fix for a diagnostic (`fixes`): what it does, and its edits,
+/// each a file's range (in the request's encoding) and the text that
+/// replaces it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fix {
+    pub title: String,
+    pub edits: Vec<(PathBuf, Range, String)>,
+}
+
+/// An import of a name into the request's file, which the server offers
+/// from its index of modules: the bytes of the file's text to replace,
+/// and with what (`syntax::import_edit`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportFix {
+    pub name: String,
+    pub module: String,
+    pub range: std::ops::Range<usize>,
+    pub text: String,
+}
+
+/// An edit of a file's text, by bytes.
+#[derive(Clone, Debug)]
+struct Edit {
+    file: PathBuf,
+    range: std::ops::Range<usize>,
+    text: String,
+}
+
+/// The diagnostics `inko check` reports in `request.file` that overlap
+/// `request.position..end`, each with the quick fixes for it, chosen by
+/// its ID (`candidates`), whose result has no error at all and not that
+/// diagnostic (docs/lsp.md, "textDocument/codeAction"): each fix is
+/// applied to a copy of the documents, which is checked in full, as for
+/// diagnostics. A fix that doesn't pass isn't given. Diagnostics without
+/// a fix aren't either. Nothing is written.
+pub fn fixes(
+    session: &Session,
+    request: &Request,
+    end: Position,
+    imports: &[ImportFix],
+) -> Answer<Vec<(Diagnostic, Vec<Fix>)>> {
+    let start = Instant::now();
+    let result = (|| {
+        let file = canonical(&request.file)?;
+        let Some(target) = diagnostics_target(session, &file) else {
+            return Ok(Some(Vec::new()));
+        };
+        let checked = |contents: HashMap<PathBuf, String>| {
+            diagnostics(
+                session,
+                &Request {
+                    file: target.clone(),
+                    contents,
+                    ..request.clone()
+                },
+            )
+            .result
+            .map(|d| d.map(|d| d.diagnostics).unwrap_or_default())
+        };
+        let read = |path: &Path| {
+            request
+                .contents
+                .get(path)
+                .cloned()
+                .or_else(|| std::fs::read_to_string(path).ok())
+        };
+        let text = read(&file).ok_or_else(|| {
+            Unavailable::new("fileNotFound", format!("{} can't be read", file.display()))
+        })?;
+        let asked = Range {
+            start: request.position,
+            end,
+        };
+        let found: Vec<Diagnostic> = checked(request.contents.clone())?
+            .into_iter()
+            .filter(|d| {
+                canonical(&d.file).is_ok_and(|f| f == file)
+                    && d.range.start <= asked.end
+                    && asked.start <= d.range.end
+            })
+            .collect();
+        let mut out = Vec::new();
+        let mut tried = 0;
+
+        for d in found {
+            let mut good = Vec::new();
+
+            for (title, edits) in candidates(session, request, &file, &text, &d, imports) {
+                if tried == MAX_FIXES {
+                    break;
+                }
+
+                tried += 1;
+
+                // The documents with the fix, and the files it edits.
+                let mut contents = request.contents.clone();
+
+                for e in &edits {
+                    if let Some(t) = read(&e.file) {
+                        contents.entry(e.file.clone()).or_insert(t);
+                    }
+                }
+
+                let mut sorted = edits.clone();
+
+                sorted.sort_by_key(|e| std::cmp::Reverse(e.range.start));
+
+                for e in &sorted {
+                    if let Some(t) = contents.get_mut(&e.file) {
+                        t.replace_range(e.range.clone(), &e.text);
+                    }
+                }
+
+                let Ok(after) = checked(contents) else {
+                    continue;
+                };
+                let same = |a: &Diagnostic| {
+                    a.id == d.id
+                        && a.message == d.message
+                        && canonical(&a.file).is_ok_and(|f| f == file)
+                };
+
+                if after.iter().any(|a| a.error) || after.iter().filter(|a| same(a)).count() >= 1 {
+                    continue;
+                }
+
+                good.push(Fix {
+                    title,
+                    edits: edits
+                        .iter()
+                        .map(|e| {
+                            let t = read(&e.file).unwrap_or_default();
+
+                            (
+                                e.file.clone(),
+                                Range {
+                                    start: position_at(&t, e.range.start, request.encoding),
+                                    end: position_at(&t, e.range.end, request.encoding),
+                                },
+                                e.text.clone(),
+                            )
+                        })
+                        .collect(),
+                });
+            }
+
+            if !good.is_empty() {
+                out.push((d, good));
+            }
+        }
+
+        Ok(Some(out))
+    })();
+
+    Answer {
+        result,
+        elapsed: start.elapsed(),
+        source: Source::Fresh,
+        typed: false,
+        cached: false,
+    }
+}
+
+/// The fixes to try for a diagnostic, by its ID and what its message
+/// names, each with its title:
+///
+/// - `invalid-symbol`, "the symbol 'X' is undefined": importing X from
+///   each module the server offers (`imports`)
+/// - `unused-symbol`, "the symbol 'X' is unused": in an import, removing
+///   X from its list, or the import if it's all there is; elsewhere (a
+///   variable), naming it `_X`, which the compiler doesn't count
+/// - `unused-result`: `let _ = ` before the expression
+/// - `invalid-assign`, "the variable (or field) 'x' is immutable": `mut`
+///   in the `let` that defines it, as definition finds it (`assigned`)
+fn candidates(
+    session: &Session,
+    request: &Request,
+    file: &Path,
+    text: &str,
+    d: &Diagnostic,
+    imports: &[ImportFix],
+) -> Vec<(String, Vec<Edit>)> {
+    let Some(start) = byte_offset(text, d.range.start, request.encoding) else {
+        return Vec::new();
+    };
+    let quoted = |before: &str, after: &str| {
+        d.message
+            .strip_prefix(before)
+            .and_then(|m| m.strip_suffix(after))
+            .map(str::to_string)
+    };
+    let edit = |range: std::ops::Range<usize>, with: &str| Edit {
+        file: file.to_path_buf(),
+        range,
+        text: with.to_string(),
+    };
+
+    match d.id.as_str() {
+        "invalid-symbol" => {
+            let Some(name) = quoted("the symbol '", "' is undefined") else {
+                return Vec::new();
+            };
+
+            imports
+                .iter()
+                .filter(|i| i.name == name)
+                .map(|i| {
+                    (
+                        format!("Import {} from {}", name, i.module),
+                        vec![edit(i.range.clone(), &i.text)],
+                    )
+                })
+                .collect()
+        }
+        "unused-symbol" => {
+            let Some(name) = quoted("the symbol '", "' is unused") else {
+                return Vec::new();
+            };
+            let import = syntax::parse(text)
+                .and_then(|o| o.imports.into_iter().find(|i| i.range.contains(&start)));
+
+            if let Some(import) = import {
+                let listed = import.symbols.as_deref().unwrap_or_default();
+                let at = listed
+                    .iter()
+                    .position(|(n, alias, _)| alias.as_deref().unwrap_or(n) == name);
+
+                return match at {
+                    Some(i) if listed.len() > 1 => {
+                        let range = if i + 1 < listed.len() {
+                            listed[i].2.start..listed[i + 1].2.start
+                        } else {
+                            listed[i - 1].2.end..listed[i].2.end
+                        };
+
+                        vec![(
+                            format!("Remove {} from the import", name),
+                            vec![edit(range, "")],
+                        )]
+                    }
+                    _ => {
+                        // The whole line, if the import is all it has.
+                        let line_start =
+                            text[..import.range.start].rfind('\n').map_or(0, |i| i + 1);
+                        let rest = &text[import.range.end..];
+                        let line_end =
+                            import.range.end + rest.find('\n').map_or(rest.len(), |i| i + 1);
+                        let whole = text[line_start..import.range.start].trim().is_empty()
+                            && text[import.range.end..line_end].trim().is_empty();
+                        let range = if whole {
+                            line_start..line_end
+                        } else {
+                            import.range.clone()
+                        };
+
+                        vec![(
+                            "Remove the unused import".to_string(),
+                            vec![edit(range, "")],
+                        )]
+                    }
+                };
+            }
+
+            if text[start..].starts_with(&name) {
+                vec![(
+                    format!("Rename {} to _{}", name, name),
+                    vec![edit(start..start, "_")],
+                )]
+            } else {
+                Vec::new()
+            }
+        }
+        "unused-result" => vec![(
+            "Assign the result to _".to_string(),
+            vec![edit(start..start, "let _ = ")],
+        )],
+        "invalid-assign" => {
+            let suffix = "' is immutable and can't be assigned a new value";
+            let Some(name) =
+                quoted("the variable '", suffix).or_else(|| quoted("the field '", suffix))
+            else {
+                return Vec::new();
+            };
+            let at = Request {
+                position: d.range.start,
+                ..request.clone()
+            };
+            let Some(Ok(Some(Reply::Places(places)))) =
+                ask(session, &at, &[(Question::Definition, d.range.start)])
+                    .pop()
+                    .map(|a| a.result)
+            else {
+                return Vec::new();
+            };
+
+            places
+                .into_iter()
+                .filter_map(|p| {
+                    let t = request
+                        .contents
+                        .get(&p.file)
+                        .cloned()
+                        .or_else(|| std::fs::read_to_string(&p.file).ok())?;
+                    let at = byte_offset(&t, p.range.start, request.encoding)?;
+
+                    // `let x`, `let @x` or `let pub @x`: `mut` goes before
+                    // the name.
+                    (t[..at].ends_with("let ") || t[..at].ends_with("let pub ")).then(|| {
+                        (
+                            format!("Make {} mutable", name),
+                            vec![Edit {
+                                file: p.file,
+                                range: at..at,
+                                text: "mut ".to_string(),
+                            }],
+                        )
+                    })
+                })
+                .take(1)
+                .collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// What diagnostics for a file come from: a full check of its project

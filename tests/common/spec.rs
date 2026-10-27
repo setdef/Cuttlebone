@@ -437,6 +437,33 @@ fn gates(method: &str, value: &Value, capabilities: &Value) -> Result<(), String
                 }
             }
         }
+        "textDocument/codeAction" => {
+            let literals = capability(
+                capabilities,
+                "textDocument.codeAction.codeActionLiteralSupport",
+            );
+
+            for a in value.as_array().into_iter().flatten() {
+                // Cuttlebone has no commands: every action is a literal.
+                if !literals.is_object() {
+                    return Err(
+                        "a code action for a client without codeActionLiteralSupport".to_string(),
+                    );
+                }
+
+                if a.get("isPreferred").is_some()
+                    && !supports(capabilities, "textDocument.codeAction.isPreferredSupport")
+                {
+                    return Err("isPreferred without isPreferredSupport".to_string());
+                }
+
+                // Edits as `changes`, which every client takes, rather than
+                // `documentChanges`, which needs a capability.
+                if a["edit"].get("documentChanges").is_some() {
+                    return Err("documentChanges in a code action's edit".to_string());
+                }
+            }
+        }
         "textDocument/foldingRange" => {
             let kinds = capability(
                 capabilities,
@@ -601,6 +628,10 @@ pub fn capable_client() -> Value {
             },
             "foldingRange": {
                 "foldingRangeKind": { "valueSet": ["comment", "imports", "region"] },
+            },
+            "codeAction": {
+                "codeActionLiteralSupport": { "codeActionKind": { "valueSet": ["quickfix"] } },
+                "isPreferredSupport": true,
             },
         },
         "workspace": {
