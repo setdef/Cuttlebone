@@ -4,7 +4,8 @@
 # A pushed version tag (v0.14.0) runs the release checks on macOS (every
 # test, the whole corpus, every test again without kept checks:
 # scripts/check.sh --release), the latency limits as written on a macOS
-# runner of their own (scripts/check.sh --latency), every mutation in
+# runner of their own, scaled by how fast it measures a fixed baseline
+# workload (scripts/check.sh --latency), every mutation in
 # shards on Linux (scripts/mutate.py --shard, each with its own control),
 # and builds every target and verifies each archive on its own platform.
 # Only when all of that passes does it publish the archives with
@@ -46,21 +47,9 @@ jobs:
         run: python3 scripts/mutate.py --shard dist
 
   latency:
-    name: latency limits as written
-    # A runner of its own that has run nothing else: after the release
-    # checks, the same runner measured up to a quarter slower.
-    runs-on: macos-15
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Prepare the pinned upstream release
-        run: scripts/upstream.sh
-      - name: Install LLVM 18
-        run: brew install llvm@18 zstd
-      - name: Build the latency tests
-        run: cargo test --quiet --no-run --test latency
-      - name: The latency limits as written (scripts/check.sh --latency)
-        run: scripts/check.sh --latency
+    # The latency limits as written, scaled by the runner's measured
+    # baseline, on a runner of their own (.github/workflows/latency.yml).
+    uses: ./.github/workflows/latency.yml
 
   mutations:
     strategy:

@@ -107,8 +107,10 @@ fn initialize_advertises_only_what_works() {
     assert_eq!(
         keys,
         [
+            "callHierarchyProvider",
             "codeActionProvider",
             "completionProvider",
+            "declarationProvider",
             "definitionProvider",
             "documentFormattingProvider",
             "documentHighlightProvider",
@@ -116,12 +118,15 @@ fn initialize_advertises_only_what_works() {
             "experimental",
             "foldingRangeProvider",
             "hoverProvider",
+            "implementationProvider",
             "inlayHintProvider",
             "positionEncoding",
             "referencesProvider",
+            "selectionRangeProvider",
             "signatureHelpProvider",
             "textDocumentSync",
             "typeDefinitionProvider",
+            "typeHierarchyProvider",
             "workspaceSymbolProvider",
         ]
     );
@@ -132,6 +137,11 @@ fn initialize_advertises_only_what_works() {
     assert_eq!(capabilities["documentHighlightProvider"], true);
     assert_eq!(capabilities["inlayHintProvider"], true);
     assert_eq!(capabilities["foldingRangeProvider"], true);
+    assert_eq!(capabilities["selectionRangeProvider"], true);
+    assert_eq!(capabilities["implementationProvider"], true);
+    assert_eq!(capabilities["declarationProvider"], true);
+    assert_eq!(capabilities["callHierarchyProvider"], true);
+    assert_eq!(capabilities["typeHierarchyProvider"], true);
     assert_eq!(capabilities["documentFormattingProvider"], true);
     assert_eq!(
         capabilities["codeActionProvider"],
@@ -1637,7 +1647,7 @@ fn unknown_methods_and_invalid_params_get_errors_and_the_server_keeps_going() {
     let mut client = Client::initialized(&root, json!({}));
 
     assert_eq!(
-        client.request("textDocument/implementation", json!({}))["error"]["code"],
+        client.request("textDocument/linkedEditingRange", json!({}))["error"]["code"],
         -32601
     );
     assert_eq!(

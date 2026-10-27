@@ -30,7 +30,7 @@ use std::sync::Once;
 use std::time::{Duration, Instant, SystemTime};
 use types::format::{TypeFormatter, format_type};
 use types::{
-    Block, Database, MethodId, MethodKind, MethodLookup, MethodSource, ModuleId, Symbol,
+    Block, Database, MethodId, MethodKind, MethodLookup, MethodSource, ModuleId, Symbol, TraitId,
     TypeArguments, TypeEnum, TypeRef,
 };
 
@@ -82,7 +82,7 @@ impl Unavailable {
 }
 
 /// A range of positions, with an exclusive end.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
@@ -204,7 +204,7 @@ impl MemberKind {
 }
 
 /// A range in a file.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Place {
     /// The path the compiler read the file from: the project's own files,
     /// `dep/`'s, or the standard library's in the session's `std`.
@@ -278,8 +278,9 @@ pub enum Source {
 fn allows(question: Question, source: Source) -> bool {
     match source {
         Source::Fresh | Source::Guarded => true,
-        // Only what's blank changed, but references must find every use.
-        Source::Repaired => !matches!(question, Question::References { .. }),
+        // Only what's blank changed, but references (and the other
+        // questions about the whole project) must find every use.
+        Source::Repaired => !question.whole_project(),
         Source::Stale => matches!(
             question,
             Question::Type
@@ -289,6 +290,10 @@ fn allows(question: Question, source: Source) -> bool {
                 | Question::Highlight
                 | Question::SignatureHelp
                 | Question::InlayHints { .. }
+                | Question::Declaration
+                | Question::CallItem
+                | Question::OutgoingCalls
+                | Question::TypeItem
         ),
     }
 }
@@ -322,6 +327,43 @@ pub enum Question {
     SignatureHelp,
     /// `inlay_hints`, from the position to `end`.
     InlayHints { end: Position },
+    /// `implementations`.
+    Implementation,
+    /// `declaration`.
+    Declaration,
+    /// `call_item`.
+    CallItem,
+    /// `incoming_calls`, of the method declared at the position.
+    IncomingCalls,
+    /// `outgoing_calls`, of the method declared at the position.
+    OutgoingCalls,
+    /// `type_item`.
+    TypeItem,
+    /// `supertypes`, of the type or trait declared at the position.
+    Supertypes,
+    /// `subtypes`, of the type or trait declared at the position.
+    Subtypes,
+    /// `module_uses`, of the request's file.
+    ModuleUses,
+}
+
+impl Question {
+    /// Whether the question is about the whole project (and its
+    /// dependencies and std, as far as the project imports them), so it
+    /// checks the whole project, as references do, and needs a complete
+    /// answer: never from a repaired copy or an older check, nor past an
+    /// error in a declaration, which may hide a part of it.
+    pub fn whole_project(self) -> bool {
+        matches!(
+            self,
+            Question::References { .. }
+                | Question::Implementation
+                | Question::IncomingCalls
+                | Question::Supertypes
+                | Question::Subtypes
+                | Question::ModuleUses
+        )
+    }
 }
 
 /// The answer to a `Question`.
@@ -335,6 +377,9 @@ pub enum Reply {
     Highlights(Vec<Highlight>),
     Signature(Signature),
     Hints(Hints),
+    Items(Vec<Item>),
+    Calls(Vec<Call>),
+    Uses(Vec<ModuleUse>),
 }
 
 /// Answers questions about positions in the request's file (whose own
@@ -370,7 +415,7 @@ pub fn ask_with(
             .filter(|i| {
                 let q = questions[*i].0;
 
-                !edits_text(q) && matches!(q, Question::References { .. }) == project
+                !edits_text(q) && q.whole_project() == project
             })
             .collect();
 
@@ -1113,6 +1158,490 @@ fn references_in(
                 .collect(),
         ))
     }
+}
+
+/// A method, type or trait, as a call or type hierarchy shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Item {
+    /// Its name: `add`, `Counter`.
+    pub name: String,
+    pub kind: ItemKind,
+    /// Its module, and what it's in: `std.array.Array` for `Array.get`,
+    /// `std.array` for `Array` (`Declared::path`).
+    pub detail: String,
+    /// The whole declaration, as the compiler locates it.
+    pub place: Place,
+    /// Its name, as definition goes to it.
+    pub selection: Place,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ItemKind {
+    /// A module's method, or an external function.
+    Function,
+    /// A type's or trait's method, static or not.
+    Method,
+    Type,
+    Enum,
+    Trait,
+}
+
+/// Calls from one method to another, for a call hierarchy: the other
+/// method, and where the calls are, in the caller's file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Call {
+    pub item: Item,
+    pub ranges: Vec<Place>,
+}
+
+/// Where a module is named, for rewriting what names it when its file
+/// moves (`module_uses`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleUse {
+    pub place: Place,
+    /// Whether it's an import's whole path (`app.util` in `import
+    /// app.util (x)`), or else the module's own name used as a receiver
+    /// (`util` in `util.x`).
+    pub path: bool,
+}
+
+/// What the methods declared at a trait's method are (or the types that
+/// implement a trait), by the compiler's ids, in every module of the
+/// check (the whole project, with what it imports): for a trait, every
+/// type the type database records as implementing it; for a trait's
+/// method, every type's method that implements it (a required method's
+/// implementation, or a default method redefined), not the default
+/// methods types inherit as they are. `None` for anything else.
+fn implementations_in(scope: &Scope) -> Result<Option<Vec<Place>>, Unavailable> {
+    let db = scope.db;
+    let Some(reference) = symbol_at(
+        &scope.walker.references,
+        &scope.walker.declarations,
+        scope.at,
+    ) else {
+        return Ok(None);
+    };
+    let symbols: Vec<SymbolId> = match reference.symbol {
+        SymbolId::Trait(id) => id
+            .implemented_by(db)
+            .iter()
+            .map(|t| SymbolId::Type(*t))
+            .collect(),
+        SymbolId::Method(id) if trait_method(db, id) => implementing(db, id)
+            .into_iter()
+            .map(SymbolId::Method)
+            .collect(),
+        _ => return Ok(None),
+    };
+    let mut places: Vec<Place> = symbols
+        .into_iter()
+        .filter_map(|s| scope.declaration(s))
+        .map(|(file, location)| scope.place(&file, location))
+        .collect();
+
+    places.sort();
+    places.dedup();
+    Ok(Some(places))
+}
+
+/// Whether a method is a trait's own (required or default), rather than
+/// a type's or a module's.
+fn trait_method(db: &Database, id: MethodId) -> bool {
+    matches!(receiver(db, id), Some(TypeEnum::TraitInstance(_))) && id.original_method(db).is_none()
+}
+
+/// A method's receiver, if it has one: an external function (`fn extern`)
+/// has none (`MethodId::receiver_id` panics for it).
+fn receiver(db: &Database, id: MethodId) -> Option<TypeEnum> {
+    id.receiver(db).as_type_enum(db).ok()
+}
+
+/// Every method the type database has that implements a trait's method
+/// (`MethodSource::Implemented`): not the copies of default methods types
+/// inherit (`MethodSource::Inherited`).
+fn implementing(db: &Database, method: MethodId) -> Vec<MethodId> {
+    (0..db.number_of_methods())
+        .map(|i| MethodId(i as u32))
+        .filter(|m| matches!(m.source(db), MethodSource::Implemented(_, o) if o == method))
+        .collect()
+}
+
+/// Where the symbol at a position is declared, as Inko tells a
+/// declaration from a definition: a type's method implementing a trait's
+/// (`MethodSource::Implemented`) is declared by the trait's method;
+/// anything else is declared where it's defined (`definition_in`).
+fn declaration_in(scope: &Scope) -> Result<Option<Vec<Place>>, Unavailable> {
+    let db = scope.db;
+    let symbols = symbols_at(
+        &scope.walker.references,
+        &scope.walker.declarations,
+        scope.at,
+    );
+
+    if symbols.is_empty() {
+        return definition_in(scope);
+    }
+
+    let places: Vec<Place> = symbols
+        .into_iter()
+        .map(|r| match r.symbol {
+            SymbolId::Method(id) => match id.source(db) {
+                MethodSource::Implemented(_, original) => SymbolId::Method(original),
+                _ => r.symbol,
+            },
+            other => other,
+        })
+        .filter_map(|s| scope.declaration(s))
+        .map(|(file, location)| scope.place(&file, location))
+        .collect();
+
+    Ok((!places.is_empty()).then_some(places))
+}
+
+/// A method, type or trait as a hierarchy's item, if it's declared in the
+/// check: its whole declaration, and what it's in, as the syntax has them
+/// (`syntax::Outline`), which `Declared::path` reads too.
+fn item(scope: &Scope, symbol: SymbolId) -> Option<Item> {
+    let db = scope.db;
+    let (name, kind) = match symbol {
+        SymbolId::Method(id) => (
+            id.name(db).clone(),
+            match receiver(db, id) {
+                Some(TypeEnum::Module(_)) | None => ItemKind::Function,
+                Some(_) => ItemKind::Method,
+            },
+        ),
+        SymbolId::Type(id) => (
+            id.name(db).clone(),
+            if id.kind(db).is_enum() {
+                ItemKind::Enum
+            } else {
+                ItemKind::Type
+            },
+        ),
+        SymbolId::Trait(id) => (id.name(db).clone(), ItemKind::Trait),
+        _ => return None,
+    };
+    let (file, location) = scope.declaration(symbol)?;
+    let module = scope.checked.modules[*scope.checked.files.get(&file)?].module_id;
+    let parsed = scope.outline(&file)?;
+    let (text, outline) = &*parsed;
+    let start = Lines::new(text).offset(location.line_start, location.column_start)?;
+    let (d, parents) = outline.named_at(start)?;
+    let mut detail = module.name(db).to_string();
+
+    for p in parents {
+        detail.push('.');
+        detail.push_str(p.owner());
+    }
+
+    let positions = Positions::new(text, scope.encoding);
+
+    Some(Item {
+        name,
+        kind,
+        detail,
+        place: Place {
+            file: file.clone(),
+            range: Range {
+                start: positions.at(d.range.start),
+                end: positions.at(d.range.end),
+            },
+        },
+        selection: scope.place(&file, location),
+    })
+}
+
+/// The symbol declared at the position, if its declaration's name is
+/// there: a hierarchy's item is asked about at its name, and a name that
+/// only refers to the symbol isn't it.
+fn declared_at(scope: &Scope) -> Option<SymbolId> {
+    let r = symbol_at(
+        &scope.walker.references,
+        &scope.walker.declarations,
+        scope.at,
+    )?;
+    let (file, location) = scope.declaration(r.symbol)?;
+
+    (file == scope.file && contains(&location, scope.at)).then_some(r.symbol)
+}
+
+/// The method at a position (a call, or its declaration's name), as a call
+/// hierarchy's item.
+fn call_item_in(scope: &Scope) -> Option<Item> {
+    let r = symbol_at(
+        &scope.walker.references,
+        &scope.walker.declarations,
+        scope.at,
+    )?;
+
+    match r.symbol {
+        SymbolId::Method(_) => item(scope, r.symbol),
+        _ => None,
+    }
+}
+
+/// The method each reference is in, in a module the check walked: the
+/// innermost whose body contains it.
+fn caller(walker: &Walker, location: &Location) -> Option<MethodId> {
+    let at = HirPosition {
+        line: location.line_start,
+        column: location.column_start,
+    };
+
+    walker
+        .methods
+        .iter()
+        .filter(|(l, _)| contains(l, at))
+        .max_by_key(|(l, _)| (l.line_start, l.column_start))
+        .map(|(_, id)| *id)
+}
+
+/// The calls to the method declared at the position, in the project's own
+/// modules, by the compiler's ids (as references finds them), grouped by
+/// the method each is in. A call outside any method's body (none can be,
+/// in Inko) isn't listed.
+fn incoming_in(scope: &Scope) -> Option<Vec<Call>> {
+    let SymbolId::Method(method) = declared_at(scope)? else {
+        return None;
+    };
+    let mut calls: Vec<(MethodId, Vec<Place>)> = Vec::new();
+    let mut collect = |file: &Path, walker: &Walker| {
+        for r in &walker.references {
+            if r.symbol != SymbolId::Method(method) {
+                continue;
+            }
+
+            let Some(from) = caller(walker, &r.location) else {
+                continue;
+            };
+            let place = scope.place(file, r.location);
+
+            match calls.iter_mut().find(|(m, _)| *m == from) {
+                Some((_, places)) => places.push(place),
+                None => calls.push((from, vec![place])),
+            }
+        }
+    };
+
+    for module in scope.modules {
+        let file = module.module_id.file(scope.db);
+
+        if !scope.in_project(&file) {
+            continue;
+        } else if file == scope.file {
+            collect(&file, scope.walker);
+        } else if let Some(walker) = scope.checked.walker(&file) {
+            collect(&file, &walker);
+        }
+    }
+
+    let mut out: Vec<Call> = calls
+        .into_iter()
+        .filter_map(|(from, mut ranges)| {
+            ranges.sort();
+            ranges.dedup();
+            Some(Call {
+                item: item(scope, SymbolId::Method(from))?,
+                ranges,
+            })
+        })
+        .collect();
+
+    out.sort_by(|a, b| a.item.selection.cmp(&b.item.selection));
+    Some(out)
+}
+
+/// The methods the method declared at the position calls, by the
+/// compiler's ids, each with where in its body it calls them.
+fn outgoing_in(scope: &Scope) -> Option<Vec<Call>> {
+    let SymbolId::Method(method) = declared_at(scope)? else {
+        return None;
+    };
+    let body = scope
+        .walker
+        .methods
+        .iter()
+        .find(|(_, id)| *id == method)
+        .map(|(l, _)| *l);
+    let mut calls: Vec<(MethodId, Vec<Place>)> = Vec::new();
+
+    for r in &scope.walker.references {
+        let SymbolId::Method(to) = r.symbol else {
+            continue;
+        };
+
+        if caller(scope.walker, &r.location) != Some(method) {
+            continue;
+        }
+
+        let place = scope.place(&scope.file, r.location);
+
+        match calls.iter_mut().find(|(m, _)| *m == to) {
+            Some((_, places)) => places.push(place),
+            None => calls.push((to, vec![place])),
+        }
+    }
+
+    // A method with no body (a trait's required method) calls nothing.
+    if body.is_none() {
+        return Some(Vec::new());
+    }
+
+    let mut out: Vec<Call> = calls
+        .into_iter()
+        .filter_map(|(to, mut ranges)| {
+            ranges.sort();
+            ranges.dedup();
+            Some(Call {
+                item: item(scope, SymbolId::Method(to))?,
+                ranges,
+            })
+        })
+        .collect();
+
+    out.sort_by(|a, b| a.item.selection.cmp(&b.item.selection));
+    Some(out)
+}
+
+/// The type or trait at a position (a name that refers to it, or its
+/// declaration's), as a type hierarchy's item.
+fn type_item_in(scope: &Scope) -> Option<Item> {
+    let r = symbol_at(
+        &scope.walker.references,
+        &scope.walker.declarations,
+        scope.at,
+    )?;
+
+    match r.symbol {
+        SymbolId::Type(_) | SymbolId::Trait(_) => item(scope, r.symbol),
+        _ => None,
+    }
+}
+
+/// What the type or trait declared at the position is a subtype of, as
+/// the type database records it: the traits a type implements, or the
+/// traits a trait requires.
+fn supertypes_in(scope: &Scope) -> Option<Vec<Item>> {
+    let db = scope.db;
+    let traits: Vec<TraitId> = match declared_at(scope)? {
+        SymbolId::Type(id) => id
+            .implemented_traits(db)
+            .map(|i| i.instance.instance_of())
+            .collect(),
+        SymbolId::Trait(id) => id
+            .required_traits(db)
+            .into_iter()
+            .map(|i| i.instance_of())
+            .collect(),
+        _ => return None,
+    };
+
+    Some(items(
+        scope,
+        traits.into_iter().map(SymbolId::Trait).collect(),
+    ))
+}
+
+/// The subtypes of the trait declared at the position, as the type
+/// database records them: the traits that require it, and the types that
+/// implement it. A type has none.
+fn subtypes_in(scope: &Scope) -> Option<Vec<Item>> {
+    let db = scope.db;
+    let symbols: Vec<SymbolId> = match declared_at(scope)? {
+        SymbolId::Type(_) => Vec::new(),
+        SymbolId::Trait(id) => (0..db.number_of_traits())
+            .map(|i| TraitId(i as u32))
+            .filter(|t| t.required_traits(db).iter().any(|r| r.instance_of() == id))
+            .map(SymbolId::Trait)
+            .chain(id.implemented_by(db).iter().map(|t| SymbolId::Type(*t)))
+            .collect(),
+        _ => return None,
+    };
+
+    Some(items(scope, symbols))
+}
+
+/// The items of symbols declared in the check, sorted by where they are,
+/// each once.
+fn items(scope: &Scope, symbols: Vec<SymbolId>) -> Vec<Item> {
+    let mut out: Vec<Item> = symbols.into_iter().filter_map(|s| item(scope, s)).collect();
+
+    out.sort_by(|a, b| a.selection.cmp(&b.selection));
+    out.dedup();
+    out
+}
+
+/// Where the project's own modules name the request's module, by the
+/// compiler's ids: the paths of the imports that resolve to it, and the
+/// names elsewhere that refer to it by its own name (`util` in
+/// `util.helper`, not an alias or `self`).
+fn module_uses_in(scope: &Scope) -> Vec<ModuleUse> {
+    let db = scope.db;
+    let module = scope.module;
+    let name = module.name(db).to_string();
+    let last = name.rsplit('.').next().unwrap_or(&name).to_string();
+    let mut found: Vec<ModuleUse> = Vec::new();
+    let mut collect = |file: &Path, walker: &Walker| {
+        let text = scope.checked.text(file);
+        let lines = Lines::new(&text);
+        let paths: Vec<Location> = walker
+            .imports
+            .iter()
+            .filter(|(_, m)| *m == Some(module))
+            .map(|(l, _)| *l)
+            .collect();
+
+        for path in &paths {
+            found.push(ModuleUse {
+                place: scope.place(file, *path),
+                path: true,
+            });
+        }
+
+        for r in &walker.references {
+            let l = &r.location;
+            let inside = |p: &Location| {
+                (p.line_start, p.column_start) <= (l.line_start, l.column_start)
+                    && (l.line_end, l.column_end) <= (p.line_end, p.column_end)
+            };
+
+            if r.symbol != SymbolId::Module(module) || walker.imports.iter().any(|(p, _)| inside(p))
+            {
+                continue;
+            }
+
+            let (Some(start), Some(end)) = (
+                lines.offset(l.line_start, l.column_start),
+                lines.offset(l.line_end, l.column_end + 1),
+            ) else {
+                continue;
+            };
+
+            if text[start..end] == last {
+                found.push(ModuleUse {
+                    place: scope.place(file, r.location),
+                    path: false,
+                });
+            }
+        }
+    };
+
+    for m in scope.modules {
+        let file = m.module_id.file(db);
+
+        if !scope.in_project(&file) {
+            continue;
+        } else if file == scope.file {
+            collect(&file, scope.walker);
+        } else if let Some(walker) = scope.checked.walker(&file) {
+            collect(&file, &walker);
+        }
+    }
+
+    found.sort_by(|a, b| a.place.cmp(&b.place));
+    found.dedup();
+    found
 }
 
 /// A diagnostic, as `inko check` reports it.
@@ -2186,9 +2715,28 @@ struct Scope<'a, 'db> {
     at: HirPosition,
     target: &'a Target,
     encoding: Encoding,
+    /// Each file's text and outline, read once for the hierarchies' items
+    /// (`Scope::outline`).
+    outlines: &'a Outlines,
 }
 
+/// Files' texts and outlines, by path: `None` for one that doesn't parse.
+type Outlines = RefCell<HashMap<PathBuf, Option<Rc<(String, syntax::Outline)>>>>;
+
 impl Scope<'_, '_> {
+    /// A checked file's text and its outline (`syntax::parse`), read once.
+    fn outline(&self, file: &Path) -> Option<Rc<(String, syntax::Outline)>> {
+        self.outlines
+            .borrow_mut()
+            .entry(file.to_path_buf())
+            .or_insert_with(|| {
+                let text = self.checked.text(file);
+
+                syntax::parse(&text).map(|o| Rc::new((text.to_string(), o)))
+            })
+            .clone()
+    }
+
     /// Where a symbol is declared: in the checked modules, or else among
     /// the walked module's variables. The first declaration wins, as
     /// `Index::add` has it.
@@ -2395,6 +2943,15 @@ fn inspect(question: Question, scope: &Scope) -> Result<Option<Reply>, Unavailab
                 covered: None,
             })
         }),
+        Question::Implementation => implementations_in(scope)?.map(Reply::Places),
+        Question::Declaration => declaration_in(scope)?.map(Reply::Places),
+        Question::CallItem => call_item_in(scope).map(|i| Reply::Items(vec![i])),
+        Question::IncomingCalls => incoming_in(scope).map(Reply::Calls),
+        Question::OutgoingCalls => outgoing_in(scope).map(Reply::Calls),
+        Question::TypeItem => type_item_in(scope).map(|i| Reply::Items(vec![i])),
+        Question::Supertypes => supertypes_in(scope).map(Reply::Items),
+        Question::Subtypes => subtypes_in(scope).map(Reply::Items),
+        Question::ModuleUses => Some(Reply::Uses(module_uses_in(scope))),
     })
 }
 
@@ -2442,6 +2999,27 @@ fn merged(a: Answer<Reply>, b: Answer<Reply>) -> Answer<Reply> {
             });
             places.dedup();
             Ok(Some(Reply::Places(places)))
+        }
+        (Ok(Some(Reply::Items(mut items))), Ok(Some(Reply::Items(more)))) => {
+            items.extend(more);
+            items.sort_by(|x, y| x.selection.cmp(&y.selection));
+            items.dedup();
+            Ok(Some(Reply::Items(items)))
+        }
+        (Ok(Some(Reply::Calls(mut calls))), Ok(Some(Reply::Calls(more)))) => {
+            for call in more {
+                match calls.iter_mut().find(|c| c.item == call.item) {
+                    Some(c) => {
+                        c.ranges.extend(call.ranges);
+                        c.ranges.sort();
+                        c.ranges.dedup();
+                    }
+                    None => calls.push(call),
+                }
+            }
+
+            calls.sort_by(|x, y| x.item.selection.cmp(&y.item.selection));
+            Ok(Some(Reply::Calls(calls)))
         }
         (Ok(a), Ok(b)) => Ok(a.or(b)),
     };
@@ -2555,6 +3133,7 @@ fn analyze(
             return Err(Unavailable::new("internal", "the file wasn't type checked"));
         };
         let module = walker_module(checked, &file);
+        let outlines = Outlines::default();
         let scope = |at: HirPosition| Scope {
             db: checked.db,
             modules: checked.modules,
@@ -2566,6 +3145,7 @@ fn analyze(
             at,
             target: checked.target,
             encoding,
+            outlines: &outlines,
         };
 
         if !checked.guarded() {
@@ -2628,6 +3208,13 @@ fn analyze(
                     if matches!(question, Question::References { .. })
                         && found.is_some()
                         && hidden(&scope, errors)
+                    {
+                        return Err(declaration_errors());
+                    }
+
+                    // The error may hide an implementation, a call or a
+                    // use of the module anywhere.
+                    if question.whole_project() && !matches!(question, Question::References { .. })
                     {
                         return Err(declaration_errors());
                     }
@@ -3536,6 +4123,8 @@ fn from_older(
             return nothing();
         };
 
+        let outlines = Outlines::default();
+
         questions
             .iter()
             .zip(&positions)
@@ -3553,6 +4142,7 @@ fn from_older(
                     at,
                     target: checked.target,
                     encoding,
+                    outlines: &outlines,
                 };
 
                 through(
@@ -3950,6 +4540,38 @@ impl<'a> Guard<'a> {
             )),
             Some(Reply::Signature(s)) => Some(Reply::Signature(s)),
             Some(Reply::Hints(hs)) => Some(Reply::Hints(hs)),
+            Some(Reply::Items(items)) => Some(Reply::Items(
+                items
+                    .into_iter()
+                    .map(|i| self.item(i))
+                    .collect::<Option<_>>()?,
+            )),
+            Some(Reply::Calls(calls)) => Some(Reply::Calls(
+                calls
+                    .into_iter()
+                    .map(|c| {
+                        Some(Call {
+                            item: self.item(c.item)?,
+                            ranges: c
+                                .ranges
+                                .into_iter()
+                                .map(|p| self.place(p))
+                                .collect::<Option<_>>()?,
+                        })
+                    })
+                    .collect::<Option<_>>()?,
+            )),
+            // Only ever from the documents as they are (`whole_project`).
+            Some(Reply::Uses(_)) => return None,
+        })
+    }
+
+    /// An item, with its ranges mapped (`place`).
+    fn item(&self, item: Item) -> Option<Item> {
+        Some(Item {
+            place: self.place(item.place)?,
+            selection: self.place(item.selection)?,
+            ..item
         })
     }
 

@@ -85,12 +85,16 @@ one the step calls for.
 - **Latency:** in the check of every commit, tests/latency.rs scales each
   latency limit by the machine's load (the last minute's load average per
   core, when it's over 1), so other processes can't fail a commit. The
-  limits as written (`CUTTLEBONE_LATENCY_STRICT`) are advisory locally:
-  the milestone tier runs them and reports a failure without failing.
-  The release tier in CI holds every query to them, failing. Ratios
-  between two measurements taken in the same run (a question after a
-  cancel, a second lookup) aren't scaled in any tier. Don't loosen a
-  written limit to get past a loaded machine.
+  limits as written (`CUTTLEBONE_LATENCY_STRICT`) are for the reference
+  machine (an Apple M1 Max): scripts/latency.sh first measures a fixed
+  baseline workload (the upstream compiler alone) on the machine it runs
+  on, prints it, and scales every strict limit by how it compares with
+  the reference's. They're advisory locally: the milestone tier runs
+  them and reports a failure without failing. The release tier in CI
+  holds every query to them, failing. Ratios between two measurements
+  taken in the same run (a question after a cancel, a second lookup)
+  aren't scaled in any tier. Don't loosen a written limit, or the
+  reference's baseline, to get past a loaded machine or a slow runner.
 - **Milestone reports (locally):** `scripts/check.sh --milestone [REV]`,
   where REV is the milestone's first commit (by default, the last commit
   that changed a milestone report). It adds the whole corpus, the latency
@@ -103,8 +107,9 @@ one the step calls for.
 - **Release (CI, on every tag push):** `.github/workflows/release.yml`
   runs the exhaustive tier: `scripts/check.sh --release` on macOS (the
   milestone tier's checks), `scripts/check.sh --latency` on a macOS
-  runner of its own (the latency limits as written, failing, one test at
-  a time), and every mutation, sharded across parallel jobs:
+  runner of its own (the latency limits as written, scaled by the
+  runner's baseline, failing, one test at a time; by hand too:
+  .github/workflows/latency.yml), and every mutation, sharded across parallel jobs:
   `scripts/mutate.py --shard K/16` on 16 Linux runners, each running the
   unmutated control check first, and `--shard dist` (the release
   tooling's, which need macOS) on macOS. Publishing waits until all of

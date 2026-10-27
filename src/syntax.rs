@@ -1212,6 +1212,449 @@ fn import_fold(text: &str, run: Option<(usize, usize)>) -> Option<Fold> {
     })
 }
 
+/// A bracket open around the current token (the text's own level has
+/// none), and the units inside it so far, for `selections`.
+type Open = (Option<(ast::lexer::TokenKind, Range<usize>)>, Vec<Unit>);
+
+/// A token, or a bracket and what's inside it up to the bracket that
+/// closes it, for `selections`.
+#[derive(Debug)]
+struct Unit {
+    kind: ast::lexer::TokenKind,
+    range: Range<usize>,
+    /// What's inside, for a bracket (or a string's quotes) that something
+    /// closes.
+    children: Option<Vec<Unit>>,
+}
+
+/// The ranges to select at each of `offsets`, innermost first, each containing the
+/// one before it and larger: from the tokens alone, so also where the text
+/// doesn't parse, and from the declarations (`outline`, from a copy with
+/// lines blank where it doesn't parse).
+///
+/// - the token there (the one starting there, or else the one ending
+///   there); none in whitespace
+/// - at each bracket around it, inside out: the chain of names, `.`s and
+///   argument lists up to and including it (`a.b` in `a.b.c(x)`), the whole
+///   chain (`a.b.c(x)`), the element of a list it's in (between commas), or
+///   the statement (between lines, where the line before doesn't go on),
+///   then what's inside the bracket, then the bracket too
+/// - each declaration around it, and the whole text
+///
+/// A bracket nothing closes is a token like any other, so a bracket typed
+/// without its pair yet doesn't change what's around it.
+pub fn selections(text: &str, offsets: &[usize]) -> Vec<Vec<Range<usize>>> {
+    use ast::lexer::{Lexer, TokenKind as T};
+
+    let mut cursor = Cursor::new(text);
+    let mut at = |line: u32, column: u32| cursor.offset(line, column);
+    let mut lexer = Lexer::new(text.as_bytes().to_vec());
+    // The units of each bracket open around the current token, outermost
+    // (the text) first, with the bracket's token.
+    let mut open: Vec<Open> = vec![(None, Vec::new())];
+    let mut comments: Vec<Range<usize>> = Vec::new();
+
+    loop {
+        let token = lexer.next_token();
+        let l = &token.location;
+
+        match token.kind {
+            T::Null => break,
+            T::Whitespace => continue,
+            _ => {}
+        }
+
+        let range = at(l.line_start, l.column_start)..at(l.line_end, l.column_end + 1);
+
+        if token.kind == T::Comment {
+            comments.push(range);
+            continue;
+        }
+
+        let opening = match token.kind {
+            T::CurlyClose => Some(&[T::CurlyOpen][..]),
+            T::ParenClose => Some(&[T::ParenOpen][..]),
+            T::BracketClose => Some(&[T::BracketOpen][..]),
+            T::SingleStringClose => Some(&[T::SingleStringOpen][..]),
+            T::DoubleStringClose => Some(&[T::DoubleStringOpen][..]),
+            T::StringExprClose => Some(&[T::StringExprOpen][..]),
+            _ => None,
+        };
+
+        match token.kind {
+            T::CurlyOpen
+            | T::ParenOpen
+            | T::BracketOpen
+            | T::SingleStringOpen
+            | T::DoubleStringOpen
+            | T::StringExprOpen => {
+                open.push((Some((token.kind, range)), Vec::new()));
+                continue;
+            }
+            _ => {}
+        }
+
+        let closes = opening.and_then(|kinds| {
+            open.iter()
+                .rposition(|(o, _)| o.as_ref().is_some_and(|(k, _)| kinds.contains(k)))
+        });
+
+        let Some(i) = closes else {
+            open.last_mut().unwrap().1.push(Unit {
+                kind: token.kind,
+                range,
+                children: None,
+            });
+            continue;
+        };
+
+        // Brackets inside it that nothing closed are tokens like any other.
+        while open.len() > i + 1 {
+            dissolve(&mut open);
+        }
+
+        let (bracket, children) = open.pop().unwrap();
+        let (kind, start) = bracket.unwrap();
+
+        open.last_mut().unwrap().1.push(Unit {
+            kind,
+            range: start.start..range.end,
+            children: Some(children),
+        });
+    }
+
+    while open.len() > 1 {
+        dissolve(&mut open);
+    }
+
+    let declarations: Vec<Range<usize>> = outline(text)
+        .map(|o| o.all().iter().map(|(d, _)| d.range.clone()).collect())
+        .unwrap_or_default();
+    let starts = crate::position::line_starts(text);
+
+    offsets
+        .iter()
+        .map(|offset| select_at(text, *offset, &open[0].1, &comments, &declarations, &starts))
+        .collect()
+}
+
+/// `selections` at one offset.
+fn select_at(
+    text: &str,
+    offset: usize,
+    top: &[Unit],
+    comments: &[Range<usize>],
+    declarations: &[Range<usize>],
+    starts: &[usize],
+) -> Vec<Range<usize>> {
+    use ast::lexer::TokenKind as T;
+
+    let mut found: Vec<Range<usize>> = Vec::new();
+
+    if let Some(range) = comments
+        .iter()
+        .find(|r| r.start <= offset && offset <= r.end)
+    {
+        found.push(range.clone());
+    }
+
+    let mut level = top;
+    let mut path: Vec<(&[Unit], usize)> = Vec::new();
+
+    // The innermost unit at the offset: one starting there, or else one
+    // ending there.
+    while let Some(i) = level
+        .iter()
+        .position(|u| u.range.start <= offset && offset < u.range.end)
+        .or_else(|| level.iter().position(|u| u.range.end == offset))
+    {
+        path.push((level, i));
+
+        match &level[i].children {
+            Some(children) if level[i].range.start < offset && offset < level[i].range.end => {
+                level = children
+            }
+            _ => break,
+        }
+    }
+
+    for (depth, (units, i)) in path.iter().enumerate().rev() {
+        let unit = &units[*i];
+
+        if depth + 1 == path.len() && unit.children.is_none() {
+            found.push(unit.range.clone());
+        } else if let Some(children) = &unit.children
+            && let (Some(first), Some(last)) = (children.first(), children.last())
+            && first.range.start <= offset
+            && offset <= last.range.end
+        {
+            found.push(first.range.start..last.range.end);
+        }
+
+        found.push(unit.range.clone());
+
+        let (from, to) = chain(units, *i);
+        let mut end = units[*i].range.end;
+
+        // A call's arguments with the name.
+        if *i < to && joined(&units[*i], &units[*i + 1]) && is_arguments(&units[*i + 1]) {
+            end = units[*i + 1].range.end;
+        }
+
+        found.push(units[from].range.start..end);
+        found.push(units[from].range.start..units[to].range.end);
+
+        let (from, to) = match depth.checked_sub(1).map(|d| path[d].0[path[d].1].kind) {
+            Some(T::ParenOpen | T::BracketOpen) => element(units, *i),
+            _ => statement(units, *i, starts),
+        };
+
+        found.push(units[from].range.start..units[to].range.end);
+    }
+
+    for declaration in declarations {
+        if declaration.start <= offset && offset <= declaration.end {
+            found.push(declaration.clone());
+        }
+    }
+
+    found.push(0..text.len());
+
+    let anchor = found.first().cloned().unwrap_or(offset..offset);
+
+    found.retain(|r| r.start <= anchor.start && anchor.end <= r.end);
+    nested(found)
+}
+
+/// Ranges from the smallest up, each containing the one before it and
+/// larger: one that overlaps another without containing it is left out,
+/// and so is one equal to another.
+fn nested(mut found: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    found.sort_by_key(|r| (r.end - r.start, r.start));
+
+    let mut out: Vec<Range<usize>> = Vec::new();
+
+    for range in found {
+        match out.last() {
+            Some(last) if !(range.start <= last.start && last.end <= range.end) => {}
+            Some(last) if *last == range => {}
+            _ => out.push(range),
+        }
+    }
+
+    out
+}
+
+/// Byte offsets of the compiler's lines and columns (grapheme clusters,
+/// lines ending at `\n`), for positions in order, as tokens come: each
+/// counts on from the one before on the same line, rather than from the
+/// line's start, as `Lines::offset` does.
+struct Cursor<'a> {
+    text: &'a str,
+    /// The line (1-based), column and byte offset last converted.
+    line: u32,
+    column: u32,
+    offset: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(text: &'a str) -> Self {
+        Cursor {
+            text,
+            line: 1,
+            column: 1,
+            offset: 0,
+        }
+    }
+
+    /// Where the cluster at `line` and `column` starts, clamped to the end
+    /// of its line (and of the text).
+    fn offset(&mut self, line: u32, column: u32) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+
+        if line < self.line || (line == self.line && column < self.column) {
+            *self = Cursor::new(self.text);
+        }
+
+        while self.line < line {
+            match self.text[self.offset..].find('\n') {
+                Some(i) => {
+                    self.offset += i + 1;
+                    self.line += 1;
+                    self.column = 1;
+                }
+                None => return self.text.len(),
+            }
+        }
+
+        let rest = &self.text[self.offset..];
+        let rest = &rest[..rest.find('\n').unwrap_or(rest.len())];
+        let count = (column - self.column) as usize;
+        let width: usize = if rest.is_ascii() {
+            count.min(rest.len())
+        } else {
+            rest.graphemes(true).take(count).map(str::len).sum()
+        };
+
+        self.offset += width;
+        self.column = column;
+        self.offset
+    }
+}
+
+/// The innermost bracket nothing closed, as tokens of the one around it.
+fn dissolve(open: &mut Vec<Open>) {
+    let (bracket, children) = open.pop().unwrap();
+    let parent = &mut open.last_mut().unwrap().1;
+
+    if let Some((kind, range)) = bracket {
+        parent.push(Unit {
+            kind,
+            range,
+            children: None,
+        });
+    }
+
+    parent.extend(children);
+}
+
+/// Whether two units are parts of one chain of names, `.`s and argument
+/// lists: `a.b`, `b(x)`, `a.b[0]`.
+fn joined(a: &Unit, b: &Unit) -> bool {
+    use ast::lexer::TokenKind as T;
+
+    a.kind == T::Dot
+        || b.kind == T::Dot
+        || (is_arguments(b)
+            && a.range.end == b.range.start
+            && matches!(
+                a.kind,
+                T::Identifier
+                    | T::Constant
+                    | T::Field
+                    | T::SelfObject
+                    | T::ParenOpen
+                    | T::BracketOpen
+                    | T::SingleStringOpen
+                    | T::DoubleStringOpen
+            ))
+}
+
+/// Whether a unit is an argument list (or an index): a bracket something
+/// closes.
+fn is_arguments(unit: &Unit) -> bool {
+    use ast::lexer::TokenKind as T;
+
+    unit.children.is_some() && matches!(unit.kind, T::ParenOpen | T::BracketOpen)
+}
+
+/// The first and last units of the chain the `i`th is in.
+fn chain(units: &[Unit], i: usize) -> (usize, usize) {
+    let mut from = i;
+    let mut to = i;
+
+    while from > 0 && joined(&units[from - 1], &units[from]) {
+        from -= 1;
+    }
+
+    while to + 1 < units.len() && joined(&units[to], &units[to + 1]) {
+        to += 1;
+    }
+
+    (from, to)
+}
+
+/// The first and last units of the element of a list the `i`th is in:
+/// between the commas around it.
+fn element(units: &[Unit], i: usize) -> (usize, usize) {
+    use ast::lexer::TokenKind as T;
+
+    let comma = |u: &Unit| u.kind == T::Comma;
+    let from = units[..i].iter().rposition(comma).map_or(0, |c| c + 1);
+    let to = units[i..]
+        .iter()
+        .position(comma)
+        .map_or(units.len() - 1, |c| (i + c).saturating_sub(1));
+
+    if comma(&units[i]) {
+        return (i, i);
+    }
+
+    (from.min(i), to.max(i))
+}
+
+/// The first and last units of the statement the `i`th is in: a new line
+/// starts one, unless the line before ends with something that goes on (an
+/// operator, a `.`, a `,`, `=` or `->`), or the line starts with a `.`.
+fn statement(units: &[Unit], i: usize, starts: &[usize]) -> (usize, usize) {
+    use ast::lexer::TokenKind as T;
+
+    let line = |offset: usize| starts.partition_point(|s| *s <= offset);
+    let goes_on = |u: &Unit| {
+        u.children.is_none()
+            && matches!(
+                u.kind,
+                T::Add
+                    | T::AddAssign
+                    | T::And
+                    | T::Arrow
+                    | T::As
+                    | T::Assign
+                    | T::BitAnd
+                    | T::BitAndAssign
+                    | T::BitOr
+                    | T::BitOrAssign
+                    | T::BitXor
+                    | T::BitXorAssign
+                    | T::Colon
+                    | T::Comma
+                    | T::Div
+                    | T::DivAssign
+                    | T::Dot
+                    | T::DoubleArrow
+                    | T::Eq
+                    | T::Ge
+                    | T::Gt
+                    | T::Le
+                    | T::Lt
+                    | T::Mod
+                    | T::ModAssign
+                    | T::Mul
+                    | T::MulAssign
+                    | T::Ne
+                    | T::Or
+                    | T::Pow
+                    | T::PowAssign
+                    | T::Replace
+                    | T::Shl
+                    | T::ShlAssign
+                    | T::Shr
+                    | T::ShrAssign
+                    | T::Sub
+                    | T::SubAssign
+                    | T::UnsignedShr
+                    | T::UnsignedShrAssign
+            )
+    };
+    let breaks = |a: &Unit, b: &Unit| {
+        line(b.range.start) > line(a.range.end.saturating_sub(1))
+            && !goes_on(a)
+            && !(b.kind == T::Dot)
+    };
+    let mut from = i;
+    let mut to = i;
+
+    while from > 0 && !breaks(&units[from - 1], &units[from]) {
+        from -= 1;
+    }
+
+    while to + 1 < units.len() && !breaks(&units[to], &units[to + 1]) {
+        to += 1;
+    }
+
+    (from, to)
+}
+
 /// `text` as `inko fmt` formats it: the upstream formatter itself
 /// (compiler/src/format.rs), given the module parsed with its comments, as
 /// `inko fmt` parses it. `None` if it doesn't parse, which `inko fmt`
@@ -1228,6 +1671,59 @@ pub fn format(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selections_take_a_calls_arguments_with_its_name() {
+        let text = "fn f {\n  a.b(x).c\n}\n";
+        let at = text.find("b(").unwrap();
+        let chain: Vec<&str> = selections(text, &[at])[0]
+            .iter()
+            .map(|r| &text[r.clone()])
+            .collect();
+
+        assert_eq!(
+            &chain[..4],
+            &["b", "a.b(x)", "a.b(x).c", "{\n  a.b(x).c\n}"]
+        );
+    }
+
+    /// What's selected at `offset`, as text.
+    fn selected(text: &str, offset: usize) -> Vec<&str> {
+        selections(text, &[offset])[0]
+            .iter()
+            .map(|r| &text[r.clone()])
+            .collect()
+    }
+
+    #[test]
+    fn a_statement_goes_on_where_its_line_does() {
+        let text = "fn f {\n  let a = 1 +\n    2\n  a\n}\n";
+
+        assert_eq!(
+            &selected(text, text.find("2\n").unwrap())[..2],
+            &["2", "let a = 1 +\n    2"]
+        );
+    }
+
+    /// A bracket closed by another kind is a token like any other, and
+    /// so is the one that "closes" it.
+    #[test]
+    fn a_bracket_closes_only_its_own_kind() {
+        let text = "fn f {\n  [1, 2)\n  x\n}\n";
+
+        assert_eq!(
+            &selected(text, text.find("2)").unwrap())[..2],
+            &["2", "[1, 2)"]
+        );
+    }
+
+    #[test]
+    fn ranges_that_overlap_without_nesting_are_left_out() {
+        assert_eq!(
+            nested(vec![5..9, 0..20, 4..12, 2..10, 5..9]),
+            vec![5..9, 2..10, 0..20]
+        );
+    }
 
     fn fold_lines(text: &str) -> Vec<(FoldKind, usize, usize)> {
         let line = |offset: usize| text[..offset].matches('\n').count();

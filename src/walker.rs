@@ -560,6 +560,9 @@ pub struct Walker<'a> {
     pub methods: Vec<(Location, MethodId)>,
     /// Where each type name is written.
     pub type_names: Vec<Location>,
+    /// Each import's path (`app.util` in `import app.util (x)`), and the
+    /// module it resolves to, if any.
+    pub imports: Vec<(Location, Option<ModuleId>)>,
     /// Where each block being walked ends.
     ends: Vec<(u32, u32)>,
 }
@@ -581,6 +584,7 @@ impl<'a> Walker<'a> {
             visible: Vec::new(),
             methods: Vec::new(),
             type_names: Vec::new(),
+            imports: Vec::new(),
             ends: Vec::new(),
         }
     }
@@ -729,6 +733,18 @@ impl<'a> Walker<'a> {
             path.push(segment.name.as_str());
             module = self.db.optional_module(&path.join("."));
             self.refer(segment.location, module.map(SymbolId::Module));
+        }
+
+        if let (Some(first), Some(last)) = (node.source.first(), node.source.last()) {
+            self.imports.push((
+                Location {
+                    line_start: first.location.line_start,
+                    line_end: last.location.line_end,
+                    column_start: first.location.column_start,
+                    column_end: last.location.column_end,
+                },
+                module,
+            ));
         }
 
         let Some(module) = module else {

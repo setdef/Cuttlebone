@@ -30,11 +30,21 @@ const RUNS: usize = 7;
 /// a commit (AGENTS.md, "Checks").
 const STRICT_VARIABLE: &str = "CUTTLEBONE_LATENCY_STRICT";
 
+/// With `STRICT_VARIABLE`, how this machine compares with the reference
+/// machine the limits are written for: its baseline over the reference's
+/// (`measure_the_baseline`). scripts/latency.sh measures it and sets it.
+const SCALE_VARIABLE: &str = "CUTTLEBONE_LATENCY_SCALE";
+
 /// A latency limit: `base`, or in the check of every commit, `base` times
-/// the machine's load.
+/// the machine's load. With `STRICT_VARIABLE`, `base` for the reference
+/// machine, times `SCALE_VARIABLE` if it's set (`scaled`).
 fn limit(base: Duration) -> Duration {
     if std::env::var_os(STRICT_VARIABLE).is_some() {
-        return base;
+        let scale = std::env::var(SCALE_VARIABLE)
+            .ok()
+            .map(|s| s.parse::<f64>().expect("a number"));
+
+        return scaled(base, scale);
     }
 
     let factor = load();
@@ -52,11 +62,96 @@ fn limit(base: Duration) -> Duration {
     base.mul_f64(factor)
 }
 
+/// A strict limit on a machine `scale` times as slow as the reference
+/// (`None`: the reference itself).
+fn scaled(base: Duration, scale: Option<f64>) -> Duration {
+    base.mul_f64(scale.unwrap_or(1.0))
+}
+
+/// The reference machine's baseline (`baseline`): an Apple M1 Max, under
+/// `cargo test`, the fastest of the runs measured there (docs/history/
+/// MILESTONE-14.md). The limits as written are for it.
+const REFERENCE_BASELINE: Duration = Duration::from_millis(REFERENCE_BASELINE_MS);
+const REFERENCE_BASELINE_MS: u64 = 133;
+
+/// How many times the baseline runs: the fastest counts, as the one the
+/// least disturbed by anything else.
+const BASELINE_RUNS: usize = 7;
+
+/// The baseline workload: the upstream compiler alone, none of
+/// Cuttlebone, type checking the std-sized project's module (every module
+/// of std), the fastest of `BASELINE_RUNS`. Nothing Cuttlebone changes
+/// can make it slower or faster, so a slower Cuttlebone still fails the
+/// limits it scales.
+fn baseline() -> Duration {
+    let (root, _) = std_sized_project();
+    let std = upstream_std();
+
+    (0..BASELINE_RUNS)
+        .map(|_| {
+            let mut config = compiler::config::Config::new().unwrap();
+
+            config.std = std.clone();
+            config.add_source_directory(std.clone());
+            config.source = root.join("src");
+            config.tests = root.join("\0no-tests");
+            config.build = root.join("build");
+            config.dependencies = root.join("dep");
+
+            let mut compiler = compiler::compiler::Compiler::new(config);
+            let start = Instant::now();
+
+            let checked = compiler
+                .check_with(Some(root.join("src/main.inko")), |_, _, _| false)
+                .is_ok();
+
+            assert!(checked, "the baseline didn't type check");
+            start.elapsed()
+        })
+        .min()
+        .unwrap()
+}
+
+/// Measures the baseline, and writes it, the reference's and the scale
+/// (the first over the second) to the file `CUTTLEBONE_LATENCY_BASELINE`
+/// names, for scripts/latency.sh. Ignored but there: it measures, and
+/// checks nothing.
+#[test]
+#[ignore]
+fn measure_the_baseline() {
+    let measured = baseline();
+    let scale = measured.as_secs_f64() / REFERENCE_BASELINE.as_secs_f64();
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let report = format!(
+        "baseline {:.1} ms on this machine ({} cores, the fastest of {} runs)\n\
+         reference {:.1} ms (an Apple M1 Max)\n\
+         scale {:.3}: every strict limit times this\n",
+        measured.as_secs_f64() * 1000.0,
+        cores,
+        BASELINE_RUNS,
+        REFERENCE_BASELINE.as_secs_f64() * 1000.0,
+        scale
+    );
+
+    eprint!("{}", report);
+
+    if let Some(path) = std::env::var_os("CUTTLEBONE_LATENCY_BASELINE") {
+        std::fs::write(path, report).unwrap();
+    }
+}
+
+#[test]
+fn strict_limits_scale_by_the_baseline() {
+    assert_eq!(scaled(LIMIT, None), LIMIT);
+    assert_eq!(scaled(LIMIT, Some(1.2)), Duration::from_millis(600));
+    assert_eq!(scaled(LIMIT, Some(0.9)), Duration::from_millis(450));
+}
+
 /// The milestone tier and the mutations set `STRICT_VARIABLE`, and then
 /// the limits are exactly as written, however loaded the machine is.
 #[test]
 fn limits_are_as_written_when_strict() {
-    if std::env::var_os(STRICT_VARIABLE).is_some() {
+    if std::env::var_os(STRICT_VARIABLE).is_some() && std::env::var_os(SCALE_VARIABLE).is_none() {
         assert_eq!(limit(LIMIT), LIMIT);
         assert_eq!(limit(BURST_LIMIT), BURST_LIMIT);
     } else {
@@ -338,7 +433,7 @@ fn document_symbols_of_the_largest_std_module_are_fast_enough() {
 const LAYOUT_LIMIT: Duration = Duration::from_millis(150);
 
 #[test]
-fn folding_and_formatting_the_largest_std_module_are_fast_enough() {
+fn folding_formatting_and_selection_in_the_largest_std_module_are_fast_enough() {
     // Milliseconds: alone, as document symbols.
     let _alone = alone();
     let std = upstream_std();
@@ -366,9 +461,20 @@ fn folding_and_formatting_the_largest_std_module_are_fast_enough() {
         json!({ "textDocument": document, "options": { "tabSize": 2, "insertSpaces": true } }),
     ));
 
+    // Ten positions through the file, in one request.
+    let lines = flat.lines().count();
+    let positions: Vec<serde_json::Value> = (0..10)
+        .map(|i| json!({ "line": i * lines / 10, "character": 2 }))
+        .collect();
+    let selection = median(request_times(
+        &mut client,
+        "textDocument/selectionRange",
+        json!({ "textDocument": document, "positions": positions }),
+    ));
+
     eprintln!(
-        "std.net.http.server: folding ranges {:?}, formatting {:?}",
-        folding, formatting
+        "std.net.http.server: folding ranges {:?}, formatting {:?}, selection ranges {:?}",
+        folding, formatting, selection
     );
 
     let max = limit(LAYOUT_LIMIT);
@@ -383,6 +489,12 @@ fn folding_and_formatting_the_largest_std_module_are_fast_enough() {
         formatting < max,
         "formatting: median {:?} exceeds {:?}",
         formatting,
+        max
+    );
+    assert!(
+        selection < max,
+        "selection ranges: median {:?} exceeds {:?}",
+        selection,
         max
     );
 }
@@ -660,6 +772,165 @@ fn references_across_std_are_fast_enough() {
 
     eprintln!("references across std: {:?} (all: {:?})", median, times);
     let max = limit(LIMIT);
+    assert!(median < max, "median {:?} exceeds {:?}", median, max);
+}
+
+/// Implementations, incoming calls, subtypes and a file's rename each
+/// check the whole project, as references do: across all of std.
+#[test]
+fn implementations_hierarchies_and_renames_across_std_are_fast_enough() {
+    let _shared = shared();
+    let std = upstream_std();
+    let file = std.join("std/string.inko");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut client = uncached(std.parent().unwrap(), QUERIES_ONLY.clone());
+    let (line, character) = at(&text, "trait pub ToString", 10, false);
+    let item = |client: &mut Client, method: &str| {
+        let id = client.send_request(method, position(&file, line, character));
+
+        client.response(id)["result"][0].clone()
+    };
+    let named = item(&mut client, "textDocument/prepareTypeHierarchy");
+    let (line, character) = at(&text, "fn pub to_string -> String\n", 7, false);
+    let method = {
+        let id = client.send_request(
+            "textDocument/prepareCallHierarchy",
+            position(&file, line, character),
+        );
+
+        client.response(id)["result"][0].clone()
+    };
+    let (trait_line, trait_character) = at(&text, "trait pub ToString", 10, false);
+    let target = std.join("std/strings.inko");
+    let asked = [
+        (
+            "textDocument/implementation",
+            position(&file, trait_line, trait_character),
+        ),
+        ("callHierarchy/incomingCalls", json!({ "item": method })),
+        ("typeHierarchy/subtypes", json!({ "item": named })),
+        (
+            "workspace/willRenameFiles",
+            json!({ "files": [{ "oldUri": uri(&file), "newUri": uri(&target) }] }),
+        ),
+    ];
+
+    for (method, params) in asked {
+        let times = request_times(&mut client, method, params);
+        let median = median(times.clone());
+
+        eprintln!("{} across std: {:?} (all: {:?})", method, median, times);
+
+        let max = limit(LIMIT);
+
+        assert!(
+            median < max,
+            "{}: median {:?} exceeds {:?}",
+            method,
+            median,
+            max
+        );
+    }
+}
+
+/// Declaration, preparing the hierarchies' items, outgoing calls and
+/// supertypes check the file and what it imports, as definition does.
+#[test]
+fn declarations_and_hierarchy_items_on_a_std_sized_project_are_fast_enough() {
+    let _shared = shared();
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let mut client = uncached(&root, QUERIES_ONLY.clone());
+    let (line, character) = at(&text, "[1, 2].size", 7, false);
+    let (main_line, main_character) = at(&text, "fn async main", 9, false);
+    let main = {
+        let id = client.send_request(
+            "textDocument/prepareCallHierarchy",
+            position(&file, main_line, main_character),
+        );
+
+        client.response(id)["result"][0].clone()
+    };
+
+    for (method, params) in [
+        ("textDocument/declaration", position(&file, line, character)),
+        (
+            "textDocument/prepareCallHierarchy",
+            position(&file, line, character),
+        ),
+        ("callHierarchy/outgoingCalls", json!({ "item": main })),
+    ] {
+        let times = request_times(&mut client, method, params);
+        let median = median(times.clone());
+
+        eprintln!(
+            "{} on a std-sized project: {:?} (all: {:?})",
+            method, median, times
+        );
+
+        let max = limit(LIMIT);
+
+        assert!(
+            median < max,
+            "{}: median {:?} exceeds {:?}",
+            method,
+            median,
+            max
+        );
+    }
+}
+
+/// How long a pull of diagnostics may take: a full check, to MIR, of a
+/// project that imports all of std.
+const PULL_LIMIT: Duration = Duration::from_millis(1000);
+
+#[test]
+fn pulling_diagnostics_on_a_std_sized_project_is_fast_enough() {
+    let _alone = alone();
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let mut client = Client::initialized_with(
+        Launch {
+            env: vec![(NO_CACHE_VARIABLE, "1".to_string())],
+            unset: vec![],
+            cwd: None,
+        },
+        &root,
+        json!({ "diagnosticsDebounceMs": 0 }),
+        json!({ "textDocument": { "diagnostic": {} } }),
+    );
+    let mut times = Vec::new();
+
+    client.open(&file, &text);
+
+    for run in 0..RUNS {
+        // A new text each time, so each pull waits for a check of it.
+        client.change(
+            &file,
+            run as i32 + 2,
+            json!([{ "text": format!("{}\n# {}\n", text, run) }]),
+        );
+
+        let start = Instant::now();
+        let id = client.send_request(
+            "textDocument/diagnostic",
+            json!({ "textDocument": { "uri": uri(&file) } }),
+        );
+        let response = client.response(id);
+
+        times.push(start.elapsed());
+        assert_eq!(response["result"]["kind"], "full", "{}", response);
+    }
+
+    let median = median(times.clone());
+
+    eprintln!(
+        "a document's diagnostics pulled: {:?} (all: {:?})",
+        median, times
+    );
+
+    let max = limit(PULL_LIMIT);
+
     assert!(median < max, "median {:?} exceeds {:?}", median, max);
 }
 

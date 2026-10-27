@@ -18,7 +18,10 @@ highlights a symbol's uses in a file, shows the signature of the call being
 typed, and shows inferred types and parameter names as inlay hints. It
 folds blocks, comments and imports, formats exactly as `inko fmt` does,
 and offers quick fixes for its diagnostics, each checked to leave no
-error. Where a
+error. It finds a trait's implementations, the trait method a method
+declares, call and type hierarchies (all from the type database), expands
+selections from the syntax, rewrites imports when files move, and answers
+pull diagnostics for the whole project. Where a
 declaration has an error, it type checks the method bodies anyway, and
 answers wherever the error can't matter. In code being edited that
 doesn't parse, it answers from a repaired copy of the documents or from
@@ -158,7 +161,7 @@ about LSP. tests/guardrails.rs enforces the layering (see AGENTS.md).
     scripts/check.sh                  # every commit: formatting, clippy, tests, the patch, the release build
     scripts/check.sh --milestone REV  # milestone reports: the whole corpus, no kept checks, mutations since REV
     scripts/check.sh --release        # CI, before each release: the same, without latency limits or mutations
-    scripts/check.sh --latency        # CI, before each release: the latency limits as written, on a runner of their own
+    scripts/check.sh --latency        # CI, before each release: the latency limits, scaled by the runner's measured baseline (scripts/latency.sh)
     scripts/mutate.py --shard K/16    # CI, before each release: a 16th of every mutation (and --shard dist)
     cargo test                        # the tests alone (two binaries: tests/main.rs and tests/latency.rs)
 
@@ -203,6 +206,11 @@ also fast enough for the latency limits.
 | `tests/corpus_symbols.rs` | every declaration document symbols report, in std and the fixtures, is found by workspace symbols at the same place, and is its own definition |
 | `tests/folding.rs` | folding ranges over LSP in both encodings: blocks, comment lines, imports, code that doesn't parse, `\r\n` and lone `\r`, clients without kinds or with a limit; every declaration's body and doc comment in std folds |
 | `tests/formatting.rs` | formatting against the installed `inko fmt` over every module of std and the fixtures, as they are and flattened; over LSP in both encodings, with nothing written, and text that doesn't parse |
+| `tests/selection.rs` | selection ranges over LSP in both encodings: tokens, chains, elements, statements, brackets, declarations, code that doesn't parse; every declaration around every name in std is selected, nested |
+| `tests/hierarchy.rs` | implementations, declarations, and call and type hierarchies over LSP in both encodings, across the project, a dependency and std; complete or none in broken code |
+| `tests/corpus_hierarchy.rs` | over all of std, against the type database: every implementation it records is found from its trait (or trait's method), and nothing else; every type's and trait's supertypes and subtypes; outgoing calls are their callees' incoming calls |
+| `tests/rename_files.rs` | `workspace/willRenameFiles` over LSP in both encodings: imports and uses by name, aliases, directories, moves out of `src/`; the project checks with the edits applied and the file moved |
+| `tests/pull.rs` | pull diagnostics over LSP: the same as the core's for every fixture project, unchanged reports, files not open, a long poll, no pushes to a client that pulls |
 | `tests/actions.rs` | quick fixes over LSP in both encodings, each checked by the installed `inko check` on a copy of the project with it applied: imports, unused imports, variables and results, `mut` for variables and fields; none where an error would be left, for other kinds, or for clients without literals |
 | `tests/undo.rs` | answers after edits are undone over LSP, in both encodings: incremental and whole-text changes, several in one notification, closing and opening again, with and without a save between, a module changed on disk and restored; every answer from the documents as they are is a new server's, at every step |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |

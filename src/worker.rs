@@ -12,12 +12,13 @@
 use crate::edits::Fallback;
 use crate::position::Position;
 use crate::query::{
-    self, Answer, Cache, Diagnostic, Diagnostics, Fix, Highlight, Hints, HoverAt, ImportFix,
-    MembersAt, Place, Question, Reply, Request, Session, Signature, Unavailable,
+    self, Answer, Cache, Call, Diagnostic, Diagnostics, Fix, Highlight, Hints, HoverAt, ImportFix,
+    Item, MembersAt, ModuleUse, Place, Question, Reply, Request, Session, Signature, Unavailable,
 };
 use crossbeam_channel::{RecvTimeoutError, Sender};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -84,6 +85,25 @@ pub enum Query {
     /// `query::fixes`, for the diagnostics from the request's position to
     /// `end`, with the job's `imports`.
     Fixes { end: Position },
+    /// `Question::Implementation`.
+    Implementation,
+    /// `Question::Declaration`.
+    Declaration,
+    /// `Question::CallItem`.
+    CallItem,
+    /// `Question::IncomingCalls`.
+    IncomingCalls,
+    /// `Question::OutgoingCalls`.
+    OutgoingCalls,
+    /// `Question::TypeItem`.
+    TypeItem,
+    /// `Question::Supertypes`.
+    Supertypes,
+    /// `Question::Subtypes`.
+    Subtypes,
+    /// `Question::ModuleUses`, of the request's file and the job's
+    /// `files`.
+    ModuleUses,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -104,6 +124,10 @@ pub struct Job {
     /// file, from its index.
     #[serde(default)]
     pub imports: Vec<ImportFix>,
+    /// For `Query::ModuleUses`: the other files whose modules are asked
+    /// about, after the request's.
+    #[serde(default)]
+    pub files: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,10 +141,17 @@ pub enum Outcome {
     Hints(Answer<Hints>),
     Diagnostics(Answer<Diagnostics>),
     Fixes(Answer<Vec<(Diagnostic, Vec<Fix>)>>),
+    Items(Answer<Vec<Item>>),
+    Calls(Answer<Vec<Call>>),
+    /// Each file's module's uses, in order.
+    Uses(Answer<Uses>),
     /// The worker didn't produce an answer: it timed out, crashed or
     /// couldn't be started.
     Failed(Unavailable),
 }
+
+/// Each file's module's uses (`Question::ModuleUses`).
+pub type Uses = Vec<(PathBuf, Vec<ModuleUse>)>;
 
 impl Job {
     /// Runs the job in this process, with the checks `cache` kept.
@@ -149,6 +180,15 @@ impl Job {
                     &self.imports,
                 ));
             }
+            Query::Implementation => Question::Implementation,
+            Query::Declaration => Question::Declaration,
+            Query::CallItem => Question::CallItem,
+            Query::IncomingCalls => Question::IncomingCalls,
+            Query::OutgoingCalls => Question::OutgoingCalls,
+            Query::TypeItem => Question::TypeItem,
+            Query::Supertypes => Question::Supertypes,
+            Query::Subtypes => Question::Subtypes,
+            Query::ModuleUses => return Outcome::Uses(self.module_uses(cache)),
         };
         #[cfg(feature = "fault-injection")]
         let repair = fault(self).as_deref() != Some("norepair");
@@ -178,12 +218,13 @@ impl Job {
                 Reply::Place(p) => Some(p),
                 _ => None,
             })),
-            Query::Definition | Query::References { .. } => {
-                Outcome::Places(answer.map(|r| match r {
-                    Reply::Places(p) => Some(p),
-                    _ => None,
-                }))
-            }
+            Query::Definition
+            | Query::References { .. }
+            | Query::Implementation
+            | Query::Declaration => Outcome::Places(answer.map(|r| match r {
+                Reply::Places(p) => Some(p),
+                _ => None,
+            })),
             Query::Highlight => Outcome::Highlights(answer.map(|r| match r {
                 Reply::Highlights(h) => Some(h),
                 _ => None,
@@ -192,13 +233,70 @@ impl Job {
                 Reply::Signature(s) => Some(s),
                 _ => None,
             })),
-            Query::InlayHints { .. } | Query::Diagnostics | Query::Fixes { .. } => {
-                Outcome::Hints(answer.map(|r| match r {
-                    Reply::Hints(h) => Some(h),
+            Query::CallItem | Query::TypeItem | Query::Supertypes | Query::Subtypes => {
+                Outcome::Items(answer.map(|r| match r {
+                    Reply::Items(i) => Some(i),
                     _ => None,
                 }))
             }
+            Query::IncomingCalls | Query::OutgoingCalls => {
+                Outcome::Calls(answer.map(|r| match r {
+                    Reply::Calls(c) => Some(c),
+                    _ => None,
+                }))
+            }
+            Query::InlayHints { .. }
+            | Query::Diagnostics
+            | Query::Fixes { .. }
+            | Query::ModuleUses => Outcome::Hints(answer.map(|r| match r {
+                Reply::Hints(h) => Some(h),
+                _ => None,
+            })),
         }
+    }
+}
+
+impl Job {
+    /// The uses of the module of the request's file, and of each of
+    /// `files`, from one check of the whole project: the first asks, and
+    /// the rest find it kept (`cache`). Every file's, or no answer.
+    fn module_uses(&self, cache: &Cache) -> Answer<Uses> {
+        let mut all = Vec::new();
+        let mut first: Option<Answer<Uses>> = None;
+
+        for file in std::iter::once(&self.request.file).chain(&self.files) {
+            let request = Request {
+                file: file.clone(),
+                ..self.request.clone()
+            };
+            let answer = query::ask_with(
+                cache,
+                &self.session,
+                &request,
+                None,
+                false,
+                &[(Question::ModuleUses, request.position)],
+            )
+            .pop()
+            .unwrap();
+            let answer = answer.map(|r| match r {
+                Reply::Uses(u) => Some(vec![(file.clone(), u)]),
+                _ => None,
+            });
+
+            match &answer.result {
+                Ok(Some(uses)) => all.extend(uses.iter().cloned()),
+                Ok(None) => {}
+                Err(_) => return answer,
+            }
+
+            first.get_or_insert(answer);
+        }
+
+        let mut answer = first.unwrap();
+
+        answer.result = Ok(Some(all));
+        answer
     }
 }
 
@@ -216,6 +314,9 @@ impl Outcome {
             Outcome::Hints(a) => a.typed,
             Outcome::Diagnostics(a) => a.typed,
             Outcome::Fixes(a) => a.typed,
+            Outcome::Items(a) => a.typed,
+            Outcome::Calls(a) => a.typed,
+            Outcome::Uses(a) => a.typed,
             Outcome::Failed(_) => false,
         }
     }

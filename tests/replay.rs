@@ -1177,7 +1177,47 @@ fn normalize(
             })
             .collect::<Vec<_>>()
             .join(", "),
+        Some(Reply::Items(items)) => items
+            .iter()
+            .map(|i| item(i, &place))
+            .collect::<Vec<_>>()
+            .join(", "),
+        // Calls, compared as references are: in the text both have.
+        Some(Reply::Calls(calls)) => calls
+            .iter()
+            .map(|c| {
+                format!(
+                    "{} from {}",
+                    item(&c.item, &place),
+                    c.ranges
+                        .iter()
+                        .filter(|p| keep(&p.file, p.range))
+                        .map(place)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        Some(Reply::Uses(uses)) => uses
+            .iter()
+            .filter(|u| keep(&u.place.file, u.place.range))
+            .map(|u| format!("{} {}", u.path, place(&u.place)))
+            .collect::<Vec<_>>()
+            .join(", "),
     }
+}
+
+/// A hierarchy's item, as `summary` compares it.
+fn item(item: &query::Item, place: &dyn Fn(&query::Place) -> String) -> String {
+    format!(
+        "{} {:?} {} {} {}",
+        item.name,
+        item.kind,
+        item.detail,
+        place(&item.selection),
+        place(&item.place)
+    )
 }
 
 /// One question asked mid-edit, waiting for the final answer to compare

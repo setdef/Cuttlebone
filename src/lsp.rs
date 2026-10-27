@@ -219,6 +219,17 @@ struct Pending {
     /// For code actions: the imports the index offers for the names the
     /// request's diagnostics say are undefined.
     imports: Vec<query::ImportFix>,
+    /// For `workspace/willRenameFiles`: each module moved, the first
+    /// `uri`'s.
+    moves: Vec<Move>,
+}
+
+/// A module whose file moves, and its name before and after.
+#[derive(Clone, Debug)]
+struct Move {
+    file: PathBuf,
+    old: String,
+    new: String,
 }
 
 /// The documents as they were when a query arrived, kept for it when an
@@ -247,6 +258,48 @@ struct Diagnoser {
     known: HashSet<PathBuf>,
     /// The files each target last published diagnostics in.
     published: HashMap<PathBuf, HashSet<Url>>,
+    /// The documents the running check was sent.
+    sent: Option<HashMap<PathBuf, String>>,
+    /// Each target's last check that finished, for pulls.
+    results: HashMap<PathBuf, Pulled>,
+    /// Pulls waiting for a check, in the order they came.
+    waiting: Vec<Pull>,
+}
+
+/// A target's diagnostics, as a check of some documents found them.
+struct Pulled {
+    contents: HashMap<PathBuf, String>,
+    files: BTreeMap<PathBuf, Vec<lsp::Diagnostic>>,
+}
+
+/// A pull diagnostics request waiting for a check of the documents as
+/// they are (`Server::answer_pulls`).
+enum Pull {
+    /// `textDocument/diagnostic`, of a file in a target (or of std's or a
+    /// dependency's, which no target is).
+    Document {
+        id: RequestId,
+        uri: Url,
+        file: PathBuf,
+        target: Option<PathBuf>,
+        previous: Option<String>,
+        started: Instant,
+    },
+    /// `workspace/diagnostic`, with the result ids the client has, by
+    /// URI.
+    Workspace {
+        id: RequestId,
+        previous: HashMap<String, String>,
+        started: Instant,
+    },
+}
+
+impl Pull {
+    fn id(&self) -> &RequestId {
+        match self {
+            Pull::Document { id, .. } | Pull::Workspace { id, .. } => id,
+        }
+    }
 }
 
 /// What the client's capabilities say it supports, where the spec makes
@@ -291,6 +344,11 @@ struct Support {
     code_actions: bool,
     /// `CodeAction.isPreferred`.
     preferred_actions: bool,
+    /// `workspace/willRenameFiles`.
+    will_rename: bool,
+    /// Pull diagnostics (`textDocument/diagnostic`): offered, and then
+    /// never pushed.
+    pull: bool,
 }
 
 impl Support {
@@ -355,6 +413,8 @@ impl Support {
                 .map(|n| n as usize),
             code_actions: at("/textDocument/codeAction/codeActionLiteralSupport").is_object(),
             preferred_actions: yes("/textDocument/codeAction/isPreferredSupport"),
+            will_rename: yes("/workspace/fileOperations/willRename"),
+            pull: at("/textDocument/diagnostic").is_object(),
         }
     }
 }
@@ -459,6 +519,7 @@ impl Server {
                 inlay_hint_provider: Some(lsp::OneOf::Left(true)),
                 document_symbol_provider: Some(lsp::OneOf::Left(true)),
                 folding_range_provider: Some(lsp::FoldingRangeProviderCapability::Simple(true)),
+                selection_range_provider: Some(lsp::SelectionRangeProviderCapability::Simple(true)),
                 document_formatting_provider: Some(lsp::OneOf::Left(true)),
                 code_action_provider: self.support.code_actions.then(|| {
                     lsp::CodeActionProviderCapability::Options(lsp::CodeActionOptions {
@@ -491,6 +552,32 @@ impl Server {
                 "diagnostics": self.options.diagnostics,
             }
         });
+
+        // Newer than lsp-types' (for 3.17) fields, or simpler as JSON.
+        let capabilities = &mut value["capabilities"];
+
+        capabilities["declarationProvider"] = json!(true);
+        capabilities["implementationProvider"] = json!(true);
+        capabilities["callHierarchyProvider"] = json!(true);
+        capabilities["typeHierarchyProvider"] = json!(true);
+
+        if self.support.pull {
+            capabilities["diagnosticProvider"] = json!({
+                "identifier": "cuttlebone",
+                "interFileDependencies": true,
+                "workspaceDiagnostics": true,
+            });
+        }
+
+        if self.support.will_rename {
+            capabilities["workspace"] = json!({ "fileOperations": { "willRename": {
+                "filters": [
+                    { "scheme": "file", "pattern": { "glob": "**/*.inko", "matches": "file" } },
+                    { "scheme": "file", "pattern": { "glob": "**", "matches": "folder" } },
+                ],
+            }}});
+        }
+
         value
     }
 
@@ -581,6 +668,21 @@ impl Server {
                 ("textDocument/completion", Query::Complete)
             }
             "textDocument/definition" => ("textDocument/definition", Query::Definition),
+            "textDocument/declaration" => ("textDocument/declaration", Query::Declaration),
+            "textDocument/implementation" => ("textDocument/implementation", Query::Implementation),
+            "textDocument/prepareCallHierarchy" => {
+                ("textDocument/prepareCallHierarchy", Query::CallItem)
+            }
+            "callHierarchy/incomingCalls" => ("callHierarchy/incomingCalls", Query::IncomingCalls),
+            "callHierarchy/outgoingCalls" => ("callHierarchy/outgoingCalls", Query::OutgoingCalls),
+            "textDocument/prepareTypeHierarchy" => {
+                ("textDocument/prepareTypeHierarchy", Query::TypeItem)
+            }
+            "typeHierarchy/supertypes" => ("typeHierarchy/supertypes", Query::Supertypes),
+            "typeHierarchy/subtypes" => ("typeHierarchy/subtypes", Query::Subtypes),
+            "workspace/willRenameFiles" => return self.will_rename(connection, request),
+            "textDocument/diagnostic" => return self.pull_document(connection, request),
+            "workspace/diagnostic" => return self.pull_workspace(connection, request),
             "textDocument/typeDefinition" => ("textDocument/typeDefinition", Query::TypeDefinition),
             "textDocument/signatureHelp" => ("textDocument/signatureHelp", Query::SignatureHelp),
             "textDocument/inlayHint" => (
@@ -610,6 +712,7 @@ impl Server {
             ),
             "textDocument/documentSymbol" => return self.document_symbols(connection, request),
             "textDocument/foldingRange" => return self.folding_ranges(connection, request),
+            "textDocument/selectionRange" => return self.selection_ranges(connection, request),
             "textDocument/formatting" => return self.formatting(connection, request),
             "textDocument/codeAction" => {
                 if !self.code_action_wanted(connection, &request) {
@@ -656,6 +759,15 @@ impl Server {
             params["position"] = start;
         }
 
+        // A hierarchy's item is asked about at its name, in its document.
+        if let (Some(uri), Some(start)) = (
+            params.pointer("/item/uri").cloned(),
+            params.pointer("/item/selectionRange/start").cloned(),
+        ) {
+            params["textDocument"] = json!({ "uri": uri });
+            params["position"] = start;
+        }
+
         let params: lsp::TextDocumentPositionParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
@@ -693,6 +805,7 @@ impl Server {
             ready,
             frozen: None,
             imports,
+            moves: Vec::new(),
         });
     }
 
@@ -856,6 +969,12 @@ impl Server {
 
             reply_error(connection, pending.id, code, "cancelled");
         }
+
+        if let Some(i) = self.diagnoser.waiting.iter().position(|p| p.id() == id) {
+            let pull = self.diagnoser.waiting.remove(i);
+
+            reply_error(connection, pull.id().clone(), code, "cancelled");
+        }
     }
 
     /// Stops everything, for `shutdown` or the end of the session. The
@@ -887,6 +1006,19 @@ impl Server {
         }
 
         self.diagnoser.pending.clear();
+
+        // A pull's report can't be `null`: the server cancelled it.
+        for pull in std::mem::take(&mut self.diagnoser.waiting) {
+            send_error(
+                connection,
+                pull.id().clone(),
+                ResponseError {
+                    code: ErrorCode::ServerCancelled as i32,
+                    message: "the server is shutting down".to_string(),
+                    data: Some(json!({ "retriggerRequest": false })),
+                },
+            );
+        }
     }
 
     /// Schedules diagnostics for the target of a file that was opened,
@@ -938,7 +1070,7 @@ impl Server {
     /// already waiting starts at the later of the two times if `later`,
     /// else at the earlier one.
     fn schedule(&mut self, target: &std::path::Path, ready: Instant, later: bool) {
-        if !self.options.diagnostics {
+        if !self.options.diagnostics && !self.support.pull {
             return;
         }
 
@@ -984,6 +1116,7 @@ impl Server {
         self.checks += 1;
 
         let job = Job {
+            files: Vec::new(),
             imports: Vec::new(),
             query: Query::Diagnostics,
             session: self.session.clone(),
@@ -1003,7 +1136,10 @@ impl Server {
         self.snapshots.sent(self.checks, &job.request.contents);
 
         match Check::start(self.checks, &job, self.finished.0.clone()) {
-            Ok(check) => self.diagnoser.running = Some((target, check)),
+            Ok(check) => {
+                self.diagnoser.running = Some((target, check));
+                self.diagnoser.sent = Some(job.request.contents);
+            }
             Err(reason) => {
                 self.diagnostics_status(connection, &target, Err(reason), Duration::ZERO)
             }
@@ -1036,8 +1172,20 @@ impl Server {
 
         let mut published = HashSet::new();
 
+        if let Some(contents) = self.diagnoser.sent.take() {
+            self.diagnoser.results.insert(
+                target.clone(),
+                Pulled {
+                    contents,
+                    files: files.clone(),
+                },
+            );
+        }
+
         for (file, list) in files {
-            if let Ok(uri) = Url::from_file_path(&file) {
+            if let Ok(uri) = Url::from_file_path(&file)
+                && !self.support.pull
+            {
                 send_diagnostics(connection, &uri, list);
                 published.insert(uri);
             }
@@ -1203,9 +1351,13 @@ impl Server {
         Value::Array(actions)
     }
 
-    /// The `cuttlebone/status` notification for a diagnostics check.
+    /// The `cuttlebone/status` notification for a diagnostics check, and
+    /// the pulls it answers: those waiting for its target fail with it,
+    /// unless an edit superseded it (another check follows), or the
+    /// compiler panicked (what it found before is the answer, as it's
+    /// published).
     fn diagnostics_status(
-        &self,
+        &mut self,
         connection: &Connection,
         target: &std::path::Path,
         state: Result<(), Unavailable>,
@@ -1218,7 +1370,14 @@ impl Server {
                 reason.code,
                 reason.message
             ));
+
+            if reason.code != "superseded" && reason.code != "compilerPanic" {
+                self.diagnoser.sent = None;
+                self.fail_pulls(connection, target, reason);
+            }
         }
+
+        self.answer_pulls(connection);
 
         if !self.options.status {
             return;
@@ -1385,6 +1544,12 @@ impl Server {
         };
 
         Ok(Job {
+            files: pending
+                .moves
+                .iter()
+                .skip(1)
+                .map(|m| m.file.clone())
+                .collect(),
             imports: pending.imports.clone(),
             query: pending.query,
             session: self.session.clone(),
@@ -1593,7 +1758,8 @@ impl Server {
                     // A definition is one `Location` unless there are
                     // several (`Location[]`), which LSP allows both of.
                     Ok(Some(mut places))
-                        if pending.query == Query::Definition && places.len() == 1 =>
+                        if matches!(pending.query, Query::Definition | Query::Declaration)
+                            && places.len() == 1 =>
                     {
                         location(places.remove(0))
                     }
@@ -1683,6 +1849,49 @@ impl Server {
                 let status = status_of(&answer);
                 let result = match answer.result {
                     Ok(Some(found)) => self.code_actions(found),
+                    _ => Value::Null,
+                };
+
+                (result, status)
+            }
+            Outcome::Items(answer) => {
+                let status = status_of(&answer);
+                let result = match answer.result {
+                    Ok(Some(items)) => Value::Array(items.into_iter().map(item).collect()),
+                    _ => Value::Null,
+                };
+
+                (result, status)
+            }
+            Outcome::Calls(answer) => {
+                let status = status_of(&answer);
+                // Incoming calls are from the item to the one asked about,
+                // outgoing to the item from it.
+                let key = match pending.query {
+                    Query::IncomingCalls => "from",
+                    _ => "to",
+                };
+                let result = match answer.result {
+                    Ok(Some(calls)) => Value::Array(
+                        calls
+                            .into_iter()
+                            .map(|c| {
+                                json!({
+                                    key: item(c.item),
+                                    "fromRanges": c.ranges.into_iter().map(|p| range(p.range)).collect::<Vec<_>>(),
+                                })
+                            })
+                            .collect(),
+                    ),
+                    _ => Value::Null,
+                };
+
+                (result, status)
+            }
+            Outcome::Uses(answer) => {
+                let status = status_of(&answer);
+                let result = match answer.result {
+                    Ok(Some(uses)) => renamed(&pending.moves, uses),
                     _ => Value::Null,
                 };
 
@@ -2113,6 +2322,449 @@ impl Server {
             connection,
             &request.id,
             "textDocument/foldingRange",
+            Some(&uri),
+            state,
+            start.elapsed(),
+        );
+        reply(connection, request.id, result);
+    }
+
+    /// `textDocument/diagnostic`: the document's diagnostics, from a check
+    /// of its target with the documents as they are (`answer_pulls`).
+    fn pull_document(&mut self, connection: &Connection, request: Request) {
+        let params: lsp::DocumentDiagnosticParams = match serde_json::from_value(request.params) {
+            Ok(p) => p,
+            Err(e) => {
+                return reply_error(
+                    connection,
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    &e.to_string(),
+                );
+            }
+        };
+        let uri = params.text_document.uri;
+        let file = self
+            .documents
+            .get(&uri)
+            .and_then(|d| d.path.clone())
+            .or_else(|| uri.to_file_path().ok())
+            .and_then(|p| p.canonicalize().ok());
+        let Some(file) = file else {
+            // Not a file: nothing is checked.
+            return reply(
+                connection,
+                request.id,
+                json!({ "kind": "full", "resultId": result_id(&[]), "items": [] }),
+            );
+        };
+        let target = query::diagnostics_target(&self.session, &file);
+
+        self.diagnoser.waiting.push(Pull::Document {
+            id: request.id,
+            uri,
+            file,
+            target,
+            previous: params.previous_result_id,
+            started: Instant::now(),
+        });
+        self.answer_pulls(connection);
+    }
+
+    /// `workspace/diagnostic`: every target's diagnostics, each file's
+    /// against the result id the client has (`answer_pulls`).
+    fn pull_workspace(&mut self, connection: &Connection, request: Request) {
+        let params: lsp::WorkspaceDiagnosticParams = match serde_json::from_value(request.params) {
+            Ok(p) => p,
+            Err(e) => {
+                return reply_error(
+                    connection,
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    &e.to_string(),
+                );
+            }
+        };
+        let previous = params
+            .previous_result_ids
+            .into_iter()
+            .map(|p| (p.uri.to_string(), p.value))
+            .collect();
+
+        self.diagnoser.waiting.push(Pull::Workspace {
+            id: request.id,
+            previous,
+            started: Instant::now(),
+        });
+        self.answer_pulls(connection);
+    }
+
+    /// Every target a workspace pull reports: each workspace folder that's
+    /// a project, and the target of each open document.
+    fn pull_targets(&self) -> Vec<PathBuf> {
+        let mut targets: Vec<PathBuf> = self
+            .session
+            .projects
+            .iter()
+            .filter(|r| r.join("src").is_dir() || r.join("test").is_dir())
+            .cloned()
+            .chain(
+                self.documents
+                    .values()
+                    .filter_map(|d| query::diagnostics_target(&self.session, d.path.as_ref()?)),
+            )
+            .collect();
+
+        targets.sort();
+        targets.dedup();
+        targets
+    }
+
+    /// Answers each waiting pull whose targets have a check of the
+    /// documents as they are, which hasn't been superseded and isn't
+    /// waiting for another (an edit since), and schedules a check for each
+    /// target one waits for that has none coming. A workspace pull whose
+    /// every report would be unchanged is held until one changes.
+    fn answer_pulls(&mut self, connection: &Connection) {
+        if self.diagnoser.waiting.is_empty() {
+            return;
+        }
+
+        let contents = self.contents();
+        let busy = |s: &Self, t: &PathBuf| {
+            s.diagnoser.pending.contains_key(t)
+                || s.diagnoser.running.as_ref().is_some_and(|(r, _)| r == t)
+        };
+        let ready = |s: &Self, t: &PathBuf| {
+            !busy(s, t)
+                && s.diagnoser
+                    .results
+                    .get(t)
+                    .is_some_and(|r| r.contents == contents)
+        };
+
+        for pull in std::mem::take(&mut self.diagnoser.waiting) {
+            match pull {
+                Pull::Document {
+                    id,
+                    uri,
+                    file,
+                    target,
+                    previous,
+                    started,
+                } => {
+                    let items = match &target {
+                        Some(t) if !ready(self, t) => {
+                            if !busy(self, t) {
+                                self.schedule(t, Instant::now(), false);
+                            }
+
+                            self.diagnoser.waiting.push(Pull::Document {
+                                id,
+                                uri,
+                                file,
+                                target,
+                                previous,
+                                started,
+                            });
+                            continue;
+                        }
+                        Some(t) => self.diagnoser.results[t]
+                            .files
+                            .get(&file)
+                            .cloned()
+                            .unwrap_or_default(),
+                        // std's or a dependency's: what a target's check
+                        // found there, if any did.
+                        None => self
+                            .diagnoser
+                            .results
+                            .values()
+                            .find_map(|r| r.files.get(&file).cloned())
+                            .unwrap_or_default(),
+                    };
+                    let result = result_id(&items);
+                    let report = if previous.as_ref() == Some(&result) {
+                        json!({ "kind": "unchanged", "resultId": result })
+                    } else {
+                        json!({ "kind": "full", "resultId": result, "items": items })
+                    };
+
+                    self.syntax_status(
+                        connection,
+                        &id,
+                        "textDocument/diagnostic",
+                        Some(&uri),
+                        Ok(false),
+                        started.elapsed(),
+                    );
+                    reply(connection, id, report);
+                }
+                Pull::Workspace {
+                    id,
+                    previous,
+                    started,
+                } => {
+                    let targets = self.pull_targets();
+                    let waiting: Vec<&PathBuf> =
+                        targets.iter().filter(|t| !ready(self, t)).collect();
+
+                    if !waiting.is_empty() {
+                        for t in waiting.into_iter().cloned().collect::<Vec<_>>() {
+                            if !busy(self, &t) {
+                                self.schedule(&t, Instant::now(), false);
+                            }
+                        }
+
+                        self.diagnoser.waiting.push(Pull::Workspace {
+                            id,
+                            previous,
+                            started,
+                        });
+                        continue;
+                    }
+
+                    let mut files: BTreeMap<String, Vec<lsp::Diagnostic>> = BTreeMap::new();
+
+                    for t in &targets {
+                        for (file, items) in &self.diagnoser.results[t].files {
+                            if let Ok(uri) = Url::from_file_path(file) {
+                                files.insert(uri.to_string(), items.clone());
+                            }
+                        }
+                    }
+
+                    // A file the client has a report of, and none now.
+                    for uri in previous.keys() {
+                        files.entry(uri.clone()).or_default();
+                    }
+
+                    let items: Vec<Value> = files
+                        .into_iter()
+                        .map(|(uri, items)| {
+                            let result = result_id(&items);
+
+                            if previous.get(&uri) == Some(&result) {
+                                json!({ "kind": "unchanged", "uri": uri, "version": null, "resultId": result })
+                            } else {
+                                json!({ "kind": "full", "uri": uri, "version": null, "resultId": result, "items": items })
+                            }
+                        })
+                        .collect();
+
+                    // Nothing new for a client that has every report: a
+                    // long poll, until a check changes one.
+                    if !previous.is_empty() && items.iter().all(|i| i["kind"] == "unchanged") {
+                        self.diagnoser.waiting.push(Pull::Workspace {
+                            id,
+                            previous,
+                            started,
+                        });
+                        continue;
+                    }
+
+                    self.syntax_status(
+                        connection,
+                        &id,
+                        "workspace/diagnostic",
+                        None,
+                        Ok(false),
+                        started.elapsed(),
+                    );
+                    reply(connection, id, json!({ "items": items }));
+                }
+            }
+        }
+    }
+
+    /// Fails the pulls waiting for a target's check, which didn't finish:
+    /// `RequestFailed`, as the spec's `DiagnosticServerCancellationData`
+    /// says, without asking the client to retrigger it (the check would
+    /// fail again until something changes).
+    fn fail_pulls(
+        &mut self,
+        connection: &Connection,
+        target: &std::path::Path,
+        reason: &Unavailable,
+    ) {
+        let targets = self.pull_targets();
+        let (failed, waiting): (Vec<Pull>, Vec<Pull>) = std::mem::take(&mut self.diagnoser.waiting)
+            .into_iter()
+            .partition(|p| match p {
+                Pull::Document { target: t, .. } => t.as_deref() == Some(target),
+                Pull::Workspace { .. } => targets.iter().any(|t| t == target),
+            });
+
+        self.diagnoser.waiting = waiting;
+
+        for pull in failed {
+            send_error(
+                connection,
+                pull.id().clone(),
+                ResponseError {
+                    code: ErrorCode::RequestFailed as i32,
+                    message: format!("{}: {}", reason.code, reason.message),
+                    data: Some(json!({ "retriggerRequest": false })),
+                },
+            );
+        }
+    }
+
+    /// `workspace/willRenameFiles`: the edits to every import of each module
+    /// that moves (a file, or every module in a directory), and to the
+    /// names that use a module by its own name, if that changes, as the
+    /// compiler resolves them in the whole project (`Question::ModuleUses`).
+    /// A module is named by its path in its project's `src/` or `test/`,
+    /// so a file moved anywhere else, or to a name that can't be a
+    /// module's, gets none. `null` if nothing needs editing.
+    fn will_rename(&mut self, connection: &Connection, request: Request) {
+        let params: lsp::RenameFilesParams = match serde_json::from_value(request.params) {
+            Ok(p) => p,
+            Err(e) => {
+                return reply_error(
+                    connection,
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    &e.to_string(),
+                );
+            }
+        };
+        let mut moves: Vec<Move> = Vec::new();
+
+        for file in &params.files {
+            let (Ok(old), Ok(new)) = (
+                Url::parse(&file.old_uri)
+                    .and_then(|u| u.to_file_path().map_err(|_| url::ParseError::EmptyHost)),
+                Url::parse(&file.new_uri)
+                    .and_then(|u| u.to_file_path().map_err(|_| url::ParseError::EmptyHost)),
+            ) else {
+                continue;
+            };
+            let Ok(old) = old.canonicalize() else {
+                continue;
+            };
+            let new = existing_parent(&new);
+            let modules: Vec<(PathBuf, PathBuf)> = if old.is_dir() {
+                inko_files(&old)
+                    .into_iter()
+                    .map(|f| {
+                        let to = new.join(f.strip_prefix(&old).unwrap());
+
+                        (f, to)
+                    })
+                    .collect()
+            } else {
+                vec![(old, new.clone())]
+            };
+
+            for (from, to) in modules {
+                if let (Some(old), Some(new)) = (module_name(&from), module_name(&to))
+                    && old != new
+                    && !moves.iter().any(|m| m.file == from)
+                {
+                    moves.push(Move {
+                        file: from,
+                        old,
+                        new,
+                    });
+                }
+            }
+        }
+
+        let Some(first) = moves.first() else {
+            return reply(connection, request.id, Value::Null);
+        };
+        let uri = Url::from_file_path(&first.file).unwrap();
+
+        self.queue.push_back(Pending {
+            id: request.id,
+            method: "workspace/willRenameFiles",
+            query: Query::ModuleUses,
+            uri,
+            position: Position {
+                line: 0,
+                character: 0,
+            },
+            ready: Instant::now(),
+            frozen: None,
+            imports: Vec::new(),
+            moves,
+        });
+    }
+
+    /// `textDocument/selectionRange`, answered at once from the document's
+    /// tokens and declarations (`syntax::selections`), so also where it
+    /// doesn't parse: for each position, the ranges around it, innermost
+    /// first, each the parent of the one before.
+    fn selection_ranges(&self, connection: &Connection, request: Request) {
+        let start = Instant::now();
+        let params: lsp::SelectionRangeParams = match serde_json::from_value(request.params) {
+            Ok(p) => p,
+            Err(e) => {
+                return reply_error(
+                    connection,
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    &e.to_string(),
+                );
+            }
+        };
+        let uri = params.text_document.uri;
+        let read = self.document_text(&uri).and_then(|text| {
+            let offsets = params
+                .positions
+                .iter()
+                .map(|p| {
+                    let position = Position {
+                        line: p.line,
+                        character: p.character,
+                    };
+
+                    byte_offset(&text, position, self.encoding).ok_or_else(|| {
+                        Unavailable::new(
+                            "invalidPosition",
+                            format!("line {} is past the end of the document", p.line),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<usize>, Unavailable>>()?;
+            let found = query::guarded(|| syntax::selections(&text, &offsets))
+                .map_err(|message| Unavailable::new("compilerPanic", message))?;
+
+            Ok((text, found))
+        });
+        let (result, state) = match read {
+            Ok((text, found)) => {
+                let positions = Positions::new(&text, self.encoding);
+                let ranges: Vec<Value> = found
+                    .into_iter()
+                    .map(|chain| {
+                        chain.into_iter().rev().fold(Value::Null, |parent, r| {
+                            let mut range = json!({
+                                "range": {
+                                    "start": lsp_position(&positions, r.start),
+                                    "end": lsp_position(&positions, r.end),
+                                }
+                            });
+
+                            if !parent.is_null() {
+                                range["parent"] = parent;
+                            }
+
+                            range
+                        })
+                    })
+                    .collect();
+
+                (Value::Array(ranges), Ok(false))
+            }
+            Err(reason) => (Value::Null, Err(reason)),
+        };
+
+        self.syntax_status(
+            connection,
+            &request.id,
+            "textDocument/selectionRange",
             Some(&uri),
             state,
             start.elapsed(),
@@ -2800,6 +3452,161 @@ fn send_diagnostics(connection: &Connection, uri: &Url, diagnostics: Vec<lsp::Di
 
 /// A number in a request's params, or 0 (then the params are invalid
 /// anyway, and parsing them says so).
+/// A hierarchy's item (`CallHierarchyItem`, `TypeHierarchyItem`): the two
+/// have the same fields.
+fn item(item: query::Item) -> Value {
+    let kind = match item.kind {
+        query::ItemKind::Function => lsp::SymbolKind::FUNCTION,
+        query::ItemKind::Method => lsp::SymbolKind::METHOD,
+        query::ItemKind::Type => lsp::SymbolKind::CLASS,
+        query::ItemKind::Enum => lsp::SymbolKind::ENUM,
+        query::ItemKind::Trait => lsp::SymbolKind::INTERFACE,
+    };
+    let uri = Url::from_file_path(&item.place.file)
+        .map(|u| u.to_string())
+        .unwrap_or_default();
+
+    json!({
+        "name": item.name,
+        "kind": kind,
+        "detail": item.detail,
+        "uri": uri,
+        "range": range(item.place.range),
+        "selectionRange": range(item.selection.range),
+    })
+}
+
+/// The workspace edit that renames each module's uses: an import's path
+/// to the new name, and a name that uses the module by its own name to
+/// the new name's last part, if that changes. `null` if there's nothing to
+/// edit.
+fn renamed(moves: &[Move], uses: Vec<(PathBuf, Vec<query::ModuleUse>)>) -> Value {
+    let mut changes: BTreeMap<String, Vec<(query::Range, String)>> = BTreeMap::new();
+
+    for (file, uses) in uses {
+        let Some(m) = moves.iter().find(|m| m.file == file) else {
+            continue;
+        };
+        let last = |name: &str| name.rsplit('.').next().unwrap_or(name).to_string();
+
+        for u in uses {
+            let text = if u.path {
+                m.new.clone()
+            } else if last(&m.old) != last(&m.new) {
+                last(&m.new)
+            } else {
+                continue;
+            };
+            let Ok(uri) = Url::from_file_path(&u.place.file) else {
+                continue;
+            };
+
+            changes
+                .entry(uri.to_string())
+                .or_default()
+                .push((u.place.range, text));
+        }
+    }
+
+    if changes.is_empty() {
+        return Value::Null;
+    }
+
+    let changes: serde_json::Map<String, Value> = changes
+        .into_iter()
+        .map(|(uri, mut edits)| {
+            edits.sort();
+            edits.dedup();
+
+            let edits: Vec<Value> = edits
+                .into_iter()
+                .map(|(r, text)| json!({ "range": range(r), "newText": text }))
+                .collect();
+
+            (uri, Value::Array(edits))
+        })
+        .collect();
+
+    json!({ "changes": changes })
+}
+
+/// A path's module, as the compiler resolves imports: its path in its
+/// project's `src/` or `test/` (`check::project_root`), without `.inko`,
+/// with `.` between the directories, each a name a module can have.
+/// `None` for a path anywhere else.
+fn module_name(path: &std::path::Path) -> Option<String> {
+    if path.extension().is_none_or(|e| e != "inko") {
+        return None;
+    }
+
+    let root = crate::check::project_root(path);
+    let rel = ["src", "test"]
+        .iter()
+        .find_map(|d| path.strip_prefix(root.join(d)).ok())?
+        .with_extension("");
+    let parts: Vec<&str> = rel
+        .components()
+        .map(|c| c.as_os_str().to_str())
+        .collect::<Option<_>>()?;
+    let valid = |p: &&str| {
+        p.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+            && p.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    };
+
+    (!parts.is_empty() && parts.iter().all(valid)).then(|| parts.join("."))
+}
+
+/// A path that may not exist yet, with its deepest existing ancestor
+/// canonical, as moved files' old paths are.
+fn existing_parent(path: &std::path::Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(found) = ancestor.canonicalize() {
+            return found.join(path.strip_prefix(ancestor).unwrap());
+        }
+    }
+
+    path.to_path_buf()
+}
+
+/// Every `.inko` file under a directory, sorted.
+fn inko_files(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut dirs = vec![dir.to_path_buf()];
+
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "inko") {
+                out.push(path);
+            }
+        }
+    }
+
+    out.sort();
+    out
+}
+
+/// A report's result id: a hash of its diagnostics, so the same ones have
+/// the same id.
+fn result_id(items: &[lsp::Diagnostic]) -> String {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+
+    serde_json::to_string(items).unwrap().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 fn json_u32(params: &Value, pointer: &str) -> u32 {
     params.pointer(pointer).and_then(Value::as_u64).unwrap_or(0) as u32
 }

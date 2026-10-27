@@ -99,7 +99,8 @@ UTF-16. `utf-32` isn't supported.
 
 ### What it advertises
 
-Only what works:
+Only what works (`workspace.fileOperations` only for a client whose
+`workspace.fileOperations.willRename` is `true`):
 
 ```json
 {
@@ -109,6 +110,8 @@ Only what works:
     "hoverProvider": true,
     "completionProvider": {"triggerCharacters": [".", "@"], "resolveProvider": false},
     "definitionProvider": true,
+    "declarationProvider": true,
+    "implementationProvider": true,
     "typeDefinitionProvider": true,
     "referencesProvider": true,
     "documentHighlightProvider": true,
@@ -116,9 +119,15 @@ Only what works:
     "inlayHintProvider": true,
     "documentSymbolProvider": true,
     "foldingRangeProvider": true,
+    "selectionRangeProvider": true,
     "documentFormattingProvider": true,
     "codeActionProvider": {"codeActionKinds": ["quickfix"]},
     "workspaceSymbolProvider": true,
+    "callHierarchyProvider": true,
+    "typeHierarchyProvider": true,
+    "workspace": {"fileOperations": {"willRename": {"filters": [
+      {"scheme": "file", "pattern": {"glob": "**/*.inko", "matches": "file"}},
+      {"scheme": "file", "pattern": {"glob": "**", "matches": "folder"}}]}}},
     "experimental": {"cuttlebone": {"inko": "0.21.1", "std": "/path/to/std", "statusNotifications": false, "diagnostics": true}}
   },
   "serverInfo": {"name": "cuttlebone", "version": "0.14.0"}
@@ -127,8 +136,10 @@ Only what works:
 
 `experimental.cuttlebone` isn't a capability. It tells a client which Inko
 and standard library the session checks with, and whether status
-notifications and [diagnostics](#diagnostics) are on. Diagnostics need no
-capability: the server publishes them unless `diagnostics` is `false`.
+notifications and [diagnostics](#diagnostics) are on. Published
+diagnostics need no capability: the server publishes them unless
+`diagnostics` is `false`, or the client pulls them
+(`diagnosticProvider`, only for a client with `textDocument.diagnostic`).
 
 ### Clients that turn on every capability
 
@@ -141,9 +152,11 @@ inlay hints, every error reported twice.
 Cuttlebone can't know what else is running, so turning a feature off is the
 client's job, on its side:
 
-- **Requests** (hover, completion, definition, type definition,
-  references, document highlight, signature help, inlay hints, document
-  and workspace symbols, folding ranges, formatting, code actions): don't send
+- **Requests** (hover, completion, definition, declaration, type
+  definition, implementation, references, call and type hierarchies,
+  file renames, document highlight, signature help, inlay hints, document
+  and workspace symbols, folding ranges, selection ranges, formatting, code
+  actions): don't send
   them, or don't show their answers. A client that registers capabilities
   through its own configuration can leave them out; one that can't can drop
   the server's capability from the `InitializeResult` before its LSP layer
@@ -553,6 +566,132 @@ syntax error anywhere in it makes references unavailable, even if the file
 itself is fine. An error in a declaration anywhere does only if it could
 hide a reference ([Errors in declarations](#errors-in-declarations)).
 
+## `textDocument/implementation`
+
+What implements the trait, or the trait's method, at the position, as
+`Location[]` (the names, as definition's ranges are), sorted by file and
+position:
+
+| At | Gives |
+|---|---|
+| a trait (its declaration's name, or a name that refers to it: `T: Named`, `impl Named for Box`) | every type the type database records as implementing it |
+| a trait's method, required or default (its name, or a call through a bound: `value.name` with `T: Named`) | every type's method that implements it: a required method's implementations, and a default method where a type redefines it. Types that inherit a default method as it is have no method of their own to go to. |
+| anything else: a type, a type's own method, a variable | `null` |
+
+- **By the compiler's ids:** the type database's own record of each
+  `impl` (`TraitId::implemented_by`, `MethodSource::Implemented`), never
+  names. tests/corpus_hierarchy.rs checks, over the whole of std, that
+  every implementation the database records is found, and nothing else.
+- **Where:** every module of the check, which checks the whole project as
+  [references](#textdocumentreferences) do: the project's own modules,
+  and the dependencies' and std's that it imports, directly or not. Asked
+  at a declaration in std or a dependency, it checks every project that
+  could use it, as references do. A type in a std module that no project
+  imports isn't found: it isn't part of what the project compiles.
+- **Complete or none:** only from the documents as they are, never from a
+  repaired copy or the last good check, and not while any declaration has
+  an error (reason `declarationErrors`): an `impl` with an error may be
+  missing from the database.
+
+## `textDocument/declaration`
+
+In Inko, a method a type writes for a trait (`fn pub name` in `impl Named
+for Box`) is declared by the trait's method (`fn pub name -> String` in
+`trait Named`), and defined by the type's. So declaration is:
+
+| At | Goes to |
+|---|---|
+| a type's method that implements a trait's method (its name, or a call to it: `box.name`) | the trait's method (`MethodSource::Implemented`) |
+| anything else | the same as [definition](#textdocumentdefinition) |
+
+Definition at the same places goes to the type's method. The result has
+the same shapes, statuses and answers in code being edited as definition.
+
+## Call hierarchy
+
+`textDocument/prepareCallHierarchy` gives the method at the position (a
+call, or its declaration's name) as a `CallHierarchyItem[]` of one, or
+`null` if there's no method there:
+
+```json
+{"name": "total", "kind": 12, "detail": "main", "uri": "file:///home/me/hello/src/main.inko",
+ "range": {"start": {"line": 10, "character": 0}, "end": {"line": 14, "character": 1}},
+ "selectionRange": {"start": {"line": 10, "character": 3}, "end": {"line": 10, "character": 8}}}
+```
+
+- `kind` is Function (12) for a module's method, Method (6) for a type's
+  or trait's.
+- `detail` is its module and what it's in (`std.array.Array`), as hover's
+  `Defined in`.
+- `range` is the whole declaration and `selectionRange` its name, as
+  [document symbols](#textdocumentdocumentsymbol) have them.
+- No `data`: `callHierarchy/incomingCalls` and `outgoingCalls` find the
+  method again at the item's `selectionRange.start`, in its document as
+  it is then. If that's no longer a method's declared name, the result is
+  `null`.
+
+`callHierarchy/incomingCalls`: every call to the method, by the compiler's
+ids, in the project's own modules (as [references](#textdocumentreferences)
+finds them), grouped by the method each call is in, as
+`CallHierarchyIncomingCall[]`: `from` is that method's item, `fromRanges`
+the calls' names in its file. Sorted by where the callers are. Like
+references, it checks the whole project; distinct ids are distinct
+methods, so a call through a bound calls the trait's method, not an
+implementation. Complete or none, as for implementations.
+
+`callHierarchy/outgoingCalls`: every method the method's body calls, as
+`CallHierarchyOutgoingCall[]`: `to` is the called method's item,
+`fromRanges` the calls in the method's file. Operators (`+`) are calls
+too. A method with no body (a trait's required method) calls nothing:
+`[]`. It checks the method's file, as definition does, and answers from
+a repaired copy or the last good check as definition does, when the
+method itself is unchanged.
+
+## Type hierarchy
+
+`textDocument/prepareTypeHierarchy` gives the type or trait at the
+position as a `TypeHierarchyItem[]` of one (`kind` Class (5), Enum (10)
+or Interface (11) for a trait; the other fields as for the call
+hierarchy), or `null`.
+
+| Request | For a type | For a trait |
+|---|---|---|
+| `typeHierarchy/supertypes` | the traits it implements | the traits it requires (`trait Labelled: Named`) |
+| `typeHierarchy/subtypes` | `[]`: Inko's types have none | the traits that require it, then the types that implement it |
+
+Each is sorted by where it's declared, from the type database
+(`TypeId::implemented_traits`, `TraitId::required_traits`,
+`TraitId::implemented_by`), checking the whole project as implementations
+do (tests/corpus_hierarchy.rs checks it against the database over std).
+The item is found again at its `selectionRange.start`, as for the call
+hierarchy.
+
+## `workspace/willRenameFiles`
+
+Before a client renames or moves files or directories, the edits that
+keep every import of each module that moves working, as a
+`WorkspaceEdit` (`changes`, in the negotiated encoding), or `null` if
+there are none. Inko resolves a module from its path in its project's
+`src/` or `test/` (`src/app/util.inko` is `app.util`), so:
+
+- **Each import's path** that resolves to the module, by the compiler's
+  ids, in every module of the project, becomes the new module's:
+  `import app.util (helper)` becomes `import core.tools (helper)`.
+- **Uses by its own name** (`util.helper` after `import app.util`) become
+  the new name's last part, if that changes (`tools.helper`). An alias
+  (`import app.util (self as u)`) stays as it is.
+- **A directory** moves every module in it.
+- **No edits** for a file moved out of its project's `src/` and `test/`,
+  to a name a module can't have (`My-Util.inko`), or that nothing imports.
+
+Only a client whose `workspace.fileOperations.willRename` is `true` is
+asked to send it: the server registers for files matching `**/*.inko` and
+folders. It checks the whole project, as references do, and answers only
+from the documents as they are, with no error in a declaration (reason
+`declarationErrors` or `noHir` otherwise, and `null`). Nothing is written,
+and the files aren't moved: the client does both. tests/rename_files.rs
+applies the edits, moves the files, and checks the project.
+
 ## `textDocument/documentHighlight`
 
 Every name in the document that refers to or declares the symbol at the
@@ -859,6 +998,56 @@ The tests check that every declaration's body over three lines or more in
 std folds from its `{` to the line before its `}`, and every doc comment
 of two lines or more folds (tests/folding.rs).
 
+## `textDocument/selectionRange`
+
+For each position, the ranges around it, innermost first, each the
+`parent` of the one before, from the document's tokens and declarations
+alone: no check, so it answers in code that doesn't type check or parse,
+and in documents that aren't files.
+
+```json
+→ {"jsonrpc": "2.0", "id": 11, "method": "textDocument/selectionRange", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/main.inko"},
+    "positions": [{"line": 15, "character": 19}]}}
+← {"jsonrpc": "2.0", "id": 11, "result": [
+    {"range": {"start": {"line": 15, "character": 19}, "end": {"line": 15, "character": 24}},
+     "parent": {"range": {"start": {"line": 15, "character": 19}, "end": {"line": 15, "character": 27}},
+      "parent": {"range": ..., "parent": ...}}}
+]}
+```
+
+At `times` in `counter.add(1, times: 2)` (tests/selection.rs), the ranges are `times`,
+`times: 2`, `1, times: 2`, `(1, times: 2)`, `counter.add(1, times: 2)`,
+the method's statements, its body's braces, the method, and so on out to
+the whole document. From the inside out:
+
+| Range | What |
+|---|---|
+| the token | the name, literal, operator or comment at the position (the one starting there, or else the one ending there); none in whitespace |
+| the chain up to it | names, `.`s and argument lists joined, up to the token and its own arguments: `a.b` at `b` in `a.b.c(x)` |
+| the chain | all of it: `a.b.c(x)` |
+| the element | in an argument list, array or tuple: between the commas around it |
+| the statement | in a block, or at the top level: from a new line to the next, where a line doesn't end with something that goes on (an operator, `.`, `,`, `=`, `->`) and the next doesn't start with `.` |
+| inside the bracket | from the first token after the `(`, `[`, `{` or quote to the last before the one that closes it |
+| the bracket | with its pair; then the same again for the bracket around it |
+| each declaration | around the position, as [document symbols](#textdocumentdocumentsymbol) have it (from a copy with lines blank where the text doesn't parse) |
+| the document | all of it |
+
+- Each range contains the one before it and is larger: a range that
+  would overlap without containing it is left out, and so is one equal
+  to it.
+- **In code that doesn't parse**, a bracket nothing closes is a token
+  like any other, as for [folding](#textdocumentfoldingrange): typing
+  `foo(` doesn't change what's around it elsewhere.
+- **A position past the end** of the document: the result is `null`, with
+  reason `invalidPosition`.
+
+The tests check every declaration's name in std and the fixtures, and
+every token in a sixteenth of the modules: each chain nested, and every
+declaration around the position in it (tests/selection.rs).
+
+**Cost.** No check: answered at once, by the server itself.
+
 ## `textDocument/formatting`
 
 The document as `inko fmt` formats it, exactly: Cuttlebone runs the
@@ -999,7 +1188,9 @@ tests/latency.rs holds them to 500 ms and 50 ms.
 ## Diagnostics
 
 Cuttlebone publishes the errors and warnings `inko check` reports, with
-`textDocument/publishDiagnostics`, without being asked:
+`textDocument/publishDiagnostics`, without being asked, or, for a client
+that pulls them, answers `textDocument/diagnostic` and
+`workspace/diagnostic` ([Pull diagnostics](#pull-diagnostics)):
 
 ```json
 {"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
@@ -1095,6 +1286,54 @@ newer Inko, or it's superseded) publishes nothing, so the last diagnostics
 published stay. With `statusNotifications`, a [status](#status)
 notification says why.
 
+### Pull diagnostics
+
+A client whose capabilities have `textDocument.diagnostic` is offered
+pull diagnostics instead, and then gets **no** `publishDiagnostics`:
+
+```json
+"diagnosticProvider": {"identifier": "cuttlebone", "interFileDependencies": true, "workspaceDiagnostics": true}
+```
+
+- **`textDocument/diagnostic`**: the document's diagnostics, the same as
+  would be published (from a full check of its target, with the
+  documents as they are), as a `full` report with a `resultId`, or
+  `unchanged` if the client's `previousResultId` is that id. A document
+  that isn't a file has none; a file of std or a dependency has what a
+  target's check found in it.
+- **`workspace/diagnostic`**: every target's (each workspace folder that's
+  a project, and each open document's), so the whole project's errors,
+  open or not: a report for every file with diagnostics, and for every
+  file the client has a `previousResultIds` entry for (empty, if it has
+  none now), each `unchanged` if its id is the client's. `version` is
+  `null`.
+- **When:** a pull is answered from a check of its targets with the
+  documents exactly as they are when it's answered, never an older one:
+  if one is pending or running for the target, or the documents changed
+  since the last, it waits for the next (and schedules one, at once, if
+  none is coming), in the diagnostics' own queue and worker
+  ([Scheduling](#scheduling)), so queries come first. Edits schedule
+  checks after `diagnosticsDebounceMs`, as for publishing.
+- **A long poll:** a workspace pull with `previousResultIds` whose every
+  report would be `unchanged` is held until a check changes one, as the
+  spec allows, so a client that pulls again at once doesn't check the
+  project in a loop. `$/cancelRequest` ends it (`RequestCancelled`).
+- **A check that doesn't finish** (it times out, crashes, or the compiler
+  reports its own error): the pulls waiting for it get `RequestFailed`
+  (-32803), with `data: {"retriggerRequest": false}`, the spec's
+  `DiagnosticServerCancellationData`. One superseded by an edit waits for
+  the next check. A compiler panic answers with what was found before it,
+  as publishing does. At `shutdown`, waiting pulls get `ServerCancelled`
+  (-32802).
+- **`diagnostics: false`** doesn't turn pulls off: a client that pulls is
+  answered when it asks.
+- **Result ids** are a hash of the file's diagnostics, so the same
+  diagnostics have the same id.
+
+The same as `inko check`, as publishing is: tests/pull.rs holds a workspace
+pull of every fixture project to the core's diagnostics, which
+tests/diagnostics.rs holds to the installed `inko check`.
+
 ### Where it differs from `inko check`
 
 - **A compiler panic.** Lowering some code to MIR panics (for example a
@@ -1125,18 +1364,20 @@ a custom notification if the client opts in with
 }}
 ```
 
-- **When it's sent:** for every query (hover, completion, definition, type
-  definition, references, document highlight, signature help, inlay
-  hints, document and workspace symbols, folding ranges, formatting, code
-  actions) that gets a result, just before the
+- **When it's sent:** for every query (hover, completion, definition,
+  declaration, type definition, implementation, references, the call and
+  type hierarchies' requests, file renames, document highlight, signature help, inlay
+  hints, document and workspace symbols, folding ranges, selection ranges,
+  formatting, code actions) that gets a result, just before the
   response, with the request's `id`. Requests
   answered with an error (cancelled, invalid) get none. Document symbols,
   which need no check, are `fresh` (with `"repaired": true` if the text
   didn't parse), or `unavailable`: `notAFile` or `fileNotFound` if
   there's no text to read, `noHir` if no copy of it parses. Folding
-  ranges and formatting need no check either: `fresh`, or `unavailable`
-  for the same reasons (formatting is `noHir` if the text doesn't
-  parse). Workspace
+  ranges, selection ranges and formatting need no check either: `fresh`,
+  or `unavailable` for the same reasons (formatting is `noHir` if the
+  text doesn't parse; selection ranges `invalidPosition` for a position
+  past the end). Workspace
   symbols are always `fresh`, and their status has no `textDocument`.
 - **For diagnostics:** after each diagnostics check, with
   `"method": "textDocument/publishDiagnostics"`, no `id`, and the checked
@@ -1330,10 +1571,10 @@ two other checks, in this order:
 
 | Request | Answers from |
 |---|---|
-| hover, definition, type definition, document highlight, signature help, inlay hints | the documents as they are, or else a repaired copy, or else the last good check (`stale`) |
+| hover, definition, declaration, type definition, document highlight, signature help, inlay hints, preparing a call or type hierarchy, outgoing calls | the documents as they are, or else a repaired copy, or else the last good check (`stale`) |
 | completion | the documents as they are, or else a repaired copy: its items are inserted into the code, so never stale. Names only from a copy whose blank lines are in method bodies ([Completion](#in-code-being-edited)) |
 | document symbols | the text as it is, or else a copy with the lines in the way blank, from the syntax alone ([`textDocument/documentSymbol`](#textdocumentdocumentsymbol)) |
-| references | the documents as they are only: a rename relies on them, and a blank line may have a use |
+| references, implementations, incoming calls, supertypes and subtypes, file renames | the documents as they are only, with no error in a declaration (but references, [Errors in declarations](#errors-in-declarations)): a rename relies on them, and a blank line (or an error) may hide a use or an `impl` |
 | diagnostics | the documents as they are, always |
 
 Either way, an answer is only given where it holds for the documents as

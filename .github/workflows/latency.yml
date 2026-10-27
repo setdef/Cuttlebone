@@ -1,0 +1,32 @@
+# The latency limits as written for the reference machine, scaled by how
+# fast this runner measures a fixed baseline workload against it
+# (scripts/latency.sh, through scripts/check.sh --latency), on a macOS
+# runner that has run nothing else. The release workflow runs it before
+# every release; run by hand (workflow_dispatch), it shows how the limits
+# fare on another runner instance.
+name: Latency
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latency:
+    name: latency limits as written, scaled by the runner's baseline
+    # A runner of its own that has run nothing else: after the release
+    # checks, the same runner measured up to a quarter slower.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Prepare the pinned upstream release
+        run: scripts/upstream.sh
+      - name: Install LLVM 18
+        run: brew install llvm@18 zstd
+      - name: Build the latency tests
+        run: cargo test --quiet --no-run --test latency
+      - name: The baseline, and the latency limits scaled by it (scripts/check.sh --latency)
+        run: scripts/check.sh --latency

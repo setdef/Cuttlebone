@@ -22,9 +22,11 @@
 #                     publishes: the milestone tier's checks but the
 #                     latency limits and the mutations, which other jobs
 #                     run (--latency, and scripts/mutate.py --shard).
-#   --latency         the latency limits as written, failing, one test at
-#                     a time: the release workflow's job of its own, on a
-#                     machine that has run nothing else.
+#   --latency         the latency limits as written for the reference
+#                     machine, scaled by this machine's measured baseline
+#                     (scripts/latency.sh), failing, one test at a time:
+#                     the release workflow's job of its own, on a machine
+#                     that has run nothing else.
 #   --exhaustive      all of the release tier on one machine: the release
 #                     checks, the latency limits, and every mutation.
 set -eu
@@ -77,10 +79,10 @@ advisory() {
 
 # One test at a time: each measures a machine nothing else of ours loads,
 # as the limits assume.
-strict="the latency limits as written, however loaded the machine is, one test at a time"
+strict="the latency limits as written, scaled by this machine's baseline, one test at a time"
 
 if [ "$tier" = latency ]; then
-    step "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency -- --test-threads=1
+    step "$strict" scripts/latency.sh
     printf '==> passed in %ss\n' "$(($(date +%s) - start))"
     exit 0
 fi
@@ -113,8 +115,8 @@ if [ "$tier" != commit ]; then
     step "the release tooling, with this machine's archive" scripts/check-dist.sh
     # Last, so that the others run whatever it finds.
     case "$tier" in
-        milestone) advisory "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency -- --test-threads=1 ;;
-        exhaustive) step "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency -- --test-threads=1 ;;
+        milestone) advisory "$strict" scripts/latency.sh ;;
+        exhaustive) step "$strict" scripts/latency.sh ;;
     esac
 fi
 
