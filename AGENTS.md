@@ -78,6 +78,10 @@ one the step calls for.
   hook up once with `scripts/install-hooks.sh`. On macOS, add the
   terminal under System Settings, Privacy & Security, Developer Tools, or
   each new test binary is scanned on its first run.
+- **Never bypass the hook:** no `git commit --no-verify` (or `-n`), no
+  disabling or editing the hook to get a commit through. If the hook
+  fails, fix the cause, or make the check itself robust, in a commit that
+  passes it.
 - **Latency:** in the check of every commit, tests/latency.rs scales each
   latency limit by the machine's load (the last minute's load average per
   core, when it's over 1), so other processes can't fail a commit. The
