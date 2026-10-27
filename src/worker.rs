@@ -412,6 +412,10 @@ fn fault(job: &Job) -> Option<String> {
         .map(|(kind, _)| kind)
 }
 
+/// How much slower each job is with the `slow` fault.
+#[cfg(feature = "fault-injection")]
+const SLOW_FAULT: Duration = Duration::from_millis(300);
+
 #[cfg(feature = "fault-injection")]
 fn inject_fault(job: &Job) {
     let Some(kind) = fault(job) else {
@@ -423,6 +427,9 @@ fn inject_fault(job: &Job) {
             std::thread::sleep(Duration::from_secs(3600));
         },
         "abort" => std::process::abort(),
+        // A deliberately slower Cuttlebone, for the latency limits to
+        // fail (.github/workflows/latency.yml, by hand).
+        "slow" => std::thread::sleep(SLOW_FAULT),
         _ => {}
     }
 }

@@ -69,47 +69,48 @@ fn scaled(base: Duration, scale: Option<f64>) -> Duration {
 }
 
 /// The reference machine's baseline (`baseline`): an Apple M1 Max, under
-/// `cargo test`, the fastest of the runs measured there (docs/history/
-/// MILESTONE-14.md). The limits as written are for it.
+/// `cargo test` (docs/history/MILESTONE-14.md). The limits as written are
+/// for it.
 const REFERENCE_BASELINE: Duration = Duration::from_millis(REFERENCE_BASELINE_MS);
-const REFERENCE_BASELINE_MS: u64 = 95;
+const REFERENCE_BASELINE_MS: u64 = 280;
 
-/// How many times the baseline runs: the fastest counts, as the one the
-/// least disturbed by anything else.
+/// How many times the baseline runs.
 const BASELINE_RUNS: usize = 7;
 
 /// The baseline workload: the upstream compiler alone, none of
-/// Cuttlebone, type checking the std-sized project's module (every module
-/// of std), the fastest of `BASELINE_RUNS`. Nothing Cuttlebone changes
-/// can make it slower or faster, so a slower Cuttlebone still fails the
-/// limits it scales.
+/// Cuttlebone, type checking all of std (its `src/` and `test/`) as a
+/// project, the same work a question about the whole project checks
+/// (references across std): a module that imports all of std alone
+/// didn't track the runners, which are slower at the whole project's
+/// check than one module's suggests. The median of `BASELINE_RUNS`, as
+/// the tests take medians. Nothing Cuttlebone changes can make it
+/// slower or faster, so a slower Cuttlebone still fails the limits it
+/// scales.
 fn baseline() -> Duration {
-    let (root, _) = std_sized_project();
     let std = upstream_std();
-
-    (0..BASELINE_RUNS)
+    let root = std.parent().unwrap().to_path_buf();
+    let times = (0..BASELINE_RUNS)
         .map(|_| {
             let mut config = compiler::config::Config::new().unwrap();
 
             config.std = std.clone();
             config.add_source_directory(std.clone());
             config.source = root.join("src");
-            config.tests = root.join("\0no-tests");
+            config.tests = root.join("test");
+            config.add_source_directory(root.join("test"));
             config.build = root.join("build");
             config.dependencies = root.join("dep");
 
             let mut compiler = compiler::compiler::Compiler::new(config);
             let start = Instant::now();
-
-            let checked = compiler
-                .check_with(Some(root.join("src/main.inko")), |_, _, _| false)
-                .is_ok();
+            let checked = compiler.check_with(None, |_, _, _| false).is_ok();
 
             assert!(checked, "the baseline didn't type check");
             start.elapsed()
         })
-        .min()
-        .unwrap()
+        .collect();
+
+    median(times)
 }
 
 /// Measures the baseline, and writes it, the reference's and the scale
@@ -123,7 +124,7 @@ fn measure_the_baseline() {
     let scale = measured.as_secs_f64() / REFERENCE_BASELINE.as_secs_f64();
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     let report = format!(
-        "baseline {:.1} ms on this machine ({} cores, the fastest of {} runs)\n\
+        "baseline {:.1} ms on this machine ({} cores, the median of {} runs)\n\
          reference {:.1} ms (an Apple M1 Max)\n\
          scale {:.3}: every strict limit times this\n",
         measured.as_secs_f64() * 1000.0,

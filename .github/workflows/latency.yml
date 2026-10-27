@@ -9,6 +9,14 @@ name: Latency
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      slow:
+        description: >-
+          A deliberate slowdown, to see the limits fail it: every check of
+          a file whose path ends with this is 300 ms slower (the tests'
+          `slow` fault, CUTTLEBONE_FAULT). Empty for none.
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -29,4 +37,10 @@ jobs:
       - name: Build the latency tests
         run: cargo test --quiet --no-run --test latency
       - name: The baseline, and the latency limits scaled by it (scripts/check.sh --latency)
-        run: scripts/check.sh --latency
+        env:
+          SLOW: ${{ inputs.slow }}
+        run: |
+          if [ -n "$SLOW" ]; then
+            export CUTTLEBONE_FAULT="slow:$SLOW"
+          fi
+          scripts/check.sh --latency

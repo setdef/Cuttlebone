@@ -1840,7 +1840,10 @@ checks of that file (and of whole projects) stop at the first pass with
 an error, as `inko check`'s do, and as a check does after a pass after an
 error panics ([Errors in declarations](#errors-in-declarations)), so tests
 can reach the answers that then come from repaired copies and the last
-good check. Several faults can be given, separated by commas. Only builds
+good check. With `CUTTLEBONE_FAULT=slow:<suffix>`, each check of such a
+file takes 300 ms longer, a deliberately slower server for the latency
+limits to fail (.github/workflows/latency.yml, by hand). Several faults
+can be given, separated by commas. Only builds
 with the `fault-injection` cargo feature have this, and
 only `cargo test` enables it: release builds ignore the variable.
 
