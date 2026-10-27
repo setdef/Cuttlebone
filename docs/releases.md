@@ -53,7 +53,7 @@ Each build is one `.tar.gz`:
 
 ```
 cuttlebone-<version>-inko-<inko>-<target>.tar.gz
-cuttlebone-0.12.0-inko-0.21.1-aarch64-apple-darwin.tar.gz
+cuttlebone-0.13.0-inko-0.21.1-aarch64-apple-darwin.tar.gz
 ```
 
 It holds one directory of the same name (without `.tar.gz`), with:
@@ -84,7 +84,7 @@ https://github.com/setdef/Cuttlebone/releases/latest/download/manifest.json
 ```json
 {
   "schema": 1,
-  "cuttlebone": "0.12.0",
+  "cuttlebone": "0.13.0",
   "builds": [
     {
       "inko": "0.21.1",
@@ -92,10 +92,10 @@ https://github.com/setdef/Cuttlebone/releases/latest/download/manifest.json
       "os": "macos",
       "arch": "arm64",
       "minimumOs": "15.0",
-      "url": "https://github.com/setdef/Cuttlebone/releases/download/v0.12.0/cuttlebone-0.12.0-inko-0.21.1-aarch64-apple-darwin.tar.gz",
+      "url": "https://github.com/setdef/Cuttlebone/releases/download/v0.13.0/cuttlebone-0.13.0-inko-0.21.1-aarch64-apple-darwin.tar.gz",
       "size": 5607052,
       "sha256": "5b22bed8c3affefc4e61c31402611275dd2c2f2846258eaf24c060418e402f48",
-      "binary": "cuttlebone-0.12.0-inko-0.21.1-aarch64-apple-darwin/cuttlebone"
+      "binary": "cuttlebone-0.13.0-inko-0.21.1-aarch64-apple-darwin/cuttlebone"
     }
   ]
 }
@@ -146,14 +146,14 @@ https://github.com/setdef/Cuttlebone/releases/download/v<version>/index.json
   "schema": 1,
   "releases": [
     {
+      "cuttlebone": "0.13.0",
+      "inko": ["0.21.1"],
+      "manifest": "https://github.com/setdef/Cuttlebone/releases/download/v0.13.0/manifest.json"
+    },
+    {
       "cuttlebone": "0.12.0",
       "inko": ["0.21.1"],
       "manifest": "https://github.com/setdef/Cuttlebone/releases/download/v0.12.0/manifest.json"
-    },
-    {
-      "cuttlebone": "0.11.0",
-      "inko": ["0.21.1"],
-      "manifest": "https://github.com/setdef/Cuttlebone/releases/download/v0.11.0/manifest.json"
     }
   ]
 }

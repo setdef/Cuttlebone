@@ -8,6 +8,12 @@ the entry links to the milestone's report, which its last commit adds
 (AGENTS.md, "Versions"). Milestones 1 to 6 were all built as 0.1.0; their
 versions here were given afterwards.
 
+## 0.13.0
+
+Milestone 13: answers after an edit is undone, folding ranges, formatting,
+quick fixes, and the exhaustive checks in CI before each release.
+[Report](docs/history/MILESTONE-13.md).
+
 ## 0.12.0
 
 Milestone 12: documentation in hover, document and workspace symbols, and
