@@ -8,6 +8,13 @@ the entry links to the milestone's report, which its last commit adds
 (AGENTS.md, "Versions"). Milestones 1 to 6 were all built as 0.1.0; their
 versions here were given afterwards.
 
+## 0.14.0
+
+Milestone 14: implementations, declarations, call and type hierarchies,
+selection ranges, imports rewritten when files move, pull diagnostics, and
+latency limits scaled by each CI runner's measured speed.
+[Report](docs/history/MILESTONE-14.md).
+
 ## 0.13.0
 
 Milestone 13: answers after an edit is undone, folding ranges, formatting,

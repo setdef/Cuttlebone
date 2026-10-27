@@ -71,7 +71,7 @@ distribution), on AMD64 and ARM64. Each build works with one Inko version,
 which its name says: pick the one for the `inko --version` you have.
 For example, on Linux on AMD64 with Inko 0.21.1:
 
-    version=0.13.0 inko=0.21.1 target=x86_64-unknown-linux-musl
+    version=0.14.0 inko=0.21.1 target=x86_64-unknown-linux-musl
     name=cuttlebone-$version-inko-$inko-$target
     curl -fLO https://github.com/setdef/Cuttlebone/releases/download/v$version/$name.tar.gz
     tar -xzf $name.tar.gz
