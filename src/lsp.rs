@@ -2209,15 +2209,24 @@ impl Server {
             symbol_kinds: self.support.workspace_symbol_kinds,
             ..self.support
         };
-        let mut positions: HashMap<&std::path::Path, Positions> = HashMap::new();
+        // Each module's positions and URI, once.
+        let mut modules: HashMap<&std::path::Path, Option<(Positions, Value)>> = HashMap::new();
         let found: Vec<Value> = self
             .index
             .search(&params.query, WORKSPACE_SYMBOLS)
             .into_iter()
             .filter_map(|f| {
-                let positions = positions
+                let (positions, uri) = modules
                     .entry(&f.module.file)
-                    .or_insert_with(|| Positions::new(&f.module.text, self.encoding));
+                    .or_insert_with(|| {
+                        let uri = Url::from_file_path(&f.module.file).ok()?;
+
+                        Some((
+                            Positions::with_starts(&f.module.text, &f.module.lines, self.encoding),
+                            json!(uri),
+                        ))
+                    })
+                    .as_ref()?;
                 let r = &f.declaration.name_range;
 
                 Some(json!({
@@ -2225,7 +2234,7 @@ impl Server {
                     "kind": symbol_kind(f.declaration.kind, kinds),
                     "containerName": f.container(),
                     "location": {
-                        "uri": Url::from_file_path(&f.module.file).ok()?,
+                        "uri": uri,
                         "range": lsp::Range {
                             start: lsp_position(positions, r.start),
                             end: lsp_position(positions, r.end),

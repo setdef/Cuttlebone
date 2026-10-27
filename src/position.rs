@@ -225,21 +225,35 @@ pub fn position_at(text: &str, offset: usize, encoding: Encoding) -> Position {
 pub struct Positions<'a> {
     text: &'a str,
     /// Where each of LSP's lines starts.
-    starts: Vec<usize>,
+    starts: std::borrow::Cow<'a, [usize]>,
     encoding: Encoding,
+}
+
+/// Where each of LSP's lines in `text` starts, for `Positions::with_starts`.
+pub fn line_starts(text: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+
+    while let Some(next) = next_line(text, *starts.last().unwrap()) {
+        starts.push(next);
+    }
+
+    starts
 }
 
 impl<'a> Positions<'a> {
     pub fn new(text: &'a str, encoding: Encoding) -> Self {
-        let mut starts = vec![0];
-
-        while let Some(next) = next_line(text, *starts.last().unwrap()) {
-            starts.push(next);
-        }
-
         Positions {
             text,
-            starts,
+            starts: std::borrow::Cow::Owned(line_starts(text)),
+            encoding,
+        }
+    }
+
+    /// The same, with `text`'s `line_starts` kept from before.
+    pub fn with_starts(text: &'a str, starts: &'a [usize], encoding: Encoding) -> Self {
+        Positions {
+            text,
+            starts: std::borrow::Cow::Borrowed(starts),
             encoding,
         }
     }

@@ -15,7 +15,7 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("check", &[]),
     ("edits", &[]),
     ("syntax", &["position"]),
-    ("index", &["syntax"]),
+    ("index", &["position", "syntax"]),
     ("units", &["position", "edits"]),
     (
         "query",

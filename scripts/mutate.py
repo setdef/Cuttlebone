@@ -498,6 +498,8 @@ M = [
  ("every fix preferred", "src/lsp.rs", "            let only = fixes.len() == 1;", "            let only = true;", "--test actions several_imports"),
  ("no imports offered", "src/lsp.rs", "                if d.public && d.kind.importable() && names.contains(&d.name) {", "                if false {", "--test actions an_undefined_symbol"),
  ("code actions not advertised", "src/lsp.rs", "                code_action_provider: self.support.code_actions.then(|| {", "                code_action_provider: false.then(|| {", "--test lsp initialize_advertises"),
+ ("ascii matching keeps case", "src/index.rs", "    if n.len() >= q.len() && n[..q.len()].eq_ignore_ascii_case(q) {", "    if n.starts_with(q) {", "--lib ascii_names_match"),
+ ("ascii subsequences keep case", "src/index.rs", "        let (at, _) = chars.find(|(_, d)| d.eq_ignore_ascii_case(c))?;", "        let (at, _) = chars.find(|(_, d)| *d == c)?;", "--lib ascii_names_match"),
  # After an undo (milestone 13).
  ("an undo answered from a check of other text", "src/query.rs", "list.iter().position(|k| k.target == *target)", "list.iter().position(|k| k.target.root == target.root && k.target.file == target.file && k.target.tests == target.tests)", "--test undo undone_incremental"),
  ("an undo answered from a check of a module since restored", "src/query.rs", "            if entry.fingerprint.current() {", "            if true {", "--test undo a_module_changed"),

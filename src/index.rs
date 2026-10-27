@@ -98,6 +98,9 @@ pub struct Module {
     pub origin: Origin,
     /// Its text: the open document's, or the file's.
     pub text: String,
+    /// Where each of its LSP lines starts (`position::line_starts`), for
+    /// converting positions without reading the text again.
+    pub lines: Vec<usize>,
     /// `None` if no copy of it parses (`syntax::outline`).
     pub outline: Option<Outline>,
 }
@@ -222,6 +225,7 @@ impl Index {
                         name,
                         file,
                         origin,
+                        lines: crate::position::line_starts(&text),
                         text,
                         outline,
                     },
@@ -245,26 +249,43 @@ impl Index {
     pub fn search(&self, query: &str, limit: usize) -> Vec<Found<'_>> {
         let mut found: Vec<(Score, Found)> = Vec::new();
 
-        for module in self.modules() {
-            let Some(outline) = &module.outline else {
-                continue;
-            };
-
-            for (declaration, parents) in outline.all() {
-                if declaration.kind == Kind::Implementation {
-                    continue;
-                }
-
-                if let Some(score) = matches(query, &declaration.name) {
+        // Every declaration, with what it's in copied only for a match.
+        fn walk<'a>(
+            module: &'a Module,
+            list: &'a [Declaration],
+            query: &str,
+            parents: &mut Vec<&'a Declaration>,
+            found: &mut Vec<(Score, Found<'a>)>,
+        ) {
+            for declaration in list {
+                if declaration.kind != Kind::Implementation
+                    && let Some(score) = matches(query, &declaration.name)
+                {
                     found.push((
                         score,
                         Found {
                             module,
                             declaration,
-                            parents,
+                            parents: parents.clone(),
                         },
                     ));
                 }
+
+                parents.push(declaration);
+                walk(module, &declaration.children, query, parents, found);
+                parents.pop();
+            }
+        }
+
+        for module in self.modules() {
+            if let Some(outline) = &module.outline {
+                walk(
+                    module,
+                    &outline.declarations,
+                    query,
+                    &mut Vec::new(),
+                    &mut found,
+                );
             }
         }
 
@@ -347,6 +368,15 @@ pub type Score = (u8, bool, usize, usize);
 /// matches `Stdout`). An empty query matches everything. `None` if it
 /// doesn't match.
 pub fn matches(query: &str, name: &str) -> Option<Score> {
+    if query.is_ascii() && name.is_ascii() {
+        return matches_ascii(query, name);
+    }
+
+    matches_unicode(query, name)
+}
+
+/// `matches`, lowercasing copies of the text.
+fn matches_unicode(query: &str, name: &str) -> Option<Score> {
     let lower = |s: &str| s.to_lowercase();
     let (q, n) = (lower(query), lower(name));
     let other_case = !name.contains(query);
@@ -372,6 +402,41 @@ pub fn matches(query: &str, name: &str) -> Option<Score> {
 
     for c in q.chars() {
         let (at, _) = chars.find(|(_, d)| *d == c)?;
+
+        first.get_or_insert(at);
+    }
+
+    Some((3, other_case, first.unwrap_or(0), name.len()))
+}
+
+/// `matches` for ASCII text, without lowercasing copies of it: the same
+/// score, by comparing bytes without their case. Workspace symbols match
+/// every declaration on each keystroke.
+fn matches_ascii(query: &str, name: &str) -> Option<Score> {
+    let (q, n) = (query.as_bytes(), name.as_bytes());
+    let other_case = !name.contains(query);
+
+    if q.is_empty() {
+        return Some((0, false, 0, name.len()));
+    }
+
+    if n.eq_ignore_ascii_case(q) {
+        return Some((0, other_case, 0, name.len()));
+    }
+
+    if n.len() >= q.len() && n[..q.len()].eq_ignore_ascii_case(q) {
+        return Some((1, other_case, 0, name.len()));
+    }
+
+    if let Some(at) = n.windows(q.len()).position(|w| w.eq_ignore_ascii_case(q)) {
+        return Some((2, other_case, at, name.len()));
+    }
+
+    let mut chars = n.iter().enumerate();
+    let mut first = None;
+
+    for c in q {
+        let (at, _) = chars.find(|(_, d)| d.eq_ignore_ascii_case(c))?;
 
         first.get_or_insert(at);
     }
@@ -422,6 +487,35 @@ mod tests {
         assert_eq!(names(&index), ["main"]);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ascii_names_match_as_any_others() {
+        let names = [
+            "Stdout",
+            "stdout",
+            "to_string",
+            "ToString",
+            "STDOUT",
+            "s",
+            "",
+            "OutputStream",
+        ];
+        let queries = [
+            "", "s", "S", "std", "STD", "out", "Out", "ts", "tst", "xyz", "Stdout", "stdoutx",
+        ];
+
+        for n in names {
+            for q in queries {
+                assert_eq!(
+                    matches_ascii(q, n),
+                    matches_unicode(q, n),
+                    "{:?} in {:?}",
+                    q,
+                    n
+                );
+            }
+        }
     }
 
     #[test]
