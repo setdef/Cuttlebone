@@ -194,8 +194,9 @@ says which Inko `cuttlebone --version` names.
    match Cargo.toml.
 4. The workflow runs the release tier (AGENTS.md, "Checks"), in parallel
    jobs: `scripts/check.sh --release` on macOS (every test, the whole
-   corpus, the latency limits as written, every test without kept checks,
-   the release tooling), and every mutation, `scripts/mutate.py --shard
+   corpus, every test without kept checks, the release tooling),
+   `scripts/check.sh --latency` on a macOS runner of its own (the latency
+   limits as written, one test at a time), and every mutation, `scripts/mutate.py --shard
    K/16` on 16 Linux runners and `--shard dist` on macOS, each shard
    checking every test unmutated first. Their tests' oracles run the
    pinned Inko, built unpatched from its release (`scripts/ci-inko.sh`).

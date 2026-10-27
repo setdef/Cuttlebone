@@ -98,8 +98,9 @@ one the step calls for.
   milestones changed.
 - **Release (CI, on every tag push):** `.github/workflows/release.yml`
   runs the exhaustive tier: `scripts/check.sh --release` on macOS (the
-  milestone tier's checks with the latency limits as written, failing),
-  and every mutation, sharded across parallel jobs:
+  milestone tier's checks), `scripts/check.sh --latency` on a macOS
+  runner of its own (the latency limits as written, failing, one test at
+  a time), and every mutation, sharded across parallel jobs:
   `scripts/mutate.py --shard K/16` on 16 Linux runners, each running the
   unmutated control check first, and `--shard dist` (the release
   tooling's, which need macOS) on macOS. Publishing waits until all of

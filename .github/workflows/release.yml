@@ -2,8 +2,9 @@
 # after the release tier passes (AGENTS.md, "Checks").
 #
 # A pushed version tag (v0.13.0) runs the release checks on macOS (every
-# test, the whole corpus, the latency limits as written, every test again
-# without kept checks: scripts/check.sh --release), every mutation in
+# test, the whole corpus, every test again without kept checks:
+# scripts/check.sh --release), the latency limits as written on a macOS
+# runner of their own (scripts/check.sh --latency), every mutation in
 # shards on Linux (scripts/mutate.py --shard, each with its own control),
 # and builds every target and verifies each archive on its own platform.
 # Only when all of that passes does it publish the archives with
@@ -40,6 +41,23 @@ jobs:
         run: scripts/check.sh --release
       - name: The release tooling's mutations (scripts/mutate.py --shard dist)
         run: python3 scripts/mutate.py --shard dist
+
+  latency:
+    name: latency limits as written
+    # A runner of its own that has run nothing else: after the release
+    # checks, the same runner measured up to a quarter slower.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Prepare the pinned upstream release
+        run: scripts/upstream.sh
+      - name: Install LLVM 18
+        run: brew install llvm@18 zstd
+      - name: Build the latency tests
+        run: cargo test --quiet --no-run --test latency
+      - name: The latency limits as written (scripts/check.sh --latency)
+        run: scripts/check.sh --latency
 
   mutations:
     strategy:
@@ -121,7 +139,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, checks, mutations]
+    needs: [build, checks, latency, mutations]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -2,7 +2,7 @@
 # The checks of each tier (AGENTS.md, "Checks"). The pre-commit hook runs
 # the first.
 #
-# Usage: scripts/check.sh [--milestone [REV] | --release | --exhaustive]
+# Usage: scripts/check.sh [--milestone [REV] | --release | --latency | --exhaustive]
 #
 #   (none)            every commit: formatting, clippy, the tests (with a
 #                     sample of the edit-replay corpus, and latency limits
@@ -19,12 +19,14 @@
 #                     milestone's first commit; by default, the last
 #                     commit that changed a milestone report.
 #   --release         what the release workflow runs on macOS before it
-#                     publishes: the milestone tier's checks with the
-#                     latency limits as written, failing, and no
-#                     mutations (its other jobs run every mutation, in
-#                     shards: scripts/mutate.py --shard).
-#   --exhaustive      the release checks with every mutation, on one
-#                     machine.
+#                     publishes: the milestone tier's checks but the
+#                     latency limits and the mutations, which other jobs
+#                     run (--latency, and scripts/mutate.py --shard).
+#   --latency         the latency limits as written, failing, one test at
+#                     a time: the release workflow's job of its own, on a
+#                     machine that has run nothing else.
+#   --exhaustive      all of the release tier on one machine: the release
+#                     checks, the latency limits, and every mutation.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -39,9 +41,10 @@ case "${1-}" in
         since=${2:-$(git log -1 --format=%h -- 'docs/history/MILESTONE-*.md')}
         ;;
     --release) tier=release ;;
+    --latency) tier=latency ;;
     --exhaustive) tier=exhaustive ;;
     *)
-        echo "usage: scripts/check.sh [--milestone [REV] | --release | --exhaustive]" >&2
+        echo "usage: scripts/check.sh [--milestone [REV] | --release | --latency | --exhaustive]" >&2
         exit 2
         ;;
 esac
@@ -72,6 +75,16 @@ advisory() {
     fi
 }
 
+# One test at a time: each measures a machine nothing else of ours loads,
+# as the limits assume.
+strict="the latency limits as written, however loaded the machine is, one test at a time"
+
+if [ "$tier" = latency ]; then
+    step "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency -- --test-threads=1
+    printf '==> passed in %ss\n' "$(($(date +%s) - start))"
+    exit 0
+fi
+
 step "formatting" cargo fmt --check
 step "clippy, all targets" cargo clippy --quiet --all-targets -- -D warnings
 # Without the tests' dev-dependency, so without fault injection: the
@@ -89,15 +102,11 @@ if [ "$tier" != commit ]; then
     step "the milestone tier selects every mutation that guards changed code" \
         python3 scripts/check-selection.py
     step "the release tooling, with this machine's archive" scripts/check-dist.sh
-    # Last, so that the others run whatever it finds. One test at a time:
-    # each measures a machine nothing else of ours loads, as the limits
-    # assume.
-    strict="the latency limits as written, however loaded the machine is, one test at a time"
-    if [ "$tier" = milestone ]; then
-        advisory "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency -- --test-threads=1
-    else
-        step "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency -- --test-threads=1
-    fi
+    # Last, so that the others run whatever it finds.
+    case "$tier" in
+        milestone) advisory "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency -- --test-threads=1 ;;
+        exhaustive) step "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency -- --test-threads=1 ;;
+    esac
 fi
 
 case "$tier" in
