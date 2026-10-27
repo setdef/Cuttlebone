@@ -2,23 +2,29 @@
 # The checks of each tier (AGENTS.md, "Checks"). The pre-commit hook runs
 # the first.
 #
-# Usage: scripts/check.sh [--milestone [REV] | --exhaustive]
+# Usage: scripts/check.sh [--milestone [REV] | --release | --exhaustive]
 #
 #   (none)            every commit: formatting, clippy, the tests (with a
 #                     sample of the edit-replay corpus, and latency limits
 #                     scaled by the machine's load), the patch, and the
 #                     release build. About a minute.
-#   --milestone [REV] before a milestone report: the above, the whole
-#                     corpus, the latency limits as written (unscaled),
-#                     every test again without kept checks (the
-#                     answers must be the same), the mutation selection's
-#                     own check, and the mutations a change since REV could
-#                     affect. REV is the milestone's first commit; by
-#                     default, the last commit that changed a milestone
-#                     report.
-#   --exhaustive      when the mutation runner or shared test
-#                     infrastructure changes: the milestone tier's checks
-#                     with every mutation.
+#   --milestone [REV] before a milestone report, locally: the above, the
+#                     whole corpus, the latency limits as written
+#                     (advisory: a failure is reported, and doesn't fail
+#                     the tier, since a loaded machine can't meet them),
+#                     every test again without kept checks (the answers
+#                     must be the same), the mutation selection's own
+#                     check, the release tooling, and the mutations a
+#                     change since REV could affect. REV is the
+#                     milestone's first commit; by default, the last
+#                     commit that changed a milestone report.
+#   --release         what the release workflow runs on macOS before it
+#                     publishes: the milestone tier's checks with the
+#                     latency limits as written, failing, and no
+#                     mutations (its other jobs run every mutation, in
+#                     shards: scripts/mutate.py --shard).
+#   --exhaustive      the release checks with every mutation, on one
+#                     machine.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -32,14 +38,16 @@ case "${1-}" in
         tier=milestone
         since=${2:-$(git log -1 --format=%h -- 'docs/history/MILESTONE-*.md')}
         ;;
+    --release) tier=release ;;
     --exhaustive) tier=exhaustive ;;
     *)
-        echo "usage: scripts/check.sh [--milestone [REV] | --exhaustive]" >&2
+        echo "usage: scripts/check.sh [--milestone [REV] | --release | --exhaustive]" >&2
         exit 2
         ;;
 esac
 
 start=$(date +%s)
+advisories=
 
 step() {
     printf '==> %s\n' "$1"
@@ -47,6 +55,21 @@ step() {
     began=$(date +%s)
     "$@"
     printf '    (%ss)\n' "$(($(date +%s) - began))"
+}
+
+# A step whose failure is reported but doesn't fail the tier.
+advisory() {
+    printf '==> %s (advisory)\n' "$1"
+    name=$1
+    shift
+    began=$(date +%s)
+    if "$@"; then
+        printf '    (%ss)\n' "$(($(date +%s) - began))"
+    else
+        printf '    FAILED, advisory here (%ss)\n' "$(($(date +%s) - began))"
+        advisories="$advisories
+    $name"
+    fi
 }
 
 step "formatting" cargo fmt --check
@@ -61,8 +84,12 @@ step "the release build has no test-only code" scripts/check-release.sh
 if [ "$tier" != commit ]; then
     step "the whole edit-replay corpus" \
         env CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet --test integration replay::
-    step "the latency limits as written, however loaded the machine is" \
-        env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency
+    strict="the latency limits as written, however loaded the machine is"
+    if [ "$tier" = milestone ]; then
+        advisory "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency
+    else
+        step "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency
+    fi
     step "every test without kept checks, and the whole corpus" \
         env CUTTLEBONE_NO_CACHE=1 CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet
     step "the milestone tier selects every mutation that guards changed code" \
@@ -74,5 +101,9 @@ case "$tier" in
     milestone) step "mutations a change since $since could affect" python3 scripts/mutate.py --since "$since" ;;
     exhaustive) step "every mutation" python3 scripts/mutate.py ;;
 esac
+
+if [ -n "$advisories" ]; then
+    printf '==> advisory steps that failed:%s\n' "$advisories"
+fi
 
 printf '==> passed in %ss\n' "$(($(date +%s) - start))"

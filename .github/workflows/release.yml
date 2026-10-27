@@ -1,10 +1,16 @@
-# Builds, verifies and publishes the prebuilt binaries (docs/releases.md).
+# Builds, verifies and publishes the prebuilt binaries (docs/releases.md),
+# after the release tier passes (AGENTS.md, "Checks").
 #
-# A pushed version tag (v0.13.0) builds every target, verifies each archive
-# on its own platform, publishes them with manifest.json and the release
-# index (index.json) as the tag's GitHub release, and then checks the
-# published release from its manifest's and index's URLs alone. Run by
-# hand (workflow_dispatch), it builds and verifies without publishing.
+# A pushed version tag (v0.13.0) runs the release checks on macOS (every
+# test, the whole corpus, the latency limits as written, every test again
+# without kept checks: scripts/check.sh --release), every mutation in
+# shards on Linux (scripts/mutate.py --shard, each with its own control),
+# and builds every target and verifies each archive on its own platform.
+# Only when all of that passes does it publish the archives with
+# manifest.json and the release index (index.json) as the tag's GitHub
+# release, and then check the published release from its manifest's and
+# index's URLs alone. Run by hand (workflow_dispatch), it does everything
+# but publish: a dry run.
 name: Release
 
 on:
@@ -16,6 +22,54 @@ permissions:
   contents: read
 
 jobs:
+  checks:
+    name: release checks
+    # The latency limits are written for an Apple M1 Max core; this
+    # runner's are Apple silicon too.
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Prepare the pinned upstream release
+        run: scripts/upstream.sh
+      - name: Install LLVM 18
+        run: brew install llvm@18 zstd
+      - name: Build the pinned Inko, unpatched, for the tests' oracles
+        run: scripts/ci-inko.sh "$RUNNER_TEMP/inko" >> "$GITHUB_PATH"
+      - name: The release checks (scripts/check.sh --release)
+        run: scripts/check.sh --release
+      - name: The release tooling's mutations (scripts/mutate.py --shard dist)
+        run: python3 scripts/mutate.py --shard dist
+
+  mutations:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    name: mutations ${{ matrix.shard }}/16
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      LLVM_SYS_181_PREFIX: /usr/lib/llvm-18
+    steps:
+      - name: Make room for the copies of the build the runner makes
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install LLVM 18
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y llvm-18-dev libpolly-18-dev libzstd-dev zlib1g-dev libffi-dev libxml2-dev
+      - name: Prepare the pinned upstream release
+        run: scripts/upstream.sh
+      - name: Build the pinned Inko, unpatched, for the tests' oracles
+        run: scripts/ci-inko.sh "$RUNNER_TEMP/inko" >> "$GITHUB_PATH"
+      - name: Build the tests, which the runner copies for each mutation
+        run: cargo test --quiet --no-run && cargo build --quiet
+      - name: This shard's mutations (scripts/mutate.py --shard ${{ matrix.shard }}/16)
+        run: python3 scripts/mutate.py --shard ${{ matrix.shard }}/16 --jobs 2 --trees 1
+
   build:
     strategy:
       fail-fast: false
@@ -67,7 +121,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, checks, mutations]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

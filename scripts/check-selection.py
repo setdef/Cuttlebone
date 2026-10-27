@@ -10,6 +10,9 @@ way, it had to be run again. Each milestone's mutations are the ones its own
 scripts/mutate.py lists. Exits with status 1 if any such mutation isn't
 selected.
 
+It also checks that the release workflow's shards (`--shard K/N` and
+`--shard dist`) run every mutation once between them, for any N.
+
 Usage: scripts/check-selection.py [START..END ...]
 """
 import importlib.util, os, re, subprocess, sys
@@ -83,6 +86,20 @@ def guards(m, end, lines):
     return any(l in lines[path] for l in range(first, last + 1))
 
 
+def shards_cover():
+    """Whether the shards of every N up to 32 run each mutation once."""
+    ok = True
+    everything = [(m, "all") for m in mutate.M]
+    for n in range(1, 33):
+        names = [m[0] for k in range(1, n + 1) for m, _ in mutate.in_shard(everything, (k, n))]
+        names += [m[0] for m, _ in mutate.in_shard(everything, "dist")]
+        if sorted(names) != sorted(m[0] for m in mutate.M):
+            print("  the %d shards and dist don't run each mutation once" % n)
+            ok = False
+    print("shards: every mutation once, for 1 to 32 shards" if ok else "shards: WRONG")
+    return ok
+
+
 def main(argv):
     ranges = [(r, *r.split("..")) for r in argv] or MILESTONES
     ok = True
@@ -104,6 +121,7 @@ def main(argv):
         for name in missed:
             print("  MISSED: %s (%s)" % (name, guarding[name]))
         ok &= not missed
+    ok &= shards_cover()
     return 0 if ok else 1
 
 

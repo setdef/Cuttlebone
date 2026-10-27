@@ -12,11 +12,21 @@ for the tests in tests/FILE.rs, `--lib FILTER` for unit tests in src/, or
 `sh:COMMAND` for a command that must fail (for rules that clippy or a check
 script enforces).
 
-Usage: scripts/mutate.py [--since REV] [--jobs N | --serial] [--list] [--control] [WORD...]
+Usage: scripts/mutate.py [--since REV] [--shard K/N] [--jobs N | --serial] [--list] [--control] [WORD...]
 
-  (no options)   every mutation: the exhaustive tier (AGENTS.md)
+  (no options)   every mutation: the exhaustive mutations of the release
+                 tier, which CI runs in shards (AGENTS.md)
   --since REV    only the mutations a change since REV could affect: the
                  milestone tier. See `selected`.
+  --shard K/N    only every Nth of the mutations chosen, starting at the
+                 Kth (1 to N), leaving out those `--shard dist` runs: one
+                 of N runners' share, as the release workflow runs the
+                 exhaustive tier on Linux. Each shard runs its own
+                 control first.
+  --shard dist   only the mutations scripts/check-dist.sh catches, which
+                 builds this machine's release archive the way only macOS
+                 does outside Docker (scripts/dist-build.sh). The K/N
+                 shards and this one run every mutation between them.
   --list         print what would run, and why, without running anything
   --jobs N       how many mutations' tests run at once (default: half the
                  cores, at most 5)
@@ -451,6 +461,9 @@ M = [
  ("new imports last", "src/syntax.rs", "        let at = match group.iter().find(|i| i.path.join(\".\").as_str() > module) {", "        let at = match group.iter().find(|_| false) {", "--lib syntax"),
  ("new imports after a doc comment", "src/syntax.rs", "        .map(|(doc, at)| doc.unwrap_or(*at))", "        .map(|(_, at)| *at)", "--lib syntax"),
  ("many positions converted wrong", "src/position.rs", "        let line = self.starts.partition_point(|s| *s <= offset) - 1;", "        let line = self.starts.partition_point(|s| *s < offset).max(1) - 1;", "--lib positions_are"),
+ # The release workflow's shards (milestone 13).
+ ("shards skip a mutation", "scripts/mutate.py", "    k, n = shard\n    return [(m, why) for m, why in chosen if m[4] != DIST][k - 1::n]", "    k, n = shard\n    return [(m, why) for m, why in chosen if m[4] != DIST][k::n]", "sh:python3 scripts/check-selection.py"),
+ ("the dist shard runs nothing", "scripts/mutate.py", "    if shard == \"dist\":\n        return [(m, why) for m, why in chosen if m[4] == DIST]", "    if shard == \"dist\":\n        return []", "sh:python3 scripts/check-selection.py"),
  # After an undo (milestone 13).
  ("an undo answered from a check of other text", "src/query.rs", "list.iter().position(|k| k.target == *target)", "list.iter().position(|k| k.target.root == target.root && k.target.file == target.file && k.target.tests == target.tests)", "--test undo undone_incremental"),
  ("an undo answered from a check of a module since restored", "src/query.rs", "            if entry.fingerprint.current() {", "            if true {", "--test undo a_module_changed"),
@@ -465,6 +478,9 @@ OWN_BINARIES = {"latency"}
 # Tests that read the source tree, so they must run before it's restored.
 IN_PLACE = {"guardrails", "citations"}
 TIMEOUT = 900
+# What catches the mutations of the release tooling, which only macOS
+# can run outside Docker (`--shard dist`).
+DIST = "sh:scripts/check-dist.sh"
 
 
 def target(test):
@@ -498,6 +514,15 @@ def test_file(test):
         return None
     words = test.split(" ")
     return None if words[0] == "--lib" else "tests/%s.rs" % words[1]
+
+
+def in_shard(chosen, shard):
+    """The mutations of `chosen` (each with why) in a shard: "dist", or
+    (K, N)."""
+    if shard == "dist":
+        return [(m, why) for m, why in chosen if m[4] == DIST]
+    k, n = shard
+    return [(m, why) for m, why in chosen if m[4] != DIST][k - 1::n]
 
 
 def run_git(*args):
@@ -621,7 +646,10 @@ def make_tree(path):
         shutil.copy2(os.path.join(ROOT, f), os.path.join(path, f))
     os.symlink(os.path.join(ROOT, ".upstream"), os.path.join(path, ".upstream"))
     os.makedirs(os.path.join(path, "target"))
-    subprocess.run(["cp", "-c", "-R", os.path.join(ROOT, "target", "debug"), os.path.join(path, "target", "debug")],
+    # A clone where the file system can: clonefile on macOS, a reflink
+    # elsewhere (a copy, on a file system without them).
+    clone = ["-c"] if sys.platform == "darwin" else ["--reflink=auto"]
+    subprocess.run(["cp", *clone, "-R", os.path.join(ROOT, "target", "debug"), os.path.join(path, "target", "debug")],
                    check=False, capture_output=True)
     if not os.path.isdir(os.path.join(path, "target", "debug")):
         shutil.copytree(os.path.join(ROOT, "target", "debug"), os.path.join(path, "target", "debug"), symlinks=True)
@@ -658,7 +686,7 @@ def control():
 
 def main(argv):
     cores = os.cpu_count() or 2
-    since, jobs, trees, serial, listing, words = None, max(1, min(5, cores // 2)), max(1, min(3, cores // 3)), False, False, []
+    since, jobs, trees, serial, listing, words, shard = None, max(1, min(5, cores // 2)), max(1, min(3, cores // 3)), False, False, [], None
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -670,6 +698,14 @@ def main(argv):
             trees = int(args.pop(0))
         elif a == "--serial":
             serial = True
+        elif a == "--shard":
+            shard = args.pop(0)
+            if shard != "dist":
+                k, n = (int(x) for x in shard.split("/"))
+                if not 1 <= k <= n:
+                    print("--shard K/N needs 1 <= K <= N", file=sys.stderr)
+                    return 2
+                shard = (k, n)
         elif a == "--list":
             listing = True
         elif a == "--control":
@@ -685,9 +721,11 @@ def main(argv):
         chosen = selected(M, changed)
         shared = sorted(f for f in changed if f in ("scripts/mutate.py", "scripts/check-selection.py", "tests/main.rs", "Cargo.toml") or f.startswith("tests/common/"))
         if shared:
-            print("note: %s changed since %s, so the exhaustive tier must pass too (AGENTS.md)" % (", ".join(shared), since), flush=True)
+            print("note: %s changed since %s, which every mutation's tests depend on: the release tier's exhaustive mutations, in CI, cover it (AGENTS.md)" % (", ".join(shared), since), flush=True)
     if words:
         chosen = [(m, why) for m, why in chosen if any(w in m[0] for w in words)]
+    if shard:
+        chosen = in_shard(chosen, shard)
     if listing:
         for m, why in chosen:
             print("%s  (%s)" % (m[0], why))

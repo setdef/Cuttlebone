@@ -187,26 +187,37 @@ says which Inko `cuttlebone --version` names.
 
 1. The milestone's last commit is on `main`, with its version in
    Cargo.toml and CHANGELOG.md.
-2. Push the tag `v<version>`. The workflow refuses a tag that doesn't
+2. Run the workflow by hand on it (workflow_dispatch, from the Actions
+   tab or `gh workflow run release.yml`): a dry run of everything below
+   but publishing.
+3. Push the tag `v<version>`. The workflow refuses a tag that doesn't
    match Cargo.toml.
-3. The workflow builds each target on its own runner, checks what it
-   links, and verifies it (`scripts/dist-verify.py`): it starts, prints
-   both versions, answers `initialize` with them, and answers a hover in
-   `tests/fixtures/release`, with a stand-in `inko` of the right version
-   whose standard library is the pinned release's. A Linux build is
-   verified in Alpine and in Ubuntu containers.
-4. It publishes the release with the archives, `manifest.json` and
-   `index.json` (every published release's manifest, and this one's), the
-   version's CHANGELOG.md entry as its notes.
-5. It downloads the published release again from the manifest's URL on
+4. The workflow runs the release tier (AGENTS.md, "Checks"), in parallel
+   jobs: `scripts/check.sh --release` on macOS (every test, the whole
+   corpus, the latency limits as written, every test without kept checks,
+   the release tooling), and every mutation, `scripts/mutate.py --shard
+   K/16` on 16 Linux runners and `--shard dist` on macOS, each shard
+   checking every test unmutated first. Their tests' oracles run the
+   pinned Inko, built unpatched from its release (`scripts/ci-inko.sh`).
+5. At the same time, it builds each target on its own runner, checks what
+   it links, and verifies it (`scripts/dist-verify.py`): it starts,
+   prints both versions, answers `initialize` with them, and answers a
+   hover in `tests/fixtures/release`, with a stand-in `inko` of the right
+   version whose standard library is the pinned release's. A Linux build
+   is verified in Alpine and in Ubuntu containers.
+6. Only when every job of 4 and 5 passed, it publishes the release with
+   the archives, `manifest.json` and `index.json` (every published
+   release's manifest, and this one's), the version's CHANGELOG.md entry
+   as its notes.
+7. It downloads the published release again from the manifest's URL on
    each runner, checks each archive's size and SHA-256, and verifies those
    it can run there (`scripts/dist-check-release.py`). It checks the index
    at the tag's URL and the latest release's: newest first, this release
    the newest, and each release's manifest saying what the index does
    (`scripts/dist-check-index.py`).
 
-Run by hand (`workflow_dispatch`), the workflow does steps 3 alone. To build
-and check locally: `scripts/dist-build.sh` (macOS) or
+Run by hand (`workflow_dispatch`), the workflow does steps 4 and 5 alone.
+To build and check locally: `scripts/dist-build.sh` (macOS) or
 `scripts/dist-linux.sh` (Docker), then `scripts/check-dist.sh` checks the
 tooling, and `scripts/dist-check-release.py MANIFEST_URL` checks a
 published release from any machine, and `scripts/dist-check-index.py

@@ -69,40 +69,48 @@ to get past it.
 
 ## Checks
 
-Three tiers. Run the one the step calls for; skipping a tier's mutations
-is safe only as this section says.
+Two tiers run locally, and a third in CI before every release. Run the
+one the step calls for.
 
-- **Every commit:** `scripts/check.sh` (formatting, clippy, the tests with
-  a sample of the edit-replay corpus, the patch, the release build), about
-  a minute. The pre-commit hook runs it; set the hook up once with
-  `scripts/install-hooks.sh`. On macOS, add the terminal under System
-  Settings, Privacy & Security, Developer Tools, or each new test binary
-  is scanned on its first run.
+- **Every commit (locally):** `scripts/check.sh` (formatting, clippy,
+  the tests with a sample of the edit-replay corpus, the patch, the
+  release build), about a minute. The pre-commit hook runs it; set the
+  hook up once with `scripts/install-hooks.sh`. On macOS, add the
+  terminal under System Settings, Privacy & Security, Developer Tools, or
+  each new test binary is scanned on its first run.
 - **Latency:** in the check of every commit, tests/latency.rs scales each
   latency limit by the machine's load (the last minute's load average per
   core, when it's over 1), so other processes can't fail a commit. The
-  milestone tier and the mutations hold every query to the limits as
-  written (`CUTTLEBONE_LATENCY_STRICT`), however loaded the machine is:
-  run them when it's quiet. Ratios between two measurements taken in the
-  same run (a question after a cancel, a second lookup) aren't scaled in
-  either tier. Don't loosen a written limit to get past a loaded machine.
-- **Milestone reports:** `scripts/check.sh --milestone [REV]`, where REV is
-  the milestone's first commit (by default, the last commit that changed a
-  milestone report). It adds the whole corpus, the latency limits as
-  written, every test again without kept checks, and the mutations whose
-  snippet, tests or checked command is in a file changed since REV, or
-  whose snippet moved.
-  `scripts/check-selection.py` shows that this would have run every
-  mutation guarding code the last three milestones changed.
-- **Exhaustive:** `scripts/check.sh --exhaustive` runs every mutation. It's
-  required only when scripts/mutate.py, scripts/check-selection.py,
-  tests/main.rs, tests/common/ or the test setup in Cargo.toml change (the
-  milestone tier says so when they have), since those can change what
-  every mutation's tests do. Not per step or per milestone otherwise.
+  limits as written (`CUTTLEBONE_LATENCY_STRICT`) are advisory locally:
+  the milestone tier runs them and reports a failure without failing.
+  The release tier in CI holds every query to them, failing. Ratios
+  between two measurements taken in the same run (a question after a
+  cancel, a second lookup) aren't scaled in any tier. Don't loosen a
+  written limit to get past a loaded machine.
+- **Milestone reports (locally):** `scripts/check.sh --milestone [REV]`,
+  where REV is the milestone's first commit (by default, the last commit
+  that changed a milestone report). It adds the whole corpus, the latency
+  limits as written (advisory), every test again without kept checks,
+  the release tooling, and the mutations whose snippet, tests or checked
+  command is in a file changed since REV, or whose snippet moved. Every
+  one it selects must be caught. `scripts/check-selection.py` shows that
+  this would have run every mutation guarding code the last three
+  milestones changed.
+- **Release (CI, on every tag push):** `.github/workflows/release.yml`
+  runs the exhaustive tier: `scripts/check.sh --release` on macOS (the
+  milestone tier's checks with the latency limits as written, failing),
+  and every mutation, sharded across parallel jobs:
+  `scripts/mutate.py --shard K/16` on 16 Linux runners, each running the
+  unmutated control check first, and `--shard dist` (the release
+  tooling's, which need macOS) on macOS. Publishing waits until all of
+  them pass. Before tagging a milestone's release, run the workflow by
+  hand on its last commit (workflow_dispatch: everything but publishing)
+  as a dry run. Nothing local replaces this tier; `scripts/check.sh
+  --exhaustive` runs it on one machine, if one is ever quiet enough.
 
-`scripts/mutate.py --list [--since REV]` shows what a tier would run, and
-why. A new mutation goes in scripts/mutate.py, naming the test file whose
-tests catch it.
+`scripts/mutate.py --list [--since REV] [--shard K/N]` shows what would
+run, and why. A new mutation goes in scripts/mutate.py, naming the test
+file whose tests catch it.
 
 ## Reports
 

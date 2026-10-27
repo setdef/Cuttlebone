@@ -151,7 +151,8 @@ about LSP. tests/guardrails.rs enforces the layering (see AGENTS.md).
     scripts/install-hooks.sh          # once per clone: run scripts/check.sh before each commit
     scripts/check.sh                  # every commit: formatting, clippy, tests, the patch, the release build
     scripts/check.sh --milestone REV  # milestone reports: the whole corpus, no kept checks, mutations since REV
-    scripts/check.sh --exhaustive     # every mutation, when the runner or shared test code changes
+    scripts/check.sh --release        # CI, before each release: the same with strict latency, no mutations
+    scripts/mutate.py --shard K/16    # CI, before each release: a 16th of every mutation (and --shard dist)
     cargo test                        # the tests alone (two binaries: tests/main.rs and tests/latency.rs)
 
 AGENTS.md ("Checks") says which tier each step needs.

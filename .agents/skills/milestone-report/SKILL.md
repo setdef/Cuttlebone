@@ -7,9 +7,10 @@ description: Write a Cuttlebone milestone or session report in docs/history/. Us
 
 1. Run `scripts/check.sh --milestone REV` (REV: the milestone's first
    commit) and make sure it passes: every mutation it selects must be
-   caught. If it says the exhaustive tier is required (the mutation runner
-   or shared test infrastructure changed), run `scripts/check.sh
-   --exhaustive` too (AGENTS.md, "Checks").
+   caught. The strict latency step is advisory locally; say in the report
+   whether it passed. The exhaustive mutations and the strict latency
+   limits run in CI, in the release workflow: run it by hand as a dry run
+   before tagging, and record how long it took (AGENTS.md, "Checks").
 2. Write the report as `docs/history/MILESTONE-<n>.md` (or a descriptive
    name such as `GUARDRAILS.md` for a session that isn't a milestone).
    Follow the shape of the earlier reports in docs/history/:
