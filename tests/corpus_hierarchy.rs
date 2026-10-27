@@ -394,3 +394,59 @@ fn outgoing_calls_are_their_callees_incoming_calls() {
         "incoming without outgoing"
     );
 }
+
+/// A method's call hierarchy item, taken from the type database without
+/// parsing its file, has the whole declaration the syntax has, and the
+/// type or trait it's in, as hover's `Defined in` does: every method with
+/// a body in std.
+#[test]
+fn every_methods_item_is_its_declaration_as_the_syntax_has_it() {
+    let std = upstream_std();
+    let expected = expected(&std);
+    let session = session(&std);
+    let cache = Cache::new(4);
+    let items = answers(
+        &session,
+        &cache,
+        Question::CallItem,
+        expected.methods.iter(),
+    );
+    let mut wrong = Vec::new();
+
+    for ((file, position), reply) in &items {
+        let Some(Reply::Items(items)) = reply else {
+            panic!("{}:{:?}: {:?}", file.display(), position, reply);
+        };
+        let text = std::fs::read_to_string(file).unwrap();
+        let outline = cuttlebone::syntax::parse(&text).unwrap();
+        let offset = cuttlebone::position::byte_offset(&text, *position, Encoding::Utf16).unwrap();
+        let (d, parents) = outline.named_at(offset).unwrap();
+        let start = cuttlebone::position::position_at(&text, d.range.start, Encoding::Utf16);
+        let end = cuttlebone::position::position_at(&text, d.range.end, Encoding::Utf16);
+        let owner: Vec<&str> = parents.iter().map(|p| p.owner()).collect();
+        let item = &items[0];
+
+        if (item.place.range.start, item.place.range.end) != (start, end)
+            || !item.detail.ends_with(&owner.join("."))
+        {
+            wrong.push(format!(
+                "{}:{:?}: {:?} {} against {:?} {:?}",
+                file.display(),
+                position,
+                item.place.range,
+                item.detail,
+                (start, end),
+                owner
+            ));
+        }
+    }
+
+    assert!(items.len() >= 2963, "{}", items.len());
+    assert!(
+        wrong.is_empty(),
+        "{} of {}:\n{}",
+        wrong.len(),
+        items.len(),
+        wrong[..wrong.len().min(10)].join("\n")
+    );
+}

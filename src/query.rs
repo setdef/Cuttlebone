@@ -1306,8 +1306,72 @@ fn declaration_in(scope: &Scope) -> Result<Option<Vec<Place>>, Unavailable> {
 /// check: its whole declaration, and what it's in, as the syntax has them
 /// (`syntax::Outline`), which `Declared::path` reads too.
 fn item(scope: &Scope, symbol: SymbolId) -> Option<Item> {
+    item_at(scope, symbol, scope.declaration(symbol)?)
+}
+
+/// Where a symbol is declared: its file, and its name's location.
+type Declaration = (PathBuf, Location);
+
+/// `item`, with where the symbol is declared already known.
+fn item_at(scope: &Scope, symbol: SymbolId, (file, location): Declaration) -> Option<Item> {
     let db = scope.db;
-    let (name, kind) = match symbol {
+    let (name, kind) = item_name(scope, symbol)?;
+    let module = scope.checked.modules[*scope.checked.files.get(&file)?].module_id;
+    let text = scope.file(&file);
+    let mut detail = module.name(db).to_string();
+    // A method's from the type database (its whole location, and the
+    // type or trait it's a method of), which is what the syntax has, with
+    // no parse of its file: incoming calls have callers in many files.
+    // A type's or trait's from the syntax (`FileText::declarations`).
+    let whole = match symbol {
+        SymbolId::Method(id) => {
+            let owner = match receiver(db, id) {
+                Some(TypeEnum::TypeInstance(ins)) => Some(ins.instance_of().name(db).clone()),
+                Some(TypeEnum::TraitInstance(ins)) => Some(ins.instance_of().name(db).clone()),
+                Some(TypeEnum::Type(id)) => Some(id.name(db).clone()),
+                Some(TypeEnum::Trait(id)) => Some(id.name(db).clone()),
+                _ => None,
+            };
+
+            if let Some(owner) = owner {
+                detail.push('.');
+                detail.push_str(&owner);
+            }
+
+            text.location(&id.location(db), scope.encoding)
+        }
+        _ => {
+            let start = text.offset(location.line_start, location.column_start);
+            let (whole, parents) = text.declarations()?.get(&start)?;
+
+            for p in parents {
+                detail.push('.');
+                detail.push_str(p);
+            }
+
+            text.range(whole.clone(), scope.encoding)
+        }
+    };
+
+    Some(Item {
+        name,
+        kind,
+        detail,
+        place: Place {
+            file: file.clone(),
+            range: whole,
+        },
+        selection: Place {
+            file: file.clone(),
+            range: text.location(&location, scope.encoding),
+        },
+    })
+}
+
+/// A method's, type's or trait's name, and what kind of item it is.
+fn item_name(scope: &Scope, symbol: SymbolId) -> Option<(String, ItemKind)> {
+    let db = scope.db;
+    Some(match symbol {
         SymbolId::Method(id) => (
             id.name(db).clone(),
             match receiver(db, id) {
@@ -1325,31 +1389,6 @@ fn item(scope: &Scope, symbol: SymbolId) -> Option<Item> {
         ),
         SymbolId::Trait(id) => (id.name(db).clone(), ItemKind::Trait),
         _ => return None,
-    };
-    let (file, location) = scope.declaration(symbol)?;
-    let module = scope.checked.modules[*scope.checked.files.get(&file)?].module_id;
-    let text = scope.file(&file);
-    let start = text.offset(location.line_start, location.column_start);
-    let (whole, parents) = text.declarations()?.get(&start)?;
-    let mut detail = module.name(db).to_string();
-
-    for p in parents {
-        detail.push('.');
-        detail.push_str(p);
-    }
-
-    Some(Item {
-        name,
-        kind,
-        detail,
-        place: Place {
-            file: file.clone(),
-            range: text.range(whole.clone(), scope.encoding),
-        },
-        selection: Place {
-            file: file.clone(),
-            range: text.location(&location, scope.encoding),
-        },
     })
 }
 
@@ -1406,7 +1445,9 @@ fn incoming_in(scope: &Scope) -> Option<Vec<Call>> {
     let SymbolId::Method(method) = declared_at(scope)? else {
         return None;
     };
-    let mut calls: Vec<(MethodId, Vec<Place>)> = Vec::new();
+    // Each caller, where its name is (in its own module, which declares
+    // it: no index of the whole project needed), and the calls.
+    let mut calls: Vec<(MethodId, Option<Declaration>, Vec<Place>)> = Vec::new();
     let mut collect = |file: &Path, walker: &Walker| {
         for r in &walker.references {
             if r.symbol != SymbolId::Method(method) {
@@ -1418,9 +1459,17 @@ fn incoming_in(scope: &Scope) -> Option<Vec<Call>> {
             };
             let place = scope.place(file, r.location);
 
-            match calls.iter_mut().find(|(m, _)| *m == from) {
-                Some((_, places)) => places.push(place),
-                None => calls.push((from, vec![place])),
+            match calls.iter_mut().find(|(m, _, _)| *m == from) {
+                Some((_, _, places)) => places.push(place),
+                None => {
+                    let declared = walker
+                        .declarations
+                        .iter()
+                        .find(|d| d.symbol == SymbolId::Method(from))
+                        .map(|d| (file.to_path_buf(), d.location));
+
+                    calls.push((from, declared, vec![place]))
+                }
             }
         }
     };
@@ -1439,11 +1488,16 @@ fn incoming_in(scope: &Scope) -> Option<Vec<Call>> {
 
     let mut out: Vec<Call> = calls
         .into_iter()
-        .filter_map(|(from, mut ranges)| {
+        .filter_map(|(from, declared, mut ranges)| {
+            let symbol = SymbolId::Method(from);
+
             ranges.sort();
             ranges.dedup();
             Some(Call {
-                item: item(scope, SymbolId::Method(from))?,
+                item: match declared {
+                    Some(at) => item_at(scope, symbol, at)?,
+                    None => item(scope, symbol)?,
+                },
                 ranges,
             })
         })

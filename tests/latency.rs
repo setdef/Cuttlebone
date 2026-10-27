@@ -815,6 +815,9 @@ fn implementations_hierarchies_and_renames_across_std_are_fast_enough() {
             position(&file, trait_line, trait_character),
         ),
         ("callHierarchy/incomingCalls", json!({ "item": method })),
+        // The same method's references, for comparison: what incoming
+        // calls find, without the callers' items.
+        ("textDocument/references", position(&file, line, character)),
         ("typeHierarchy/subtypes", json!({ "item": named })),
         (
             "workspace/willRenameFiles",
