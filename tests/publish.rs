@@ -276,20 +276,22 @@ fn diagnostics_wait_for_their_debounce() {
 
     let start = Instant::now();
 
+    let mut edited = start;
+
     for version in 2..5 {
         client.change(
             &file,
             version,
             json!([{ "text": format!("{}{}", text, "\n".repeat(version as usize)) }]),
         );
+        // From when the last edit was sent, which the server got after.
+        edited = Instant::now();
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    let edited = Instant::now();
-
     client.diagnostics_status();
     assert!(
-        edited.elapsed() >= Duration::from_millis(400),
+        edited.elapsed() >= Duration::from_millis(600),
         "{:?}",
         edited.elapsed()
     );
