@@ -14,6 +14,28 @@ Milestone 13: answers after an edit is undone, folding ranges, formatting,
 quick fixes, and the exhaustive checks in CI before each release.
 [Report](docs/history/MILESTONE-13.md).
 
+- **Fixed: a document edited, closed, and then changed on disk** (or
+  opened again with other text) had its edits paired with the file's new
+  text: a worker crash (`checkCrashed`) if the file got shorter, and
+  possibly wrong answers from the last good check if it kept its length.
+  0.10.0 to 0.12.0 have it.
+- **`textDocument/foldingRange`**: blocks, comment lines and imports,
+  from the tokens alone, so also in code that doesn't parse. Kinds and
+  `rangeLimit` as the client says.
+- **`textDocument/formatting`**: exactly `inko fmt`'s text, from the
+  upstream formatter, as one edit; nothing written.
+- **`textDocument/codeAction`**: quick fixes by diagnostic ID (imports,
+  unused imports, variables and results, `mut` for immutable variables
+  and fields), each applied to a copy and checked in full, offered only
+  if that leaves no error. For clients with `codeActionLiteralSupport`.
+- **Definition at a refused assignment** (to an immutable variable or
+  field) goes to what the compiler looked up.
+- **Workspace symbols** do less per keystroke.
+- **Releases** wait for the release tier in CI: every test, the latency
+  limits as written, and every mutation.
+- One patch change (+3 −3, the formatter's `Document` made public); no
+  new extension.
+
 ## 0.12.0
 
 Milestone 12: documentation in hover, document and workspace symbols, and

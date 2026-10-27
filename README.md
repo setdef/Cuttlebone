@@ -53,6 +53,9 @@ Reports, in docs/history/:
   modules, compound assignments, saves, references outside the project).
 - [MILESTONE-12.md](docs/history/MILESTONE-12.md): documentation in
   hover, document and workspace symbols, and completion of names.
+- [MILESTONE-13.md](docs/history/MILESTONE-13.md): answers after an undo
+  and a closed file changed on disk, folding ranges, formatting, quick
+  fixes, and the release tier in CI.
 
 Each milestone has its own version; what changed in each:
 [CHANGELOG.md](CHANGELOG.md).
