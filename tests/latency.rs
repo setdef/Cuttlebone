@@ -333,6 +333,60 @@ fn document_symbols_of_the_largest_std_module_are_fast_enough() {
     );
 }
 
+/// How long folding ranges and formatting may take for the largest std
+/// module: no check, only its tokens, or parsing and formatting it.
+const LAYOUT_LIMIT: Duration = Duration::from_millis(150);
+
+#[test]
+fn folding_and_formatting_the_largest_std_module_are_fast_enough() {
+    // Milliseconds: alone, as document symbols.
+    let _alone = alone();
+    let std = upstream_std();
+    let file = std.join("std/net/http/server.inko");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut client = uncached(std.parent().unwrap(), QUERIES_ONLY.clone());
+    let document = json!({ "uri": uri(&file) });
+
+    // Its indentation taken away, for formatting to put back.
+    let flat: String = text
+        .split_inclusive('\n')
+        .map(|l| l.trim_start_matches(' '))
+        .collect();
+
+    client.open(&file, &flat);
+
+    let folding = median(request_times(
+        &mut client,
+        "textDocument/foldingRange",
+        json!({ "textDocument": document }),
+    ));
+    let formatting = median(request_times(
+        &mut client,
+        "textDocument/formatting",
+        json!({ "textDocument": document, "options": { "tabSize": 2, "insertSpaces": true } }),
+    ));
+
+    eprintln!(
+        "std.net.http.server: folding ranges {:?}, formatting {:?}",
+        folding, formatting
+    );
+
+    let max = limit(LAYOUT_LIMIT);
+
+    assert!(
+        folding < max,
+        "folding: median {:?} exceeds {:?}",
+        folding,
+        max
+    );
+    assert!(
+        formatting < max,
+        "formatting: median {:?} exceeds {:?}",
+        formatting,
+        max
+    );
+}
+
 /// How long workspace symbols may take while a query is typed, on a
 /// project that imports all of std: every module's declarations, read
 /// before, matched again.

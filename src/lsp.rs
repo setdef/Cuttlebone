@@ -2072,6 +2072,7 @@ impl Server {
             Ok((text, folds)) => {
                 let positions = Positions::new(&text, self.encoding);
                 let mut ranges = Vec::new();
+                let mut seen = HashSet::new();
 
                 for fold in folds {
                     let first = positions.at(fold.start).line;
@@ -2092,15 +2093,17 @@ impl Server {
                         continue;
                     }
 
+                    if !seen.insert((first, last, kind)) {
+                        continue;
+                    }
+
                     let mut range = json!({ "startLine": first, "endLine": last });
 
                     if let Some(kind) = kind {
                         range["kind"] = json!(kind);
                     }
 
-                    if !ranges.contains(&range) {
-                        ranges.push(range);
-                    }
+                    ranges.push(range);
                 }
 
                 (Value::Array(ranges), Ok(false))

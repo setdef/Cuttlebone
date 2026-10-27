@@ -1113,17 +1113,22 @@ pub fn folds(text: &str) -> Vec<Fold> {
         }
 
         let first = l.line_start != line;
-        let offset = at(l.line_start, l.column_start);
+        // Only what's folded needs its offset, which counts the line's
+        // characters up to it.
+        let offset = || at(l.line_start, l.column_start);
 
         line = l.line_end;
 
         if token.kind == T::Comment && first {
             comments = match comments {
                 Some((from, start, last, _)) if l.line_start == last + 1 => {
-                    Some((from, start, l.line_start, offset))
+                    Some((from, start, l.line_start, offset()))
                 }
                 _ => {
                     out.extend(comment_fold(comments));
+
+                    let offset = offset();
+
                     Some((l.line_start, offset, l.line_start, offset))
                 }
             };
@@ -1136,7 +1141,7 @@ pub fn folds(text: &str) -> Vec<Fold> {
 
         if open.is_empty() && first && token.kind != T::Comment {
             imports = match (token.kind, imports) {
-                (T::Import, None) => Some((offset, offset)),
+                (T::Import, None) => Some((offset(), 0)),
                 (T::Import, Some(run)) => Some(run),
                 (_, run) => {
                     out.extend(import_fold(text, run));
@@ -1148,12 +1153,12 @@ pub fn folds(text: &str) -> Vec<Fold> {
         if let Some((_, last)) = &mut imports
             && token.kind != T::Comment
         {
-            *last = offset;
+            *last = offset();
         }
 
         match token.kind {
             T::CurlyOpen | T::ParenOpen | T::BracketOpen => {
-                open.push((token.kind, l.line_start, offset));
+                open.push((token.kind, l.line_start, offset()));
             }
             T::CurlyClose | T::ParenClose | T::BracketClose => {
                 let opening = match token.kind {
@@ -1171,7 +1176,7 @@ pub fn folds(text: &str) -> Vec<Fold> {
                         out.push(Fold {
                             kind: FoldKind::Block,
                             start,
-                            end: offset,
+                            end: offset(),
                         });
                     }
                 }
