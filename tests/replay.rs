@@ -91,6 +91,22 @@ struct Scenario {
     /// Whether references are asked too. Each step's are a check of the
     /// whole project, which std is too big to afford at every edit.
     references: bool,
+    /// What happens before the edit of each index, besides edits:
+    /// documents closed and opened, and files changed on disk. A scenario
+    /// with any replays in a copy of its project of its own.
+    events: Vec<(usize, Event)>,
+}
+
+/// Something a client does besides editing.
+#[derive(Clone, Debug)]
+enum Event {
+    /// The document closed, unsaved: its file's text on disk replaces it.
+    Close(PathBuf),
+    /// The document opened, with its file's text on disk.
+    Open(PathBuf),
+    /// The file written on disk (by a `git checkout`, or a refactoring
+    /// with no editor open), whether its document is open or not.
+    Disk(PathBuf, String),
 }
 
 /// The line containing `needle`: its start, and its end before the `\n`.
@@ -328,6 +344,7 @@ fn scenario(
         open: vec![(path, text)],
         every: 1,
         references: !root.join("src/std").is_dir(),
+        events: Vec::new(),
     }
 }
 
@@ -346,6 +363,140 @@ fn elsewhere(
         .push((path.clone(), std::fs::read_to_string(&path).unwrap()));
     s.file = path;
     s
+}
+
+/// An import (`alpha`) edited, closed unsaved, and then changed on disk
+/// while a line of `main` is typed again: its methods swapped (the same
+/// length, so only where its edits ended can tell), then cut short, then
+/// as it was, and opened again before the last edit. Answers from older
+/// checks must map `alpha` through what happened on disk.
+fn closed_and_changed_on_disk((session, root): (Session, PathBuf)) -> Scenario {
+    let main = root.join("src/main.inko");
+    let alpha = root.join("src/alpha.inko");
+    let text = std::fs::read_to_string(&alpha).unwrap();
+    let new = text.find("  fn pub static new").unwrap();
+    let message = text.find("  fn pub message").unwrap();
+    let end = text.rfind("}").unwrap();
+    let swapped = format!(
+        "{}{}\n\n{}{}",
+        &text[..new],
+        text[message..end].trim_end(),
+        text[new..message].trim_end(),
+        &text[end - 1..]
+    );
+    let shorter = format!("{}}}\n", &text[..message]);
+    let mut s = elsewhere(
+        "navigation: close an import and change it on disk",
+        (session, root),
+        "src/main.inko",
+        "src/alpha.inko",
+        |p, t| {
+            vec![Edit {
+                file: p.to_path_buf(),
+                start: t.find("@text\n  }\n}").unwrap(),
+                end: t.find("@text\n  }\n}").unwrap() + 5,
+                text: "@text + ''".to_string(),
+            }]
+        },
+    );
+    let retyped = retype_line(
+        &main,
+        &std::fs::read_to_string(&main).unwrap(),
+        "let error = Error.new('a')",
+    );
+    let n = retyped.len();
+
+    assert_eq!(swapped.len(), text.len(), "{}", swapped);
+    s.edits.extend(retyped);
+    // Closed once `let` is typed, so main doesn't parse from then on, and
+    // the last good check is one from before, which had alpha open.
+    let closed = 5;
+
+    s.events = vec![
+        (closed, Event::Close(alpha.clone())),
+        (closed, Event::Disk(alpha.clone(), swapped)),
+        (
+            closed + (n - closed) / 3,
+            Event::Disk(alpha.clone(), shorter),
+        ),
+        (
+            closed + 2 * (n - closed) / 3,
+            Event::Disk(alpha.clone(), text),
+        ),
+        (n, Event::Open(alpha)),
+    ];
+    s
+}
+
+/// `scenario` in a copy of its project in the tests' temporary
+/// directory, named after it and `mode`, with every path in the copy.
+fn in_copy(scenario: &Scenario, mode: &str) -> Scenario {
+    let root = &scenario.session.projects[0];
+    let name: String = scenario
+        .name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let copy = crate::common::tmp().join(format!("replay-{}-{}", name, mode));
+    let _ = std::fs::remove_dir_all(&copy);
+
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+
+        for entry in std::fs::read_dir(from).unwrap() {
+            let path = entry.unwrap().path();
+            let target = to.join(path.file_name().unwrap());
+
+            if path.is_dir() {
+                copy_dir(&path, &target);
+            } else {
+                std::fs::copy(&path, &target).unwrap();
+            }
+        }
+    }
+
+    copy_dir(root, &copy);
+
+    let copy = copy.canonicalize().unwrap();
+    let moved = |p: &Path| copy.join(p.strip_prefix(root).unwrap());
+
+    Scenario {
+        name: scenario.name.clone(),
+        session: Session {
+            std: scenario.session.std.clone(),
+            projects: vec![copy.clone()],
+        },
+        file: moved(&scenario.file),
+        open: scenario
+            .open
+            .iter()
+            .map(|(p, t)| (moved(p), t.clone()))
+            .collect(),
+        edits: scenario
+            .edits
+            .iter()
+            .map(|e| Edit {
+                file: moved(&e.file),
+                ..e.clone()
+            })
+            .collect(),
+        every: scenario.every,
+        references: scenario.references,
+        events: scenario
+            .events
+            .iter()
+            .map(|(at, e)| {
+                (
+                    *at,
+                    match e {
+                        Event::Close(p) => Event::Close(moved(p)),
+                        Event::Open(p) => Event::Open(moved(p)),
+                        Event::Disk(p, t) => Event::Disk(moved(p), t.clone()),
+                    },
+                )
+            })
+            .collect(),
+    }
 }
 
 fn scenarios() -> Vec<Scenario> {
@@ -413,6 +564,7 @@ fn scenarios() -> Vec<Scenario> {
                 )
             },
         ),
+        closed_and_changed_on_disk(navigation()),
         scenario("navigation: retype a let", navigation(), main, |p, t| {
             retype_line(p, t, "let areas = circles")
         }),
@@ -1029,6 +1181,15 @@ struct Asked {
 /// starts, or for a file that was never good), so no answer is stale.
 /// Without `repair`, no repaired copies are checked.
 fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
+    // A scenario that writes files replays in a copy of its project, one
+    // for each mode, since the modes replay at once.
+    let copied;
+    let scenario = if scenario.events.is_empty() {
+        scenario
+    } else {
+        copied = in_copy(scenario, &format!("{}-{}", memory, repair));
+        &copied
+    };
     let mut docs = Documents {
         texts: scenario.open.iter().cloned().collect(),
     };
@@ -1085,6 +1246,24 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
     );
 
     for (step, edit) in scenario.edits.iter().enumerate() {
+        for (_, event) in scenario.events.iter().filter(|(at, _)| *at == step) {
+            match event {
+                Event::Close(path) => {
+                    let text = docs.texts.remove(path).unwrap();
+                    let disk = std::fs::read_to_string(path).ok();
+
+                    snapshots.closed(path, &text, disk.as_deref());
+                }
+                Event::Open(path) => {
+                    let disk = std::fs::read_to_string(path).unwrap();
+
+                    snapshots.opened(path, Some(&disk), &disk);
+                    docs.texts.insert(path.clone(), disk);
+                }
+                Event::Disk(path, text) => std::fs::write(path, text).unwrap(),
+            }
+        }
+
         snapshots.edited(
             &edit.file,
             &docs.texts[&edit.file],
@@ -1105,9 +1284,18 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
                 .open
                 .iter()
                 .map(|(path, _)| {
-                    let (a, b) = (&docs.texts[path], &finals[path]);
+                    // A closed document's text is its file's.
+                    let a = docs
+                        .texts
+                        .get(path)
+                        .cloned()
+                        .unwrap_or_else(|| std::fs::read_to_string(path).unwrap());
+                    let b = &finals[path];
 
-                    (path.clone(), (a.clone(), b.clone(), Changes::between(a, b)))
+                    (
+                        path.clone(),
+                        (a.clone(), b.clone(), Changes::between(&a, b)),
+                    )
                 })
                 .collect(),
         };
@@ -1454,6 +1642,7 @@ const SAMPLE: &[(&str, usize)] = &[
     ("features: break an argument's type", 1),
     ("navigation: break a return type in an import", 2),
     ("navigation: edit and undo", 1),
+    ("navigation: close an import and change it on disk", 1),
     ("navigation: break a module that imports the file", 2),
     ("std range: delete and retype lines", 1),
 ];
@@ -1462,88 +1651,88 @@ const SAMPLE: &[(&str, usize)] = &[
 /// corpus measured. Raise these when coverage improves.
 /// The same as `COVERAGE` and the two below, for the sample.
 const SAMPLE_COVERAGE: &[(&str, usize)] = &[
-    ("hover", 1747),
-    ("definition", 1762),
-    ("typeDefinition", 1749),
-    ("completion", 22),
-    ("completion, names", 45),
-    ("signatureHelp", 46),
-    ("inlayHint", 905),
-    ("inlayHint, whole file", 58),
-    ("documentHighlight", 1681),
-    ("references", 280),
-    ("documentSymbol", 58),
+    ("hover", 3001),
+    ("definition", 3047),
+    ("typeDefinition", 3003),
+    ("completion", 34),
+    ("completion, names", 56),
+    ("signatureHelp", 76),
+    ("inlayHint", 1481),
+    ("inlayHint, whole file", 86),
+    ("documentHighlight", 2834),
+    ("references", 440),
+    ("documentSymbol", 86),
 ];
 const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
-    ("hover", 1656),
-    ("definition", 1669),
-    ("typeDefinition", 1656),
-    ("completion", 22),
-    ("completion, names", 45),
-    ("signatureHelp", 46),
-    ("inlayHint", 840),
-    ("inlayHint, whole file", 55),
-    ("documentHighlight", 1619),
-    ("references", 285),
-    ("documentSymbol", 58),
+    ("hover", 2670),
+    ("definition", 2714),
+    ("typeDefinition", 2670),
+    ("completion", 34),
+    ("completion, names", 54),
+    ("signatureHelp", 70),
+    ("inlayHint", 1296),
+    ("inlayHint, whole file", 75),
+    ("documentHighlight", 2620),
+    ("references", 445),
+    ("documentSymbol", 86),
 ];
 const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
-    ("hover", 1685),
-    ("definition", 1702),
-    ("typeDefinition", 1689),
-    ("completion", 22),
-    ("completion, names", 43),
-    ("signatureHelp", 46),
-    ("inlayHint", 881),
-    ("inlayHint, whole file", 58),
-    ("documentHighlight", 1629),
-    ("references", 280),
-    ("documentSymbol", 58),
+    ("hover", 2688),
+    ("definition", 2736),
+    ("typeDefinition", 2692),
+    ("completion", 34),
+    ("completion, names", 51),
+    ("signatureHelp", 70),
+    ("inlayHint", 1386),
+    ("inlayHint, whole file", 86),
+    ("documentHighlight", 2612),
+    ("references", 440),
+    ("documentSymbol", 86),
 ];
 
 const COVERAGE: &[(&str, usize)] = &[
-    ("hover", 12305),
-    ("definition", 12714),
-    ("typeDefinition", 12393),
-    ("completion", 118),
-    ("completion, names", 273),
-    ("signatureHelp", 393),
-    ("inlayHint", 6868),
-    ("inlayHint, whole file", 493),
-    ("documentHighlight", 11187),
-    ("references", 1334),
-    ("documentSymbol", 467),
+    ("hover", 13559),
+    ("definition", 13999),
+    ("typeDefinition", 13647),
+    ("completion", 130),
+    ("completion, names", 284),
+    ("signatureHelp", 423),
+    ("inlayHint", 7444),
+    ("inlayHint, whole file", 521),
+    ("documentHighlight", 12340),
+    ("references", 1494),
+    ("documentSymbol", 495),
 ];
 
 /// What the server answers without older checks, from repaired copies
 /// only.
 const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
-    ("hover", 10731),
-    ("definition", 11105),
-    ("typeDefinition", 10784),
-    ("completion", 112),
-    ("completion, names", 222),
-    ("signatureHelp", 322),
-    ("inlayHint", 5990),
-    ("inlayHint, whole file", 396),
-    ("documentHighlight", 9995),
-    ("references", 1346),
-    ("documentSymbol", 467),
+    ("hover", 11745),
+    ("definition", 12150),
+    ("typeDefinition", 11798),
+    ("completion", 124),
+    ("completion, names", 231),
+    ("signatureHelp", 346),
+    ("inlayHint", 6446),
+    ("inlayHint, whole file", 416),
+    ("documentHighlight", 10996),
+    ("references", 1506),
+    ("documentSymbol", 495),
 ];
 
 /// What older checks answer alone, without repaired copies.
 const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
-    ("hover", 10293),
-    ("definition", 10618),
-    ("typeDefinition", 10297),
-    ("completion", 96),
-    ("completion, names", 156),
-    ("signatureHelp", 309),
-    ("inlayHint", 6046),
-    ("inlayHint, whole file", 493),
-    ("documentHighlight", 9746),
-    ("references", 1334),
-    ("documentSymbol", 467),
+    ("hover", 11296),
+    ("definition", 11652),
+    ("typeDefinition", 11300),
+    ("completion", 108),
+    ("completion, names", 164),
+    ("signatureHelp", 333),
+    ("inlayHint", 6551),
+    ("inlayHint, whole file", 521),
+    ("documentHighlight", 10729),
+    ("references", 1494),
+    ("documentSymbol", 495),
 ];
 
 #[test]
@@ -1577,7 +1766,7 @@ fn answers_mid_edit_agree_with_the_final_ones() {
         (", without repaired copies", true, false, without_repair),
     ];
 
-    assert_eq!(scenarios.len(), if full { 22 } else { SAMPLE.len() });
+    assert_eq!(scenarios.len(), if full { 23 } else { SAMPLE.len() });
     let tallies: Vec<Vec<(Tally, std::time::Duration)>> = std::thread::scope(|s| {
         let handles: Vec<Vec<_>> = scenarios
             .iter()
