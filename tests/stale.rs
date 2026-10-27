@@ -810,3 +810,38 @@ fn an_operator_typed_since_has_no_highlights_from_the_last_good_check() {
     assert_eq!(after, Value::Null);
     assert_eq!(status["status"], "unavailable");
 }
+
+/// A whole new text of the same length (a name retyped, a brace that
+/// doesn't parse) is still an edit: what it changed has no answer from
+/// the last good check, even where every offset is where it was.
+#[test]
+fn a_whole_text_change_of_the_same_length_is_an_edit() {
+    let mut session = stale_session(false);
+    let (file, text) = (session.file.clone(), session.text.clone());
+
+    session.client.open(&file, &text);
+
+    let (line, character) = at(&text, "fn mut reset {", 7, false);
+    let (_, before) = ask(
+        &mut session,
+        &text,
+        "textDocument/hover",
+        "fn mut reset {",
+        7,
+        json!({}),
+    );
+
+    assert!(!before.is_null(), "{}", before);
+
+    let edited = text.replacen("  fn mut reset {", "  fn mut resex (", 1);
+
+    assert_eq!(edited.len(), text.len());
+    session.client.change(&file, 2, json!([{ "text": edited }]));
+
+    let id = session
+        .client
+        .send_at("textDocument/hover", &file, line, character);
+    let hover = session.client.response(id);
+
+    assert_eq!(hover["result"], Value::Null, "{}", hover);
+}

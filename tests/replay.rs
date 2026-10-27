@@ -95,6 +95,8 @@ struct Scenario {
     /// documents closed and opened, and files changed on disk. A scenario
     /// with any replays in a copy of its project of its own.
     events: Vec<(usize, Event)>,
+    /// Files the copy of the project has besides its own.
+    files: Vec<(PathBuf, String)>,
 }
 
 /// Something a client does besides editing.
@@ -345,6 +347,7 @@ fn scenario(
         every: 1,
         references: !root.join("src/std").is_dir(),
         events: Vec::new(),
+        files: Vec::new(),
     }
 }
 
@@ -371,7 +374,6 @@ fn elsewhere(
 /// as it was, and opened again before the last edit. Answers from older
 /// checks must map `alpha` through what happened on disk.
 fn closed_and_changed_on_disk((session, root): (Session, PathBuf)) -> Scenario {
-    let main = root.join("src/main.inko");
     let alpha = root.join("src/alpha.inko");
     let text = std::fs::read_to_string(&alpha).unwrap();
     let new = text.find("  fn pub static new").unwrap();
@@ -385,47 +387,67 @@ fn closed_and_changed_on_disk((session, root): (Session, PathBuf)) -> Scenario {
         &text[end - 1..]
     );
     let shorter = format!("{}}}\n", &text[..message]);
-    let mut s = elsewhere(
-        "navigation: close an import and change it on disk",
-        (session, root),
-        "src/main.inko",
-        "src/alpha.inko",
-        |p, t| {
-            vec![Edit {
-                file: p.to_path_buf(),
-                start: t.find("@text\n  }\n}").unwrap(),
-                end: t.find("@text\n  }\n}").unwrap() + 5,
-                text: "@text + ''".to_string(),
-            }]
-        },
-    );
-    let retyped = retype_line(
-        &main,
-        &std::fs::read_to_string(&main).unwrap(),
-        "let error = Error.new('a')",
-    );
+    // A module of the copy's own, small enough that every name in it is
+    // asked about: `first` uses alpha's methods, and answers from the last
+    // good check while `second` is typed.
+    let uses = root.join("src/uses.inko");
+    let uses_text = "import alpha (Error)
+
+fn pub first -> String {
+  let error = Error.new('a')
+
+  error.message
+}
+
+fn pub second -> Int {
+  let values = [1, 2]
+
+  values.size
+}
+";
+    let edit = text.find("@text\n  }\n}").unwrap();
+    let mut edits = vec![Edit {
+        file: alpha.clone(),
+        start: edit,
+        end: edit + 5,
+        text: "@text + ''".to_string(),
+    }];
+    let retyped = retype_line(&uses, uses_text, "let values = [1, 2]");
     let n = retyped.len();
 
     assert_eq!(swapped.len(), text.len(), "{}", swapped);
-    s.edits.extend(retyped);
-    // Closed once `let` is typed, so main doesn't parse from then on, and
-    // the last good check is one from before, which had alpha open.
-    let closed = 5;
+    edits.extend(retyped);
 
-    s.events = vec![
-        (closed, Event::Close(alpha.clone())),
-        (closed, Event::Disk(alpha.clone(), swapped)),
-        (
-            closed + (n - closed) / 3,
-            Event::Disk(alpha.clone(), shorter),
-        ),
-        (
-            closed + 2 * (n - closed) / 3,
-            Event::Disk(alpha.clone(), text),
-        ),
-        (n, Event::Open(alpha)),
-    ];
-    s
+    // Closed once `let` is typed, so `uses` doesn't parse from then on,
+    // and the last good check is one from before, which had alpha open.
+    let closed = 4;
+
+    Scenario {
+        name: "navigation: close an import and change it on disk".to_string(),
+        session,
+        file: uses.clone(),
+        open: vec![
+            (uses.clone(), uses_text.to_string()),
+            (alpha.clone(), text.clone()),
+        ],
+        edits,
+        every: 1,
+        references: true,
+        events: vec![
+            (closed, Event::Close(alpha.clone())),
+            (closed, Event::Disk(alpha.clone(), swapped)),
+            (
+                closed + (n - closed) / 2,
+                Event::Disk(alpha.clone(), shorter),
+            ),
+            (
+                closed + 3 * (n - closed) / 4,
+                Event::Disk(alpha.clone(), text),
+            ),
+            (n, Event::Open(alpha)),
+        ],
+        files: vec![(uses, uses_text.to_string())],
+    }
 }
 
 /// `scenario` in a copy of its project in the tests' temporary
@@ -460,6 +482,10 @@ fn in_copy(scenario: &Scenario, mode: &str) -> Scenario {
     let copy = copy.canonicalize().unwrap();
     let moved = |p: &Path| copy.join(p.strip_prefix(root).unwrap());
 
+    for (path, text) in &scenario.files {
+        std::fs::write(moved(path), text).unwrap();
+    }
+
     Scenario {
         name: scenario.name.clone(),
         session: Session {
@@ -482,6 +508,7 @@ fn in_copy(scenario: &Scenario, mode: &str) -> Scenario {
             .collect(),
         every: scenario.every,
         references: scenario.references,
+        files: Vec::new(),
         events: scenario
             .events
             .iter()
@@ -1184,7 +1211,7 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
     // A scenario that writes files replays in a copy of its project, one
     // for each mode, since the modes replay at once.
     let copied;
-    let scenario = if scenario.events.is_empty() {
+    let scenario = if scenario.events.is_empty() && scenario.files.is_empty() {
         scenario
     } else {
         copied = in_copy(scenario, &format!("{}-{}", memory, repair));
@@ -1651,88 +1678,88 @@ const SAMPLE: &[(&str, usize)] = &[
 /// corpus measured. Raise these when coverage improves.
 /// The same as `COVERAGE` and the two below, for the sample.
 const SAMPLE_COVERAGE: &[(&str, usize)] = &[
-    ("hover", 3001),
-    ("definition", 3047),
-    ("typeDefinition", 3003),
-    ("completion", 34),
-    ("completion, names", 56),
-    ("signatureHelp", 76),
-    ("inlayHint", 1481),
-    ("inlayHint, whole file", 86),
-    ("documentHighlight", 2834),
-    ("references", 440),
-    ("documentSymbol", 86),
+    ("hover", 2115),
+    ("definition", 2145),
+    ("typeDefinition", 2117),
+    ("completion", 25),
+    ("completion, names", 46),
+    ("signatureHelp", 59),
+    ("inlayHint", 1016),
+    ("inlayHint, whole file", 79),
+    ("documentHighlight", 2062),
+    ("references", 339),
+    ("documentSymbol", 79),
 ];
 const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
-    ("hover", 2670),
-    ("definition", 2714),
-    ("typeDefinition", 2670),
-    ("completion", 34),
-    ("completion, names", 54),
-    ("signatureHelp", 70),
-    ("inlayHint", 1296),
-    ("inlayHint, whole file", 75),
-    ("documentHighlight", 2620),
-    ("references", 445),
-    ("documentSymbol", 86),
+    ("hover", 1873),
+    ("definition", 1901),
+    ("typeDefinition", 1873),
+    ("completion", 25),
+    ("completion, names", 46),
+    ("signatureHelp", 54),
+    ("inlayHint", 909),
+    ("inlayHint, whole file", 67),
+    ("documentHighlight", 1850),
+    ("references", 344),
+    ("documentSymbol", 79),
 ];
 const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
-    ("hover", 2688),
-    ("definition", 2736),
-    ("typeDefinition", 2692),
-    ("completion", 34),
-    ("completion, names", 51),
-    ("signatureHelp", 70),
-    ("inlayHint", 1386),
-    ("inlayHint, whole file", 86),
-    ("documentHighlight", 2612),
-    ("references", 440),
-    ("documentSymbol", 86),
+    ("hover", 1882),
+    ("definition", 1914),
+    ("typeDefinition", 1886),
+    ("completion", 25),
+    ("completion, names", 44),
+    ("signatureHelp", 54),
+    ("inlayHint", 945),
+    ("inlayHint, whole file", 70),
+    ("documentHighlight", 1840),
+    ("references", 339),
+    ("documentSymbol", 79),
 ];
 
 const COVERAGE: &[(&str, usize)] = &[
-    ("hover", 13559),
-    ("definition", 13999),
-    ("typeDefinition", 13647),
-    ("completion", 130),
-    ("completion, names", 284),
-    ("signatureHelp", 423),
-    ("inlayHint", 7444),
-    ("inlayHint, whole file", 521),
-    ("documentHighlight", 12340),
-    ("references", 1494),
-    ("documentSymbol", 495),
+    ("hover", 12673),
+    ("definition", 13097),
+    ("typeDefinition", 12761),
+    ("completion", 121),
+    ("completion, names", 274),
+    ("signatureHelp", 406),
+    ("inlayHint", 6979),
+    ("inlayHint, whole file", 514),
+    ("documentHighlight", 11568),
+    ("references", 1393),
+    ("documentSymbol", 488),
 ];
 
 /// What the server answers without older checks, from repaired copies
 /// only.
 const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
-    ("hover", 11745),
-    ("definition", 12150),
-    ("typeDefinition", 11798),
-    ("completion", 124),
-    ("completion, names", 231),
-    ("signatureHelp", 346),
-    ("inlayHint", 6446),
-    ("inlayHint, whole file", 416),
-    ("documentHighlight", 10996),
-    ("references", 1506),
-    ("documentSymbol", 495),
+    ("hover", 10948),
+    ("definition", 11337),
+    ("typeDefinition", 11001),
+    ("completion", 115),
+    ("completion, names", 223),
+    ("signatureHelp", 330),
+    ("inlayHint", 6059),
+    ("inlayHint, whole file", 408),
+    ("documentHighlight", 10226),
+    ("references", 1405),
+    ("documentSymbol", 488),
 ];
 
 /// What older checks answer alone, without repaired copies.
 const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
-    ("hover", 11296),
-    ("definition", 11652),
-    ("typeDefinition", 11300),
-    ("completion", 108),
-    ("completion, names", 164),
-    ("signatureHelp", 333),
-    ("inlayHint", 6551),
-    ("inlayHint, whole file", 521),
-    ("documentHighlight", 10729),
-    ("references", 1494),
-    ("documentSymbol", 495),
+    ("hover", 10490),
+    ("definition", 10830),
+    ("typeDefinition", 10494),
+    ("completion", 99),
+    ("completion, names", 157),
+    ("signatureHelp", 317),
+    ("inlayHint", 6110),
+    ("inlayHint, whole file", 505),
+    ("documentHighlight", 9957),
+    ("references", 1393),
+    ("documentSymbol", 488),
 ];
 
 #[test]

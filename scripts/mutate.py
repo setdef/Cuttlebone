@@ -308,7 +308,7 @@ M = [
  ("no fallback from the target's check", "src/lsp.rs", "            query::diagnostics_target(&self.session, file).as_deref(),\n        )\n", "            None,\n        )\n", "--test stale unsaved_text"),
  ("diagnostics checks not kept for their target", "src/lsp.rs", "                    .chain([target.clone()])\n", "", "--test stale unsaved_text"),
  ("edits not recorded", "src/lsp.rs", "                                self.snapshots.edited(path, &before, start, end, len);", "                                let _ = (path, &before, start, end, len);", "--test stale read_only"),
- ("whole-text changes not recorded", "src/lsp.rs", "        let edit = crate::edits::difference(text, &change.text);", "        let edit = (0, 0, 0);", "--test stale a_diagnostics_check"),
+ ("whole-text changes not recorded", "src/lsp.rs", "        let edit = crate::edits::difference(text, &change.text);", "        let edit = (0, 0, 0);", "--test stale a_whole_text_change"),
  ("documents opened later not recorded", "src/lsp.rs", "                        self.snapshots\n                            .opened(path, disk.as_deref(), &p.text_document.text);", "                        let _ = (path, disk.as_deref(), &p.text_document.text);", "--test stale unsaved_text"),
  ("diagnostics checks aren't good checks", "src/lsp.rs", "            self.snapshots.finished(done.id, &checked);", "            self.snapshots.finished(done.id, &[]);", "--test stale a_diagnostics_check"),
  ("queries aren't good checks", "src/lsp.rs", "        self.snapshots.finished(done.id, file.as_slice());", "        self.snapshots.finished(done.id, &[]);", "--test stale read_only"),
