@@ -1,10 +1,10 @@
 # Milestone 13: answers after an undo, folding, formatting, quick fixes, and the release tier in CI
 
-**Done.** Every task's code is in, and the release tier runs in CI, but **0.13.0
-isn't published yet**: the release workflow refuses to publish while
-the latency limits as written fail, and on GitHub's macOS runners they
-fail about half the time (section 6). The tag `v0.13.0` is pushed; what
-to do about the limits is yours to decide.
+**Done.** **Done.** Cuttlebone 0.13.0 is published,
+<https://github.com/setdef/Cuttlebone/releases/tag/v0.13.0>, after the
+whole release tier passed in CI on the tag (every test, the latency
+limits as written, every one of the 422 mutations), and checked from
+outside (section 6). It has:
 
 1. **Stale answers after an undo, and a bug they led to.** After an
    undo, references, definitions and highlights are exactly a new
@@ -354,19 +354,34 @@ passed. The latency job failed: references across std 600 ms against
 
 ## 6. The 0.13.0 release
 
-The tag `v0.13.0` was pushed on this report's commit. The workflow runs
-the whole release tier before publishing; see the run for whether the
-latency job passed on its runner. If it didn't, nothing is published,
-and the options are:
+The tag `v0.13.0` on 6ae8cd5 (this report's first commit) ran the
+release workflow (run 40563839762), **31 minutes** end to end: the four
+builds 2 to 3.5 minutes each; the latency job 3 minutes, **passing at
+the limits as written on its first run** (18 of 18); the 16 shards and
+the release checks (30 minutes, the longest job) all passing; publish
+15 s; each check of the published release 13 to 22 s.
 
-1. a larger macOS runner for the latency job (billed by GitHub),
-2. rerunning the failed job until a runner instance meets the limits
-   (which AGENTS.md's rule against loosening arguably forbids, as a
-   loosening by retry), or
-3. limits written for the runner, rather than for an Apple M1 Max.
+| Target | Archive (0.12.0) | Archive (0.13.0) |
+|---|---|---|
+| `aarch64-apple-darwin` | 5,607,052 bytes | 5,751,475 bytes |
+| `x86_64-apple-darwin` | 5,877,363 bytes | 6,044,735 bytes |
+| `x86_64-unknown-linux-musl` | 16,297,659 bytes | 16,698,096 bytes |
+| `aarch64-unknown-linux-musl` | 13,873,568 bytes | 14,242,625 bytes |
 
-Checking the published release from outside, as in milestone 12, waits
-for it to be published.
+**Checked from outside**, on this Mac, from the latest URLs alone:
+
+- `scripts/dist-check-index.py .../latest/download/index.json --newest
+  0.13.0`: four releases, 0.13.0 to 0.10.0, each with Inko 0.21.1, each
+  manifest agreeing.
+- `scripts/dist-check-release.py --partial --inko`: every archive
+  downloaded with its size and SHA-256; the ARM64 macOS build ran with
+  the real Inko 0.21.1, both Linux builds in Alpine and Ubuntu
+  containers. The Intel macOS build can't run here (no Rosetta), so it
+  was checked by size and SHA-256; CI's `macos-15-intel` runner ran it.
+
+The latency job passed on the tag's runner, but failed on two of the
+three dry runs before it on the same code (section 5): whether a release
+publishes depends on the runner instance it gets (remaining unknowns).
 
 ## 7. Measurements
 
@@ -478,10 +493,12 @@ files).
 ## Remaining unknowns
 
 1. **The latency job is at the mercy of the runner.** References across
-   std measured 500 to 590 ms on macos-15 runners against its 500 ms
+   std measured 500 to 600 ms on macos-15 runners against its 500 ms
    limit, and a workspace-symbols keystroke 50 to 68 ms against 50 ms.
-   The same commit passed on some instances and failed on others. A
-   larger runner would have headroom but is billed; that's your call.
+   The same code passed on some instances and failed on others; the
+   release passed on its first try. A later release may not: a larger
+   runner would have headroom but is billed, and rerunning the job
+   until it passes is a loosening by retry. That's your call.
 2. **The corpus doesn't show the silent case** of a closed file changed
    on disk to the same length (section 1); a unit test does.
 3. **Quick fixes in large projects:** each fix is a full check; on a
