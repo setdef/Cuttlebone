@@ -90,15 +90,24 @@ step "clippy, all targets" cargo clippy --quiet --all-targets -- -D warnings
 # Without the tests' dev-dependency, so without fault injection: the
 # features a release build has.
 step "clippy, release features" cargo clippy --quiet --lib --bins -- -D warnings
-step "tests" cargo test --quiet
+# The release tier's latency limits have a job of their own (--latency).
+if [ "$tier" = release ]; then
+    tests="--lib --bins --test integration"
+else
+    tests=
+fi
+
+# shellcheck disable=SC2086
+step "tests" cargo test --quiet $tests
 step "the patch applies to a fresh $(cat UPSTREAM_VERSION)" scripts/check-patch.sh
 step "the release build has no test-only code" scripts/check-release.sh
 
 if [ "$tier" != commit ]; then
     step "the whole edit-replay corpus" \
         env CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet --test integration replay::
+    # shellcheck disable=SC2086
     step "every test without kept checks, and the whole corpus" \
-        env CUTTLEBONE_NO_CACHE=1 CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet
+        env CUTTLEBONE_NO_CACHE=1 CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet $tests
     step "the milestone tier selects every mutation that guards changed code" \
         python3 scripts/check-selection.py
     step "the release tooling, with this machine's archive" scripts/check-dist.sh
