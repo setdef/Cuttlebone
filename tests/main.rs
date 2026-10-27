@@ -39,3 +39,4 @@ mod stale;
 mod symbols;
 mod syntax;
 mod type_at;
+mod undo;

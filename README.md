@@ -193,6 +193,7 @@ also fast enough for the latency limits.
 | `tests/syntax.rs` | outlines from the syntax alone: names and ranges against the compiler's declarations in every module of std and the fixtures, and doc comments against the installed `inko doc` |
 | `tests/symbols.rs` | document and workspace symbols over LSP in both encodings: every kind of declaration, code that doesn't parse, documents that aren't files, a dependency, files changed on disk, clients without hierarchy or the newer kinds |
 | `tests/corpus_symbols.rs` | every declaration document symbols report, in std and the fixtures, is found by workspace symbols at the same place, and is its own definition |
+| `tests/undo.rs` | answers after edits are undone over LSP, in both encodings: incremental and whole-text changes, several in one notification, closing and opening again, with and without a save between, a module changed on disk and restored; every answer from the documents as they are is a new server's, at every step |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |
 
 `scripts/mutate.py` breaks behaviours and rules on purpose, one at a time,

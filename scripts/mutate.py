@@ -451,6 +451,10 @@ M = [
  ("new imports last", "src/syntax.rs", "        let at = match group.iter().find(|i| i.path.join(\".\").as_str() > module) {", "        let at = match group.iter().find(|_| false) {", "--lib syntax"),
  ("new imports after a doc comment", "src/syntax.rs", "        .map(|(doc, at)| doc.unwrap_or(*at))", "        .map(|(_, at)| *at)", "--lib syntax"),
  ("many positions converted wrong", "src/position.rs", "        let line = self.starts.partition_point(|s| *s <= offset) - 1;", "        let line = self.starts.partition_point(|s| *s < offset).max(1) - 1;", "--lib positions_are"),
+ # After an undo (milestone 13).
+ ("an undo answered from a check of other text", "src/query.rs", "list.iter().position(|k| k.target == *target)", "list.iter().position(|k| k.target.root == target.root && k.target.file == target.file && k.target.tests == target.tests)", "--test undo undone_incremental"),
+ ("an undo answered from a check of a module since restored", "src/query.rs", "            if entry.fingerprint.current() {", "            if true {", "--test undo a_module_changed"),
+ ("only a notification's first change applied", "src/lsp.rs", "                        for change in p.content_changes {", "                        for change in p.content_changes.into_iter().take(1) {", "--test undo in_one_notification"),
 ]
 
 

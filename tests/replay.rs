@@ -10,6 +10,10 @@
 //! worker runs too), and in the fixtures, references too.
 //!
 //! Each scenario ends with the files as they began, so they compile again.
+//! Two make several edits and then undo them, the last first, as an
+//! editor's undo does: then an answer from the documents as they are can
+//! be about a name a later edit changed, which is counted apart
+//! (`Verdict::Renamed`), since the final text has another name there.
 //! Every answer given mid-edit is then compared with the fresh answer at the
 //! same position in the final text. Only positions whose text didn't change
 //! between that edit and the end are asked about, and lists (highlights,
@@ -245,6 +249,43 @@ fn retype_word(file: &Path, text: &str, needle: &str, word: &str) -> Vec<Edit> {
     edits
 }
 
+/// Makes each edit in turn (replacing the first `.0` after the ones
+/// before with `.1`), then undoes them, the last first, each as one edit
+/// that puts back what it replaced: as an editor's undo does.
+fn edit_and_undo(file: &Path, text: &str, edits: &[(&str, &str)]) -> Vec<Edit> {
+    let mut texts = vec![text.to_string()];
+    let mut forward = Vec::new();
+
+    for (from, to) in edits {
+        let old = texts.last().unwrap().clone();
+        let start = old
+            .find(from)
+            .unwrap_or_else(|| panic!("{:?} isn't in the text", from));
+
+        forward.push(Edit {
+            file: file.to_path_buf(),
+            start,
+            end: start + from.len(),
+            text: to.to_string(),
+        });
+        texts.push(old.replacen(from, to, 1));
+    }
+
+    let undone: Vec<Edit> = forward
+        .iter()
+        .zip(edits)
+        .rev()
+        .map(|(edit, (from, to))| Edit {
+            file: file.to_path_buf(),
+            start: edit.start,
+            end: edit.start + to.len(),
+            text: from.to_string(),
+        })
+        .collect();
+
+    forward.into_iter().chain(undone).collect()
+}
+
 fn fixture_session(name: &str) -> (Session, PathBuf) {
     let root = crate::common::fixture(name);
 
@@ -342,6 +383,35 @@ fn scenarios() -> Vec<Scenario> {
             features(),
             main,
             |p, t| retype_word(p, t, "let @label: String", "String"),
+        ),
+        // A use removed, a declaration renamed that's used before and after
+        // it, and a line that doesn't parse, then each undone.
+        scenario("navigation: edit and undo", navigation(), main, |p, t| {
+            edit_and_undo(
+                p,
+                t,
+                &[
+                    ("describe(Shape.Square(3))", "0"),
+                    ("fn describe(", "fn describ("),
+                    ("    case Dot -> 0\n", "    case Dot -> 0\n    if shape {\n"),
+                ],
+            )
+        }),
+        elsewhere(
+            "navigation: edit and undo an import",
+            navigation(),
+            main,
+            "src/alpha.inko",
+            |p, t| {
+                edit_and_undo(
+                    p,
+                    t,
+                    &[
+                        ("fn pub message -> String", "fn pub messag -> String"),
+                        ("type pub Error", "type pub Erro"),
+                    ],
+                )
+            },
         ),
         scenario("navigation: retype a let", navigation(), main, |p, t| {
             retype_line(p, t, "let areas = circles")
@@ -458,6 +528,12 @@ fn request_name(q: Question) -> &'static str {
 enum Verdict {
     Right(Source),
     Wrong(Source),
+    /// An answer from the documents as they are (with lines blank, or
+    /// past a declaration's error) about a name a later edit changed: it
+    /// was about another name than the final text has there, so the final
+    /// answer says nothing about it. Only an undo, which changes a name
+    /// back after other edits, gives these.
+    Renamed(Source),
     None,
 }
 
@@ -524,6 +600,15 @@ impl Tally {
         self.asked(request) - self.get(request, Verdict::None)
     }
 
+    fn renamed(&self) -> usize {
+        self.counts
+            .values()
+            .flat_map(|c| c.iter())
+            .filter(|(v, _)| matches!(v, Verdict::Renamed(_)))
+            .map(|(_, n)| n)
+            .sum()
+    }
+
     fn wrong(&self, request: &str, source: Source) -> usize {
         self.get(request, Verdict::Wrong(source))
     }
@@ -586,6 +671,15 @@ impl Documents {
 
 fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
+}
+
+/// The name around byte `at` of `text`: the identifier characters before
+/// and after it.
+fn word_at(text: &str, at: usize) -> &str {
+    let start = text[..at].trim_end_matches(is_ident).len();
+    let end = at + text[at..].len() - text[at..].trim_start_matches(is_ident).len();
+
+    &text[start..end]
 }
 
 /// Byte offsets in `text` to ask about: where names start, after a `.`
@@ -924,6 +1018,8 @@ struct Asked {
     outside: bool,
     /// `answer`, normalized against the final text.
     normalized: String,
+    /// Whether the name at the position is another in the final text.
+    renamed: bool,
     context: String,
 }
 
@@ -1150,6 +1246,9 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
                 ),
                 covered,
                 outside,
+                renamed: position::byte_offset(&now, p, ENCODING).map(|b| word_at(&now, b))
+                    != position::byte_offset(last, final_question.1, ENCODING)
+                        .map(|b| word_at(last, b)),
                 context: format!(
                     "{} after edit {} ({:?}), {:?} at {:?}: {:?}",
                     scenario.name, step, edit.text, question, p, answer.source
@@ -1293,6 +1392,9 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
                     Verdict::Wrong(a.answer.source)
                 } else if expected == a.normalized {
                     Verdict::Right(a.answer.source)
+                } else if a.renamed && matches!(a.answer.source, Source::Repaired | Source::Guarded)
+                {
+                    Verdict::Renamed(a.answer.source)
                 } else {
                     let shown = format!(
                         "{}\n  now:   {}\n  final: {}",
@@ -1351,6 +1453,7 @@ const SAMPLE: &[(&str, usize)] = &[
     ("features: retype a method", 8),
     ("features: break an argument's type", 1),
     ("navigation: break a return type in an import", 2),
+    ("navigation: edit and undo", 1),
     ("navigation: break a module that imports the file", 2),
     ("std range: delete and retype lines", 1),
 ];
@@ -1359,88 +1462,88 @@ const SAMPLE: &[(&str, usize)] = &[
 /// corpus measured. Raise these when coverage improves.
 /// The same as `COVERAGE` and the two below, for the sample.
 const SAMPLE_COVERAGE: &[(&str, usize)] = &[
-    ("hover", 1490),
-    ("definition", 1505),
-    ("typeDefinition", 1492),
-    ("completion", 19),
-    ("completion, names", 41),
-    ("signatureHelp", 41),
-    ("inlayHint", 770),
-    ("inlayHint, whole file", 52),
-    ("documentHighlight", 1426),
-    ("references", 233),
-    ("documentSymbol", 52),
+    ("hover", 1747),
+    ("definition", 1762),
+    ("typeDefinition", 1749),
+    ("completion", 22),
+    ("completion, names", 45),
+    ("signatureHelp", 46),
+    ("inlayHint", 905),
+    ("inlayHint, whole file", 58),
+    ("documentHighlight", 1681),
+    ("references", 280),
+    ("documentSymbol", 58),
 ];
 const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
-    ("hover", 1426),
-    ("definition", 1439),
-    ("typeDefinition", 1426),
-    ("completion", 19),
-    ("completion, names", 41),
-    ("signatureHelp", 41),
-    ("inlayHint", 723),
-    ("inlayHint, whole file", 49),
-    ("documentHighlight", 1389),
-    ("references", 238),
-    ("documentSymbol", 52),
+    ("hover", 1656),
+    ("definition", 1669),
+    ("typeDefinition", 1656),
+    ("completion", 22),
+    ("completion, names", 45),
+    ("signatureHelp", 46),
+    ("inlayHint", 840),
+    ("inlayHint, whole file", 55),
+    ("documentHighlight", 1619),
+    ("references", 285),
+    ("documentSymbol", 58),
 ];
 const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
-    ("hover", 1430),
-    ("definition", 1447),
-    ("typeDefinition", 1434),
-    ("completion", 19),
-    ("completion, names", 39),
-    ("signatureHelp", 41),
-    ("inlayHint", 747),
-    ("inlayHint, whole file", 52),
-    ("documentHighlight", 1377),
-    ("references", 233),
-    ("documentSymbol", 52),
+    ("hover", 1685),
+    ("definition", 1702),
+    ("typeDefinition", 1689),
+    ("completion", 22),
+    ("completion, names", 43),
+    ("signatureHelp", 46),
+    ("inlayHint", 881),
+    ("inlayHint, whole file", 58),
+    ("documentHighlight", 1629),
+    ("references", 280),
+    ("documentSymbol", 58),
 ];
 
 const COVERAGE: &[(&str, usize)] = &[
-    ("hover", 11902),
-    ("definition", 12311),
-    ("typeDefinition", 11990),
-    ("completion", 115),
-    ("completion, names", 265),
-    ("signatureHelp", 382),
-    ("inlayHint", 6652),
-    ("inlayHint, whole file", 483),
-    ("documentHighlight", 10789),
-    ("references", 1249),
-    ("documentSymbol", 457),
+    ("hover", 12305),
+    ("definition", 12714),
+    ("typeDefinition", 12393),
+    ("completion", 118),
+    ("completion, names", 273),
+    ("signatureHelp", 393),
+    ("inlayHint", 6868),
+    ("inlayHint, whole file", 493),
+    ("documentHighlight", 11187),
+    ("references", 1334),
+    ("documentSymbol", 467),
 ];
 
 /// What the server answers without older checks, from repaired copies
 /// only.
 const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
-    ("hover", 10355),
-    ("definition", 10729),
-    ("typeDefinition", 10408),
-    ("completion", 109),
-    ("completion, names", 214),
-    ("signatureHelp", 311),
-    ("inlayHint", 5792),
-    ("inlayHint, whole file", 386),
-    ("documentHighlight", 9622),
-    ("references", 1261),
-    ("documentSymbol", 457),
+    ("hover", 10731),
+    ("definition", 11105),
+    ("typeDefinition", 10784),
+    ("completion", 112),
+    ("completion, names", 222),
+    ("signatureHelp", 322),
+    ("inlayHint", 5990),
+    ("inlayHint, whole file", 396),
+    ("documentHighlight", 9995),
+    ("references", 1346),
+    ("documentSymbol", 467),
 ];
 
 /// What older checks answer alone, without repaired copies.
 const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
-    ("hover", 9892),
-    ("definition", 10217),
-    ("typeDefinition", 9896),
-    ("completion", 93),
-    ("completion, names", 148),
-    ("signatureHelp", 298),
-    ("inlayHint", 5831),
-    ("inlayHint, whole file", 483),
-    ("documentHighlight", 9351),
-    ("references", 1249),
-    ("documentSymbol", 457),
+    ("hover", 10293),
+    ("definition", 10618),
+    ("typeDefinition", 10297),
+    ("completion", 96),
+    ("completion, names", 156),
+    ("signatureHelp", 309),
+    ("inlayHint", 6046),
+    ("inlayHint, whole file", 493),
+    ("documentHighlight", 9746),
+    ("references", 1334),
+    ("documentSymbol", 467),
 ];
 
 #[test]
@@ -1474,7 +1577,7 @@ fn answers_mid_edit_agree_with_the_final_ones() {
         (", without repaired copies", true, false, without_repair),
     ];
 
-    assert_eq!(scenarios.len(), if full { 20 } else { SAMPLE.len() });
+    assert_eq!(scenarios.len(), if full { 22 } else { SAMPLE.len() });
     let tallies: Vec<Vec<(Tally, std::time::Duration)>> = std::thread::scope(|s| {
         let handles: Vec<Vec<_>> = scenarios
             .iter()
@@ -1517,12 +1620,13 @@ fn answers_mid_edit_agree_with_the_final_ones() {
 
     for ((name, ..), total) in modes.iter().zip(&totals) {
         eprintln!(
-            "\nAll scenarios{}\n\n{}\ninlay hint answers covering part of what they were asked: {}, hints of the final text, in text that was there, where they don't cover: {}, document symbols left out with lines blank: {}",
+            "\nAll scenarios{}\n\n{}\ninlay hint answers covering part of what they were asked: {}, hints of the final text, in text that was there, where they don't cover: {}, document symbols left out with lines blank: {}, answers about a name a later edit changed: {}",
             name,
             total.table(),
             total.partial,
             total.uncovered,
-            total.missing_symbols
+            total.missing_symbols,
+            total.renamed()
         );
     }
 

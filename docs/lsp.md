@@ -1370,6 +1370,12 @@ without checking again when everything the query would check is the same:
   module resolution reads). What a save changes is the text, if it sends
   other text in `didSave`, and that's a different check anyway.
 
+**An undo** returns to text that was checked before, so a kept check of
+it answers again, if nothing it read on disk changed since; a module
+changed on disk and put back has new times, so it's checked again. Answers
+after an undo are a new server's for the same text
+(tests/undo.rs).
+
 This covers all three kinds of answer: the documents as they are, a
 repaired copy, and the last good check's version, each of which is a
 check of its own text. It covers checks with nothing to answer from too:
