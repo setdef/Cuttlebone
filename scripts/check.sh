@@ -84,11 +84,13 @@ step "the release build has no test-only code" scripts/check-release.sh
 if [ "$tier" != commit ]; then
     step "the whole edit-replay corpus" \
         env CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet --test integration replay::
-    strict="the latency limits as written, however loaded the machine is"
+    # One test at a time: each measures a machine nothing else of ours
+    # loads, as the limits assume.
+    strict="the latency limits as written, however loaded the machine is, one test at a time"
     if [ "$tier" = milestone ]; then
-        advisory "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency
+        advisory "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency -- --test-threads=1
     else
-        step "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency
+        step "$strict" env CUTTLEBONE_LATENCY_STRICT=1 cargo test --quiet --test latency -- --test-threads=1
     fi
     step "every test without kept checks, and the whole corpus" \
         env CUTTLEBONE_NO_CACHE=1 CUTTLEBONE_CORPUS_FULL=1 cargo test --quiet

@@ -7,9 +7,9 @@ makes the source of every modified file available.
 
 No typing rule, nothing in the types crate, and nothing in code generation
 changes. It adds one way into the compiler (a hook), one input (an overlay
-of source text), and makes the typed HIR and the diagnostics readable. It
-also adds a setting that runs every type checking pass after an error,
-which `inko check` leaves off, with four places in the passes that then
+of source text), and makes the typed HIR, the diagnostics and the
+formatter's own document usable from outside. It also adds a setting that
+runs every type checking pass after an error, which `inko check` leaves off, with four places in the passes that then
 skip a declaration an earlier pass rejected, where they would panic. The counts are the patch's own
 (`git apply --numstat`); tests/guardrails.rs fails if they disagree, so a
 line can't be added without updating this table and justifying it below.
@@ -25,6 +25,7 @@ line can't be added without updating this table and justifying it below.
 | compiler/src/type_check/define_types.rs | +5 -2 | Skipping an `impl` whose trait or type didn't resolve. |
 | compiler/src/type_check/methods.rs | +5 -2 | The same, one pass later. |
 | compiler/src/type_check/expressions.rs | +6 -6 | Skipping a method that was never defined, and a required trait that didn't resolve. |
+| compiler/src/format.rs | +3 -3 | `Document`, its `new` and its `format` become `pub`, so formatting is `inko fmt`'s own, without its files or stdin. |
 
 ## Every line, and why
 
@@ -327,6 +328,28 @@ editor plugin might for `inko check`. For a std-sized project (222 files) creati
 and deleting a mirror of symlinks takes about 33 ms, roughly 30% of a check,
 and every path in every answer would need mapping back. The overlay costs a
 hash lookup per module.
+
+### compiler/src/format.rs
+
+```diff
+-struct Document {
++pub struct Document {
+...
+-    fn new() -> Document {
++    pub fn new() -> Document {
+...
+-    fn format(mut self, ast: nodes::Module) -> String {
++    pub fn format(mut self, ast: nodes::Module) -> String {
+```
+
+`textDocument/formatting` must give exactly what `inko fmt` writes. The
+formatter's public interface, `Formatter`, reads its input from files or
+stdin and writes the result back to the files or stdout, neither of which
+a server may do (a query writes nothing). `Document` is the part that
+turns a parsed module (`Parser::with_comments`) into text; `Formatter`
+calls nothing else to format. Making it public reuses the formatter
+itself, rather than a copy of its 2,000 lines that would have to be kept
+the same as upstream's. Nothing about how it formats changes.
 
 ## Rebasing onto a new release
 

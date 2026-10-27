@@ -464,6 +464,22 @@ M = [
  # The release workflow's shards (milestone 13).
  ("shards skip a mutation", "scripts/mutate.py", "    k, n = shard\n    return [(m, why) for m, why in chosen if m[4] != DIST][k - 1::n]", "    k, n = shard\n    return [(m, why) for m, why in chosen if m[4] != DIST][k::n]", "sh:python3 scripts/check-selection.py"),
  ("the dist shard runs nothing", "scripts/mutate.py", "    if shard == \"dist\":\n        return [(m, why) for m, why in chosen if m[4] == DIST]", "    if shard == \"dist\":\n        return []", "sh:python3 scripts/check-selection.py"),
+ # Folding ranges and formatting (milestone 13).
+ ("whitespace breaks comment lines", "src/syntax.rs", "            T::Whitespace => continue,\n", "", "--lib comment_lines_in_a_body"),
+ ("a comment after code is a comment line", "src/syntax.rs", "        if token.kind == T::Comment && first {", "        if token.kind == T::Comment {", "--lib a_comment_after_code"),
+ ("one comment line folds", "src/syntax.rs", "    (last > from).then_some(Fold {", "    (last >= from).then_some(Fold {", "--test folding blocks_comments"),
+ ("imports don't fold", "src/syntax.rs", "    text[start..end].contains('\\n').then_some(Fold {", "    false.then_some(Fold {", "--test folding blocks_comments"),
+ ("any bracket closes a block", "src/syntax.rs", "open.iter().rposition(|(k, _, _)| *k == opening)", "open.len().checked_sub(1)", "--test folding code_that_doesnt_parse"),
+ ("two-line blocks fold", "src/syntax.rs", "                    if l.line_start >= from + 2 {", "                    if l.line_start > from {", "--test folding blocks_comments"),
+ ("a block's closing line folds", "src/lsp.rs", "                        syntax::FoldKind::Block => (last.saturating_sub(1), None),", "                        syntax::FoldKind::Block => (last, None),", "--test folding blocks_comments"),
+ ("folding kinds for every client", "src/lsp.rs", "(last, self.support.comment_folds.then_some(\"comment\"))", "(last, Some(\"comment\"))", "--test folding folds_have_kinds"),
+ ("no folding range limit", "src/lsp.rs", "ranges.len() == self.support.folding_limit.unwrap_or(usize::MAX)", "ranges.len() == usize::MAX", "--test folding folds_have_kinds"),
+ ("folds on the compiler's lines", "src/lsp.rs", "                    let last = positions.at(fold.end).line;", "                    let last = text[..fold.end].matches('\\n').count() as u32;", "--test folding folds_are_on_lsps_lines"),
+ ("folding ranges not advertised", "src/lsp.rs", "                folding_range_provider: Some(lsp::FoldingRangeProviderCapability::Simple(true)),", "                folding_range_provider: None,", "--test lsp initialize_advertises"),
+ ("formatting drops comments", "src/syntax.rs", "        ast::parser::Parser::with_comments(text.as_bytes().to_vec(), PathBuf::from(\"format.inko\"))", "        ast::parser::Parser::new(text.as_bytes().to_vec(), PathBuf::from(\"format.inko\"))", "--test formatting formatting_is_inko"),
+ ("formatted text gets an edit", "src/lsp.rs", "            Ok((text, formatted)) if text == formatted => (json!([]), Ok(false)),\n", "", "--test formatting formatting_over_lsp"),
+ ("formatting edits in UTF-16 regardless", "src/lsp.rs", "                let positions = Positions::new(&text, self.encoding);\n\n                (\n                    json!([{", "                let positions = Positions::new(&text, Encoding::Utf16);\n\n                (\n                    json!([{", "--test formatting formatting_over_lsp"),
+ ("formatting not advertised", "src/lsp.rs", "                document_formatting_provider: Some(lsp::OneOf::Left(true)),", "                document_formatting_provider: None,", "--test lsp initialize_advertises"),
  # After an undo (milestone 13).
  ("an undo answered from a check of other text", "src/query.rs", "list.iter().position(|k| k.target == *target)", "list.iter().position(|k| k.target.root == target.root && k.target.file == target.file && k.target.tests == target.tests)", "--test undo undone_incremental"),
  ("an undo answered from a check of a module since restored", "src/query.rs", "            if entry.fingerprint.current() {", "            if true {", "--test undo a_module_changed"),
@@ -610,9 +626,10 @@ def build(cargo, root):
     return exe, ""
 
 
-def run_tests(exe, names, work=None, cwd=ROOT):
+def run_tests(exe, names, work=None, cwd=ROOT, why=None):
     """Runs the named tests of a test binary: a mutation's copy, with the
-    files tests make in `work`, or the tree's own build."""
+    files tests make in `work`, or the tree's own build. Each failing
+    test's panic is appended to `why`, if given."""
     if not names:
         return "NO TESTS: the filter matches none"
     extra = {}
@@ -624,6 +641,9 @@ def run_tests(exe, names, work=None, cwd=ROOT):
     try:
         r = subprocess.run([exe, "--exact", *names], cwd=cwd, capture_output=True, text=True,
                            timeout=TIMEOUT, env=test_env(extra))
+        if why is not None:
+            lines = (r.stdout + r.stderr).splitlines()
+            why.extend("\n".join(lines[i:i + 4]) for i, l in enumerate(lines) if l.startswith("thread '"))
         return verdict_of(r, r.stdout + r.stderr)
     except subprocess.TimeoutExpired:
         return "TIMED OUT after %ds" % TIMEOUT
@@ -676,9 +696,10 @@ def control():
             copy = os.path.join(work, os.path.basename(exe))
             shutil.copy2(exe, copy)
             shutil.copy2(os.path.join(root, "target", "debug", "cuttlebone"), os.path.join(work, "cuttlebone"))
-            verdict = run_tests(copy, names, work, cwd=root)
+            why = []
+            verdict = run_tests(copy, names, work, cwd=root, why=why)
             if verdict != "NOT CAUGHT":
-                failed.append("%s: %s" % (" ".join(cargo), verdict))
+                failed.append("%s: %s%s" % (" ".join(cargo), verdict, "".join("\n  " + w.replace("\n", "\n  ") for w in why)))
     finally:
         shutil.rmtree(root, ignore_errors=True)
     return failed

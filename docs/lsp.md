@@ -10,7 +10,8 @@ LSP has no way to do something.
 It sends only what the client's capabilities say the client supports
 (Markdown hovers, completion's label details and kinds, document symbols'
 hierarchy and symbol kinds, signature help's
-parameter offsets and active parameters, diagnostic tags), and every
+parameter offsets and active parameters, diagnostic tags, folding range
+kinds and limits), and every
 message the tests receive is checked against the 3.18 specification's
 meta model (tests/common/spec.rs).
 
@@ -114,6 +115,8 @@ Only what works:
     "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
     "inlayHintProvider": true,
     "documentSymbolProvider": true,
+    "foldingRangeProvider": true,
+    "documentFormattingProvider": true,
     "workspaceSymbolProvider": true,
     "experimental": {"cuttlebone": {"inko": "0.21.1", "std": "/path/to/std", "statusNotifications": false, "diagnostics": true}}
   },
@@ -139,7 +142,7 @@ client's job, on its side:
 
 - **Requests** (hover, completion, definition, type definition,
   references, document highlight, signature help, inlay hints, document
-  and workspace symbols): don't send
+  and workspace symbols, folding ranges, formatting, code actions): don't send
   them, or don't show their answers. A client that registers capabilities
   through its own configuration can leave them out; one that can't can drop
   the server's capability from the `InitializeResult` before its LSP layer
@@ -805,6 +808,80 @@ for a running query. On an Apple M1 Max, under `cargo test`, about
 30 ms for std's largest module (110 KB), and 80 ms when a line doesn't
 parse; tests/latency.rs holds both to 150 ms.
 
+## `textDocument/foldingRange`
+
+Where the document can be folded, from its tokens alone: no check and no
+parse, so it answers in code that doesn't type check or parse, and in
+documents that aren't files.
+
+```json
+→ {"jsonrpc": "2.0", "id": 10, "method": "textDocument/foldingRange", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/main.inko"}}}
+← {"jsonrpc": "2.0", "id": 10, "result": [
+    {"startLine": 0, "endLine": 1, "kind": "comment"},
+    {"startLine": 2, "endLine": 5, "kind": "imports"},
+    {"startLine": 9, "endLine": 19}
+]}
+```
+
+| What | From | To | `kind` |
+|---|---|---|---|
+| a block: a type's, trait's, `impl` block's or method's body, a closure, `if`, `match`, a loop, a multi-line argument list, array or tuple | the line of its `{`, `(` or `[` | the line before the one that closes it, which stays in sight | none |
+| comment lines one after another (a doc comment, or any other), each the first thing on its line | the first | the last | `comment` |
+| the imports at the top level, one after another (comments between them included) | the first `import` | the end of the last | `imports` |
+
+- **Whole lines only:** no `startCharacter` or `endCharacter`, which
+  clients with `lineFoldingOnly` ignore, and others don't need.
+- **Only what folds:** a range is at least two lines (a block's
+  brackets three apart). Brackets in strings and comments don't count.
+- **Kinds** are sent only if the client's
+  `foldingRange.foldingRangeKind.valueSet` lists them; without, the range
+  has no `kind`. `region` isn't used: Inko has no region markers.
+- **`rangeLimit`**, if the client gives one, is the most ranges sent: the
+  first, in order of where they start.
+- **In code that doesn't parse**, brackets are matched as far as they
+  match: a closing bracket closes the nearest open one of its kind (and
+  any opened inside it), and one of its kind that nothing opened closes
+  nothing. A bracket nothing closes folds nothing, so typing `if x {`
+  without its `}` folds what's around it differently until it's closed.
+- **Lines are LSP's:** a lone `\r` ends one, as everywhere.
+
+The tests check that every declaration's body over three lines or more in
+std folds from its `{` to the line before its `}`, and every doc comment
+of two lines or more folds (tests/folding.rs).
+
+## `textDocument/formatting`
+
+The document as `inko fmt` formats it, exactly: Cuttlebone runs the
+upstream formatter itself (compiler/src/format.rs; patches/README.md),
+on the document's text, as `inko fmt` parses it. Nothing is written: the
+result is the edit, which the client applies.
+
+```json
+→ {"jsonrpc": "2.0", "id": 11, "method": "textDocument/formatting", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/main.inko"},
+    "options": {"tabSize": 2, "insertSpaces": true}}}
+← {"jsonrpc": "2.0", "id": 11, "result": [
+    {"range": {"start": {"line": 4, "character": 0}, "end": {"line": 6, "character": 2}},
+     "newText": "  fn async main {\n    let s = 'héllo' + 'x'\n"}
+]}
+```
+
+- **One edit**, of the part that differs (from the first character that
+  changes to the last), in the negotiated encoding; `[]` if the text is
+  formatted already.
+- **`options` are ignored:** `inko fmt` has none (two spaces, its own
+  line width).
+- **Unsaved text:** an open document's text, or else the file on disk.
+- **Text that doesn't parse** isn't formatted, as `inko fmt` refuses it:
+  `null`, with reason `noHir`.
+
+The tests compare it with the installed `inko fmt` (given the text on
+stdin, so it writes nothing) for every module of std and the fixtures, as
+they are and with their indentation taken away (tests/formatting.rs).
+
+**Cost.** No check: answered at once, by the server itself.
+
 ## `workspace/symbol`
 
 The declarations, in every module the workspace's projects can import,
@@ -987,12 +1064,16 @@ a custom notification if the client opts in with
 
 - **When it's sent:** for every query (hover, completion, definition, type
   definition, references, document highlight, signature help, inlay
-  hints, document and workspace symbols) that gets a result, just before the
+  hints, document and workspace symbols, folding ranges, formatting, code
+  actions) that gets a result, just before the
   response, with the request's `id`. Requests
   answered with an error (cancelled, invalid) get none. Document symbols,
   which need no check, are `fresh` (with `"repaired": true` if the text
   didn't parse), or `unavailable`: `notAFile` or `fileNotFound` if
-  there's no text to read, `noHir` if no copy of it parses. Workspace
+  there's no text to read, `noHir` if no copy of it parses. Folding
+  ranges and formatting need no check either: `fresh`, or `unavailable`
+  for the same reasons (formatting is `noHir` if the text doesn't
+  parse). Workspace
   symbols are always `fresh`, and their status has no `textDocument`.
 - **For diagnostics:** after each diagnostics check, with
   `"method": "textDocument/publishDiagnostics"`, no `id`, and the checked

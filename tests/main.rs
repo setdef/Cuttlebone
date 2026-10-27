@@ -19,6 +19,8 @@ mod crosscheck;
 mod definition;
 mod diagnostics;
 mod editors;
+mod folding;
+mod formatting;
 mod golden;
 mod guardrails;
 mod highlight;

@@ -17,7 +17,7 @@
 //! query never waits for one. See `Diagnoser`, and docs/lsp.md,
 //! "Diagnostics".
 use crate::check::{VERSION, upstream_version};
-use crate::edits::{Fallback, Snapshots};
+use crate::edits::{self, Fallback, Snapshots};
 use crate::index::{self, Index};
 use crate::position::{Encoding, Position, Positions, byte_offset};
 use crate::query::{
@@ -278,6 +278,11 @@ struct Support {
     symbol_kinds: bool,
     /// The same, for workspace symbols.
     workspace_symbol_kinds: bool,
+    /// The folding range kinds the client lists: `comment` and `imports`.
+    comment_folds: bool,
+    import_folds: bool,
+    /// The most folding ranges the client wants, if it says.
+    folding_limit: Option<usize>,
 }
 
 impl Support {
@@ -329,6 +334,17 @@ impl Support {
             workspace_symbol_kinds: [lsp::SymbolKind::OBJECT, lsp::SymbolKind::ENUM_MEMBER]
                 .iter()
                 .all(|k| lists("/workspace/symbol/symbolKind/valueSet", json!(k))),
+            comment_folds: lists(
+                "/textDocument/foldingRange/foldingRangeKind/valueSet",
+                json!("comment"),
+            ),
+            import_folds: lists(
+                "/textDocument/foldingRange/foldingRangeKind/valueSet",
+                json!("imports"),
+            ),
+            folding_limit: at("/textDocument/foldingRange/rangeLimit")
+                .as_u64()
+                .map(|n| n as usize),
         }
     }
 }
@@ -432,6 +448,8 @@ impl Server {
                 document_highlight_provider: Some(lsp::OneOf::Left(true)),
                 inlay_hint_provider: Some(lsp::OneOf::Left(true)),
                 document_symbol_provider: Some(lsp::OneOf::Left(true)),
+                folding_range_provider: Some(lsp::FoldingRangeProviderCapability::Simple(true)),
+                document_formatting_provider: Some(lsp::OneOf::Left(true)),
                 workspace_symbol_provider: Some(lsp::OneOf::Left(true)),
                 signature_help_provider: Some(lsp::SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
@@ -575,6 +593,8 @@ impl Server {
                 },
             ),
             "textDocument/documentSymbol" => return self.document_symbols(connection, request),
+            "textDocument/foldingRange" => return self.folding_ranges(connection, request),
+            "textDocument/formatting" => return self.formatting(connection, request),
             "workspace/symbol" => return self.workspace_symbols(connection, request),
             "shutdown" => {
                 self.shut_down = true;
@@ -1800,17 +1820,7 @@ impl Server {
             }
         };
         let uri = params.text_document.uri;
-        let text = match (self.documents.get(&uri), uri.to_file_path()) {
-            (Some(document), _) => Ok(document.text.clone()),
-            (None, Ok(path)) => std::fs::read_to_string(&path).map_err(|e| {
-                Unavailable::new("fileNotFound", format!("{}: {}", path.display(), e))
-            }),
-            (None, Err(_)) => Err(Unavailable::new(
-                "notAFile",
-                format!("{} isn't open, and isn't a file", uri),
-            )),
-        };
-        let read = text.and_then(|text| {
+        let read = self.document_text(&uri).and_then(|text| {
             let outline = query::guarded(|| syntax::outline(&text))
                 .map_err(|message| Unavailable::new("compilerPanic", message))?
                 .ok_or_else(|| {
@@ -1834,6 +1844,160 @@ impl Server {
             connection,
             &request.id,
             "textDocument/documentSymbol",
+            Some(&uri),
+            state,
+            start.elapsed(),
+        );
+        reply(connection, request.id, result);
+    }
+
+    /// The text of the document at `uri`: an open document's, or else the
+    /// file's on disk.
+    fn document_text(&self, uri: &Url) -> Result<String, Unavailable> {
+        match (self.documents.get(uri), uri.to_file_path()) {
+            (Some(document), _) => Ok(document.text.clone()),
+            (None, Ok(path)) => std::fs::read_to_string(&path).map_err(|e| {
+                Unavailable::new("fileNotFound", format!("{}: {}", path.display(), e))
+            }),
+            (None, Err(_)) => Err(Unavailable::new(
+                "notAFile",
+                format!("{} isn't open, and isn't a file", uri),
+            )),
+        }
+    }
+
+    /// `textDocument/foldingRange`, answered at once from the document's
+    /// tokens (`syntax::folds`), so also where it doesn't parse: blocks,
+    /// comment lines one after another, and the imports. Whole lines only,
+    /// with a kind where the client lists it, and at most as many as it
+    /// asks for.
+    fn folding_ranges(&self, connection: &Connection, request: Request) {
+        let start = Instant::now();
+        let params: lsp::FoldingRangeParams = match serde_json::from_value(request.params) {
+            Ok(p) => p,
+            Err(e) => {
+                return reply_error(
+                    connection,
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    &e.to_string(),
+                );
+            }
+        };
+        let uri = params.text_document.uri;
+        let read = self.document_text(&uri).and_then(|text| {
+            let folds = query::guarded(|| syntax::folds(&text))
+                .map_err(|message| Unavailable::new("compilerPanic", message))?;
+
+            Ok((text, folds))
+        });
+        let (result, state) = match read {
+            Ok((text, folds)) => {
+                let positions = Positions::new(&text, self.encoding);
+                let mut ranges = Vec::new();
+
+                for fold in folds {
+                    let first = positions.at(fold.start).line;
+                    let last = positions.at(fold.end).line;
+                    let (last, kind) = match fold.kind {
+                        syntax::FoldKind::Block => (last.saturating_sub(1), None),
+                        syntax::FoldKind::Comment => {
+                            (last, self.support.comment_folds.then_some("comment"))
+                        }
+                        syntax::FoldKind::Imports => {
+                            (last, self.support.import_folds.then_some("imports"))
+                        }
+                    };
+
+                    if last <= first
+                        || ranges.len() == self.support.folding_limit.unwrap_or(usize::MAX)
+                    {
+                        continue;
+                    }
+
+                    let mut range = json!({ "startLine": first, "endLine": last });
+
+                    if let Some(kind) = kind {
+                        range["kind"] = json!(kind);
+                    }
+
+                    if !ranges.contains(&range) {
+                        ranges.push(range);
+                    }
+                }
+
+                (Value::Array(ranges), Ok(false))
+            }
+            Err(reason) => (Value::Null, Err(reason)),
+        };
+
+        self.syntax_status(
+            connection,
+            &request.id,
+            "textDocument/foldingRange",
+            Some(&uri),
+            state,
+            start.elapsed(),
+        );
+        reply(connection, request.id, result);
+    }
+
+    /// `textDocument/formatting`, answered at once: the document as `inko
+    /// fmt` formats it (`syntax::format`, the upstream formatter itself),
+    /// as one edit of the part that differs, or none. Nothing is written:
+    /// the client applies the edit. `inko fmt` has no options, so the
+    /// request's are ignored. `null` where the text doesn't parse, which
+    /// `inko fmt` refuses too.
+    fn formatting(&self, connection: &Connection, request: Request) {
+        let start = Instant::now();
+        let params: lsp::DocumentFormattingParams = match serde_json::from_value(request.params) {
+            Ok(p) => p,
+            Err(e) => {
+                return reply_error(
+                    connection,
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    &e.to_string(),
+                );
+            }
+        };
+        let uri = params.text_document.uri;
+        let read = self.document_text(&uri).and_then(|text| {
+            let formatted = query::guarded(|| syntax::format(&text))
+                .map_err(|message| Unavailable::new("compilerPanic", message))?
+                .ok_or_else(|| {
+                    Unavailable::new(
+                        "noHir",
+                        "the document doesn't parse, so it can't be formatted",
+                    )
+                })?;
+
+            Ok((text, formatted))
+        });
+        let (result, state) = match read {
+            Ok((text, formatted)) if text == formatted => (json!([]), Ok(false)),
+            Ok((text, formatted)) => {
+                let (from, to, len) = edits::difference(&text, &formatted);
+                let positions = Positions::new(&text, self.encoding);
+
+                (
+                    json!([{
+                        "range": {
+                            "start": positions.at(from),
+                            "end": positions.at(to),
+                        },
+                        "newText": &formatted[from..from + len],
+                    }]),
+                    Ok(false),
+                )
+            }
+            Err(reason) => (Value::Null, Err(reason)),
+        };
+
+        self.syntax_status(
+            connection,
+            &request.id,
+            "textDocument/formatting",
             Some(&uri),
             state,
             start.elapsed(),

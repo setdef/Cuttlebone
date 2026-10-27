@@ -182,6 +182,31 @@ index 70ac1eb..7859be2 100644
          &self.location
      }
  }
+diff --git a/compiler/src/format.rs b/compiler/src/format.rs
+index 216f73b..50f6003 100644
+--- a/compiler/src/format.rs
++++ b/compiler/src/format.rs
+@@ -439,17 +439,17 @@ impl List {
+     }
+ }
+ 
+-struct Document {
++pub struct Document {
+     generator: Generator,
+     group_id: usize,
+ }
+ 
+ impl Document {
+-    fn new() -> Document {
++    pub fn new() -> Document {
+         Document { generator: Generator::new(), group_id: 0 }
+     }
+ 
+-    fn format(mut self, ast: nodes::Module) -> String {
++    pub fn format(mut self, ast: nodes::Module) -> String {
+         self.top_level(&ast);
+         self.generator.buf
+     }
 diff --git a/compiler/src/hir.rs b/compiler/src/hir.rs
 index e9c45b3..97bbea5 100644
 --- a/compiler/src/hir.rs

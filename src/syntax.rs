@@ -1061,9 +1061,194 @@ pub fn parse_error_line(text: &str) -> Option<usize> {
         .map(|e| e.location.line_start.saturating_sub(1) as usize)
 }
 
+/// What a folding range folds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FoldKind {
+    /// What's between a bracket and the one that closes it, on lines of
+    /// its own: a type's or method's body, a block, a multi-line argument
+    /// list or array.
+    Block,
+    /// Comment lines one after another: a doc comment, or any other.
+    Comment,
+    /// The imports at the top of a module, one after another.
+    Imports,
+}
+
+/// A range of lines that can be folded, by byte offsets: from the line
+/// `start` is on to the line `end` is on, or for a `Block`, the line
+/// before it (so its closing bracket stays in sight).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fold {
+    pub kind: FoldKind,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Where `text` can be folded, from its tokens alone, so also where it
+/// doesn't parse: brackets are matched as far as they match (one closed
+/// by another kind closes nothing), and a bracket nothing closes folds
+/// nothing. In order of `start`, then of the longer first.
+pub fn folds(text: &str) -> Vec<Fold> {
+    use ast::lexer::{Lexer, TokenKind as T};
+
+    let lines = Lines::new(text);
+    let at = |line: u32, column: u32| lines.offset(line, column).unwrap_or(text.len());
+    let mut lexer = Lexer::new(text.as_bytes().to_vec());
+    let mut out = Vec::new();
+    let mut open: Vec<(T, u32, usize)> = Vec::new();
+    // The comment lines so far: the first's line and start, the last's.
+    let mut comments: Option<(u32, usize, u32, usize)> = None;
+    // The imports so far: the first's start, and the last token's.
+    let mut imports: Option<(usize, usize)> = None;
+    let mut line = 0;
+
+    loop {
+        let token = lexer.next_token();
+        let l = &token.location;
+
+        match token.kind {
+            T::Null => break,
+            T::Whitespace => continue,
+            _ => {}
+        }
+
+        let first = l.line_start != line;
+        let offset = at(l.line_start, l.column_start);
+
+        line = l.line_end;
+
+        if token.kind == T::Comment && first {
+            comments = match comments {
+                Some((from, start, last, _)) if l.line_start == last + 1 => {
+                    Some((from, start, l.line_start, offset))
+                }
+                _ => {
+                    out.extend(comment_fold(comments));
+                    Some((l.line_start, offset, l.line_start, offset))
+                }
+            };
+            continue;
+        }
+
+        if token.kind != T::Comment {
+            out.extend(comment_fold(comments.take()));
+        }
+
+        if open.is_empty() && first && token.kind != T::Comment {
+            imports = match (token.kind, imports) {
+                (T::Import, None) => Some((offset, offset)),
+                (T::Import, Some(run)) => Some(run),
+                (_, run) => {
+                    out.extend(import_fold(text, run));
+                    None
+                }
+            };
+        }
+
+        if let Some((_, last)) = &mut imports
+            && token.kind != T::Comment
+        {
+            *last = offset;
+        }
+
+        match token.kind {
+            T::CurlyOpen | T::ParenOpen | T::BracketOpen => {
+                open.push((token.kind, l.line_start, offset));
+            }
+            T::CurlyClose | T::ParenClose | T::BracketClose => {
+                let opening = match token.kind {
+                    T::CurlyClose => T::CurlyOpen,
+                    T::ParenClose => T::ParenOpen,
+                    _ => T::BracketOpen,
+                };
+
+                if let Some(i) = open.iter().rposition(|(k, _, _)| *k == opening) {
+                    let (_, from, start) = open[i];
+
+                    open.truncate(i);
+
+                    if l.line_start >= from + 2 {
+                        out.push(Fold {
+                            kind: FoldKind::Block,
+                            start,
+                            end: offset,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    out.extend(comment_fold(comments));
+    out.extend(import_fold(text, imports));
+    out.sort_by_key(|f| (f.start, std::cmp::Reverse(f.end)));
+    out.dedup();
+    out
+}
+
+fn comment_fold(run: Option<(u32, usize, u32, usize)>) -> Option<Fold> {
+    let (from, start, last, end) = run?;
+
+    (last > from).then_some(Fold {
+        kind: FoldKind::Comment,
+        start,
+        end,
+    })
+}
+
+fn import_fold(text: &str, run: Option<(usize, usize)>) -> Option<Fold> {
+    let (start, end) = run?;
+
+    text[start..end].contains('\n').then_some(Fold {
+        kind: FoldKind::Imports,
+        start,
+        end,
+    })
+}
+
+/// `text` as `inko fmt` formats it: the upstream formatter itself
+/// (compiler/src/format.rs), given the module parsed with its comments, as
+/// `inko fmt` parses it. `None` if it doesn't parse, which `inko fmt`
+/// refuses too.
+pub fn format(text: &str) -> Option<String> {
+    let module =
+        ast::parser::Parser::with_comments(text.as_bytes().to_vec(), PathBuf::from("format.inko"))
+            .parse()
+            .ok()?;
+
+    Some(compiler::format::Document::new().format(module))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fold_lines(text: &str) -> Vec<(FoldKind, usize, usize)> {
+        let line = |offset: usize| text[..offset].matches('\n').count();
+
+        folds(text)
+            .iter()
+            .map(|f| (f.kind, line(f.start), line(f.end)))
+            .collect()
+    }
+
+    #[test]
+    fn a_comment_after_code_is_no_comment_line() {
+        let text = "let A = 1 # One.\n# Two.\nlet B = 2\n";
+
+        assert_eq!(fold_lines(text), []);
+    }
+
+    #[test]
+    fn comment_lines_in_a_body_fold() {
+        let text = "type A {\n  # One.\n  #\n  # Two.\n  let @a: Int\n}\n";
+
+        assert_eq!(
+            fold_lines(text),
+            [(FoldKind::Block, 0, 5), (FoldKind::Comment, 1, 3)]
+        );
+    }
 
     const TEXT: &str = "\
 # The module.

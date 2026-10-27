@@ -437,6 +437,41 @@ fn gates(method: &str, value: &Value, capabilities: &Value) -> Result<(), String
                 }
             }
         }
+        "textDocument/foldingRange" => {
+            let kinds = capability(
+                capabilities,
+                "textDocument.foldingRange.foldingRangeKind.valueSet",
+            );
+            let limit = capability(capabilities, "textDocument.foldingRange.rangeLimit");
+            let ranges = value.as_array().map_or(&[][..], Vec::as_slice);
+
+            if let Some(limit) = limit.as_u64()
+                && ranges.len() as u64 > limit
+            {
+                return Err(format!(
+                    "{} folding ranges, past the rangeLimit {}",
+                    ranges.len(),
+                    limit
+                ));
+            }
+
+            for r in ranges {
+                if let Some(kind) = r.get("kind")
+                    && !kinds.as_array().is_some_and(|k| k.contains(kind))
+                {
+                    return Err(format!("folding range kind {} isn't in the client's", kind));
+                }
+
+                // Whole lines, which every client folds.
+                if r.get("startCharacter").is_some() || r.get("endCharacter").is_some() {
+                    return Err("a folding range with characters".to_string());
+                }
+
+                if r["endLine"].as_u64() <= r["startLine"].as_u64() {
+                    return Err(format!("a folding range of one line: {}", r));
+                }
+            }
+        }
         "textDocument/documentSymbol" => {
             let hierarchical = supports(
                 capabilities,
@@ -563,6 +598,9 @@ pub fn capable_client() -> Value {
             "documentSymbol": {
                 "hierarchicalDocumentSymbolSupport": true,
                 "symbolKind": { "valueSet": (1..=26).collect::<Vec<u32>>() },
+            },
+            "foldingRange": {
+                "foldingRangeKind": { "valueSet": ["comment", "imports", "region"] },
             },
         },
         "workspace": {

@@ -109,9 +109,11 @@ fn initialize_advertises_only_what_works() {
         [
             "completionProvider",
             "definitionProvider",
+            "documentFormattingProvider",
             "documentHighlightProvider",
             "documentSymbolProvider",
             "experimental",
+            "foldingRangeProvider",
             "hoverProvider",
             "inlayHintProvider",
             "positionEncoding",
@@ -128,6 +130,8 @@ fn initialize_advertises_only_what_works() {
     assert_eq!(capabilities["referencesProvider"], true);
     assert_eq!(capabilities["documentHighlightProvider"], true);
     assert_eq!(capabilities["inlayHintProvider"], true);
+    assert_eq!(capabilities["foldingRangeProvider"], true);
+    assert_eq!(capabilities["documentFormattingProvider"], true);
     assert_eq!(
         capabilities["signatureHelpProvider"],
         json!({ "triggerCharacters": ["(", ","] })
@@ -1537,7 +1541,10 @@ fn the_server_exits_when_the_client_process_is_gone() {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\n'{}' {} <&0 &\nsleep 1\n",
+                // A shell gives a job in the background /dev/null as its
+                // stdin before its redirections (dash, Ubuntu's sh, does),
+                // so the client's stdin goes by way of fd 3.
+                "#!/bin/sh\nexec 3<&0\n'{}' {} <&3 3<&- &\nsleep 1\n",
                 crate::common::server_bin().display(),
                 args
             ),
