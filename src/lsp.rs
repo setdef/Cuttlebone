@@ -1377,29 +1377,28 @@ impl Server {
             }
         }
 
+        // The check's status first, then the pulls it answers.
+        if self.options.status {
+            let mut params = json!({
+                "method": "textDocument/publishDiagnostics",
+                "target": Url::from_file_path(target).ok(),
+                "status": if state.is_ok() { "fresh" } else { "unavailable" },
+                "elapsedMs": (elapsed.as_secs_f64() * 10000.0).round() / 10.0,
+            });
+
+            if let Err(reason) = &state {
+                params["reason"] = json!({ "code": reason.code, "message": reason.message });
+            }
+
+            let _ = connection
+                .sender
+                .send(Message::Notification(Notification::new(
+                    STATUS.to_string(),
+                    params,
+                )));
+        }
+
         self.answer_pulls(connection);
-
-        if !self.options.status {
-            return;
-        }
-
-        let mut params = json!({
-            "method": "textDocument/publishDiagnostics",
-            "target": Url::from_file_path(target).ok(),
-            "status": if state.is_ok() { "fresh" } else { "unavailable" },
-            "elapsedMs": (elapsed.as_secs_f64() * 10000.0).round() / 10.0,
-        });
-
-        if let Err(reason) = state {
-            params["reason"] = json!({ "code": reason.code, "message": reason.message });
-        }
-
-        let _ = connection
-            .sender
-            .send(Message::Notification(Notification::new(
-                STATUS.to_string(),
-                params,
-            )));
     }
 
     /// The next time something must happen: a running check's timeout, or

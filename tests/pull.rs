@@ -393,3 +393,36 @@ fn a_pull_whose_check_fails_gets_an_error() {
         json!({ "retriggerRequest": false })
     );
 }
+
+/// A pull is answered from a check of the documents exactly as they are:
+/// opening a document (with its file's own text) makes them other
+/// documents, so the next pull waits for a check of them, which a
+/// diagnostics status reports, rather than answering from the last.
+#[test]
+fn a_pull_is_answered_from_a_check_of_the_documents_as_they_are() {
+    let (root, main, _) = project("as-they-are");
+    let mut client = pulling(&root, false, false);
+
+    // The first check's status comes before the pull's answer.
+    document(&mut client, &main, None);
+    assert!(
+        client
+            .notifications
+            .iter()
+            .any(|n| n["params"]["method"] == "textDocument/publishDiagnostics")
+    );
+    client
+        .notifications
+        .retain(|n| n["params"]["method"] != "textDocument/publishDiagnostics");
+    client.open(&main, TEXT);
+    document(&mut client, &main, None);
+
+    assert!(
+        client
+            .notifications
+            .iter()
+            .any(|n| n["method"] == "cuttlebone/status"
+                && n["params"]["method"] == "textDocument/publishDiagnostics"),
+        "no check of the documents as they are"
+    );
+}

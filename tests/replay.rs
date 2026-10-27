@@ -686,6 +686,13 @@ const REQUESTS: &[&str] = &[
     "documentHighlight",
     "references",
     "documentSymbol",
+    "declaration",
+    "prepareCallHierarchy",
+    "outgoingCalls",
+    "prepareTypeHierarchy",
+    "implementation",
+    "incomingCalls",
+    "subtypes",
 ];
 
 fn request_name(q: Question) -> &'static str {
@@ -698,6 +705,13 @@ fn request_name(q: Question) -> &'static str {
         Question::InlayHints { .. } => "inlayHint",
         Question::Highlight => "documentHighlight",
         Question::References { .. } => "references",
+        Question::Declaration => "declaration",
+        Question::CallItem => "prepareCallHierarchy",
+        Question::OutgoingCalls => "outgoingCalls",
+        Question::TypeItem => "prepareTypeHierarchy",
+        Question::Implementation => "implementation",
+        Question::IncomingCalls => "incomingCalls",
+        Question::Subtypes => "subtypes",
         other => panic!("not asked: {:?}", other),
     }
 }
@@ -1179,16 +1193,18 @@ fn normalize(
             .join(", "),
         Some(Reply::Items(items)) => items
             .iter()
-            .map(|i| item(i, &place))
+            .filter(|i| keep(&i.selection.file, i.selection.range))
+            .map(|i| item(i, &place, &keep))
             .collect::<Vec<_>>()
             .join(", "),
         // Calls, compared as references are: in the text both have.
         Some(Reply::Calls(calls)) => calls
             .iter()
+            .filter(|c| keep(&c.item.selection.file, c.item.selection.range))
             .map(|c| {
                 format!(
                     "{} from {}",
-                    item(&c.item, &place),
+                    item(&c.item, &place, &keep),
                     c.ranges
                         .iter()
                         .filter(|p| keep(&p.file, p.range))
@@ -1208,15 +1224,28 @@ fn normalize(
     }
 }
 
-/// A hierarchy's item, as `summary` compares it.
-fn item(item: &query::Item, place: &dyn Fn(&query::Place) -> String) -> String {
+/// A hierarchy's item, as `summary` compares it (only those whose name is
+/// in text both have, as references are): its whole declaration only if
+/// that is too (a later edit may change the declaration's body, and so
+/// where it ends).
+fn item(
+    item: &query::Item,
+    place: &dyn Fn(&query::Place) -> String,
+    keep: &dyn Fn(&Path, query::Range) -> bool,
+) -> String {
+    let whole = if keep(&item.place.file, item.place.range) {
+        place(&item.place)
+    } else {
+        String::new()
+    };
+
     format!(
         "{} {:?} {} {} {}",
         item.name,
         item.kind,
         item.detail,
         place(&item.selection),
-        place(&item.place)
+        whole
     )
 }
 
@@ -1381,6 +1410,10 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
                 Question::Definition,
                 Question::TypeDefinition,
                 Question::Highlight,
+                Question::Declaration,
+                Question::CallItem,
+                Question::OutgoingCalls,
+                Question::TypeItem,
             ] {
                 questions.push((q, p));
             }
@@ -1416,13 +1449,16 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
         if scenario.references {
             let stride = names.len().div_ceil(REFERENCE_POSITIONS).max(1);
 
-            questions.extend(names.iter().step_by(stride).map(|b| {
-                (
+            questions.extend(names.iter().step_by(stride).flat_map(|b| {
+                [
                     Question::References {
                         include_declaration: true,
                     },
-                    at(*b),
-                )
+                    Question::Implementation,
+                    Question::IncomingCalls,
+                    Question::Subtypes,
+                ]
+                .map(|q| (q, at(*b)))
             }));
         }
 
@@ -1729,6 +1765,13 @@ const SAMPLE_COVERAGE: &[(&str, usize)] = &[
     ("documentHighlight", 2062),
     ("references", 339),
     ("documentSymbol", 79),
+    ("declaration", 2145),
+    ("prepareCallHierarchy", 2127),
+    ("outgoingCalls", 1914),
+    ("prepareTypeHierarchy", 2145),
+    ("implementation", 270),
+    ("incomingCalls", 270),
+    ("subtypes", 270),
 ];
 const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("hover", 1873),
@@ -1742,6 +1785,13 @@ const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("documentHighlight", 1850),
     ("references", 344),
     ("documentSymbol", 79),
+    ("declaration", 1901),
+    ("prepareCallHierarchy", 1894),
+    ("outgoingCalls", 1678),
+    ("prepareTypeHierarchy", 1901),
+    ("implementation", 270),
+    ("incomingCalls", 270),
+    ("subtypes", 270),
 ];
 const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("hover", 1882),
@@ -1755,6 +1805,13 @@ const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("documentHighlight", 1840),
     ("references", 339),
     ("documentSymbol", 79),
+    ("declaration", 1914),
+    ("prepareCallHierarchy", 1914),
+    ("outgoingCalls", 1914),
+    ("prepareTypeHierarchy", 1914),
+    ("implementation", 270),
+    ("incomingCalls", 270),
+    ("subtypes", 270),
 ];
 
 const COVERAGE: &[(&str, usize)] = &[
@@ -1769,6 +1826,13 @@ const COVERAGE: &[(&str, usize)] = &[
     ("documentHighlight", 11568),
     ("references", 1393),
     ("documentSymbol", 488),
+    ("declaration", 13097),
+    ("prepareCallHierarchy", 13012),
+    ("outgoingCalls", 10830),
+    ("prepareTypeHierarchy", 13097),
+    ("implementation", 1065),
+    ("incomingCalls", 1065),
+    ("subtypes", 1065),
 ];
 
 /// What the server answers without older checks, from repaired copies
@@ -1785,6 +1849,13 @@ const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("documentHighlight", 10226),
     ("references", 1405),
     ("documentSymbol", 488),
+    ("declaration", 11337),
+    ("prepareCallHierarchy", 11276),
+    ("outgoingCalls", 8375),
+    ("prepareTypeHierarchy", 11337),
+    ("implementation", 1065),
+    ("incomingCalls", 1065),
+    ("subtypes", 1065),
 ];
 
 /// What older checks answer alone, without repaired copies.
@@ -1800,6 +1871,13 @@ const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("documentHighlight", 9957),
     ("references", 1393),
     ("documentSymbol", 488),
+    ("declaration", 10830),
+    ("prepareCallHierarchy", 10830),
+    ("outgoingCalls", 10830),
+    ("prepareTypeHierarchy", 10830),
+    ("implementation", 1065),
+    ("incomingCalls", 1065),
+    ("subtypes", 1065),
 ];
 
 #[test]

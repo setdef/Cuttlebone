@@ -201,7 +201,11 @@ M = [
  ("an index in any order checks", "scripts/dist-check-index.py", "expect(versions == sorted(set(versions), key=key, reverse=True)", "expect(True", "sh:scripts/check-dist.sh"),
  ("an index's Inko versions not checked", "scripts/dist-check-index.py", "expect(set(release[\"inko\"]) == inko,", "expect(True,", "sh:scripts/check-dist.sh"),
  ("a version twice in the index", "scripts/dist-index.py", "    if any(r[\"cuttlebone\"] == version for r in releases):\n", "    if False:\n", "sh:scripts/check-dist.sh"),
- ("strict latency limits scaled by the load", "tests/latency.rs", "    if std::env::var_os(STRICT_VARIABLE).is_some() {\n        return base;\n    }\n", "", "--test latency limits_are_as_written"),
+ ("strict latency limits scaled by the load", "tests/latency.rs", "    if std::env::var_os(STRICT_VARIABLE).is_some() {\n        let scale", "    if std::env::var_os(STRICT_VARIABLE).is_some() && false {\n        let scale", "--test latency limits_are_as_written"),
+ # The baseline: strict limits scale by the machine's measured speed,
+ # and a slower Cuttlebone still fails them (scripts/latency.sh).
+ ("strict limits not scaled by the baseline", "tests/latency.rs", "    base.mul_f64(scale.unwrap_or(1.0))", "    base.mul_f64(scale.map_or(1.0, |_| 1.0))", "--test latency strict_limits_scale"),
+ ("a deliberate slowdown under the scaled limits", "src/query.rs", ") -> Result<Option<Vec<Place>>, Unavailable> {\n    {\n        let Some(reference) = symbol_at(", ") -> Result<Option<Vec<Place>>, Unavailable> {\n    std::thread::sleep(Duration::from_millis(1000));\n    {\n        let Some(reference) = symbol_at(", "sh:scripts/latency.sh references_across_std"),
  ("published checksums not checked", "scripts/dist-check-release.py", "expect(sha256 == build[\"sha256\"]", "expect(True", "sh:scripts/check-dist.sh"),
  # Diagnostics (milestone 4).
  ("diagnostics skip MIR", "src/check.rs", "            inspect(db, hir);\n            true", "            inspect(db, hir);\n            false", "--test diagnostics every_fixture"),
@@ -492,6 +496,7 @@ M = [
  ("implementations of any method", "src/query.rs", "        SymbolId::Method(id) if trait_method(db, id) => implementing(db, id)", "        SymbolId::Method(id) => implementing(db, id)", "--test hierarchy implementations_of"),
  ("a trait's method implements itself", "src/query.rs", "        .filter(|m| matches!(m.source(db), MethodSource::Implemented(_, o) if o == method))", "        .filter(|m| *m == method)", "--test hierarchy implementations_of"),
  ("no implementing types", "src/query.rs", "        SymbolId::Trait(id) => id\n            .implemented_by(db)\n            .iter()\n            .map(|t| SymbolId::Type(*t))", "        SymbolId::Trait(id) => std::iter::once(id)\n            .map(SymbolId::Trait)", "--test hierarchy implementations_of"),
+ ("outgoing calls from a repaired copy", "src/query.rs", "            !question.whole_project() && !matches!(question, Question::OutgoingCalls)", "            !question.whole_project()", "--test replay"),
  ("whole-project answers from a repaired copy", "src/query.rs", "        Source::Repaired => !question.whole_project(),", "        Source::Repaired => !matches!(question, Question::References { .. }),", "--test hierarchy whole_project_answers"),
  ("whole-project answers past a declaration's error", "src/query.rs", "                    if question.whole_project() && !matches!(question, Question::References { .. })", "                    if false", "--test hierarchy whole_project_answers"),
  ("implementations checked per file", "src/query.rs", "            Question::References { .. }\n                | Question::Implementation", "            Question::References { .. }", "--test hierarchy"),
@@ -501,7 +506,7 @@ M = [
  ("outgoing calls of the whole file", "src/query.rs", "        if caller(scope.walker, &r.location) != Some(method) {", "        if caller(scope.walker, &r.location).is_none() {", "--test hierarchy call_hierarchies"),
  ("an extern function's receiver", "src/query.rs", "            match receiver(db, id) {\n                Some(TypeEnum::Module(_)) | None", "            match Some(id.receiver_id(db)) {\n                Some(TypeEnum::Module(_)) | None", "--test hierarchy call_hierarchies"),
  ("module methods are methods", "src/query.rs", "                Some(TypeEnum::Module(_)) | None => ItemKind::Function,", "                Some(TypeEnum::Module(_)) | None => ItemKind::Method,", "--test hierarchy call_hierarchies"),
- ("an item's range is its name", "src/query.rs", "                start: positions.at(d.range.start),\n                end: positions.at(d.range.end),", "                start: positions.at(d.name_range.start),\n                end: positions.at(d.name_range.end),", "--test hierarchy"),
+ ("an item's range is its name", "src/query.rs", "            range: text.range(whole.clone(), scope.encoding),", "            range: text.location(&location, scope.encoding),", "--test hierarchy"),
  ("incoming and outgoing the same way", "src/lsp.rs", "                    Query::IncomingCalls => \"from\",", "                    Query::IncomingCalls => \"to\",", "--test hierarchy call_hierarchies"),
  ("no requiring traits are subtypes", "src/query.rs", "                    .any(|r| r.instance_of() == id)", "                    .any(|r| r.instance_of() != r.instance_of())", "--test hierarchy type_hierarchies"),
  ("no implementing types are subtypes", "src/query.rs", "            .chain(id.implemented_by(db).iter().map(|t| SymbolId::Type(*t)))", "            .chain(std::iter::empty())", "--test hierarchy type_hierarchies"),
@@ -517,7 +522,7 @@ M = [
  # Pull diagnostics.
  ("pushed to clients that pull", "src/lsp.rs", "            if let Ok(uri) = Url::from_file_path(&file)\n                && !self.support.pull", "            if let Ok(uri) = Url::from_file_path(&file)", "--test pull a_workspace_pull_has_what"),
  ("pulls offered to every client", "src/lsp.rs", "        if self.support.pull {\n            capabilities[\"diagnosticProvider\"]", "        if !self.support.pull || self.support.pull {\n            capabilities[\"diagnosticProvider\"]", "--test pull only_clients"),
- ("a pull answered from another text's check", "src/lsp.rs", "                    .is_some_and(|r| r.contents == contents)", "                    .is_some()", "--test pull a_document_pull_follows"),
+ ("a pull answered from another text's check", "src/lsp.rs", "                    .is_some_and(|r| r.contents == contents)", "                    .is_some()", "--test pull a_pull_is_answered_from"),
  ("a pull never unchanged", "src/lsp.rs", "                    let report = if previous.as_ref() == Some(&result) {", "                    let report = if false {", "--test pull a_document_pull_follows"),
  ("a workspace pull never held", "src/lsp.rs", "                    if !previous.is_empty() && items.iter().all(|i| i[\"kind\"] == \"unchanged\") {", "                    if false {", "--test pull a_workspace_pull_with_nothing_new"),
  ("files a workspace pull no longer reports not cleared", "src/lsp.rs", "                    for uri in previous.keys() {\n                        files.entry(uri.clone()).or_default();\n                    }", "", "--test pull a_workspace_pull_has_every_file"),

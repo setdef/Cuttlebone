@@ -72,7 +72,7 @@ fn scaled(base: Duration, scale: Option<f64>) -> Duration {
 /// `cargo test`, the fastest of the runs measured there (docs/history/
 /// MILESTONE-14.md). The limits as written are for it.
 const REFERENCE_BASELINE: Duration = Duration::from_millis(REFERENCE_BASELINE_MS);
-const REFERENCE_BASELINE_MS: u64 = 133;
+const REFERENCE_BASELINE_MS: u64 = 95;
 
 /// How many times the baseline runs: the fastest counts, as the one the
 /// least disturbed by anything else.
@@ -151,7 +151,14 @@ fn strict_limits_scale_by_the_baseline() {
 /// the limits are exactly as written, however loaded the machine is.
 #[test]
 fn limits_are_as_written_when_strict() {
-    if std::env::var_os(STRICT_VARIABLE).is_some() && std::env::var_os(SCALE_VARIABLE).is_none() {
+    if let (Some(_), Ok(scale)) = (
+        std::env::var_os(STRICT_VARIABLE),
+        std::env::var(SCALE_VARIABLE),
+    ) {
+        let scale: f64 = scale.parse().unwrap();
+
+        assert_eq!(limit(LIMIT), LIMIT.mul_f64(scale));
+    } else if std::env::var_os(STRICT_VARIABLE).is_some() {
         assert_eq!(limit(LIMIT), LIMIT);
         assert_eq!(limit(BURST_LIMIT), BURST_LIMIT);
     } else {

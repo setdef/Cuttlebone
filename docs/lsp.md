@@ -644,8 +644,9 @@ implementation. Complete or none, as for implementations.
 `fromRanges` the calls in the method's file. Operators (`+`) are calls
 too. A method with no body (a trait's required method) calls nothing:
 `[]`. It checks the method's file, as definition does, and answers from
-a repaired copy or the last good check as definition does, when the
-method itself is unchanged.
+the last good check when the method itself is unchanged since, but never
+from a repaired copy: a blank line in the method may have a call, even
+after its name (the edit-replay corpus found this: tests/replay.rs).
 
 ## Type hierarchy
 
@@ -1571,7 +1572,8 @@ two other checks, in this order:
 
 | Request | Answers from |
 |---|---|
-| hover, definition, declaration, type definition, document highlight, signature help, inlay hints, preparing a call or type hierarchy, outgoing calls | the documents as they are, or else a repaired copy, or else the last good check (`stale`) |
+| hover, definition, declaration, type definition, document highlight, signature help, inlay hints, preparing a call or type hierarchy | the documents as they are, or else a repaired copy, or else the last good check (`stale`) |
+| outgoing calls | the documents as they are, or else the last good check (`stale`): every call in the method must be there |
 | completion | the documents as they are, or else a repaired copy: its items are inserted into the code, so never stale. Names only from a copy whose blank lines are in method bodies ([Completion](#in-code-being-edited)) |
 | document symbols | the text as it is, or else a copy with the lines in the way blank, from the syntax alone ([`textDocument/documentSymbol`](#textdocumentdocumentsymbol)) |
 | references, implementations, incoming calls, supertypes and subtypes, file renames | the documents as they are only, with no error in a declaration (but references, [Errors in declarations](#errors-in-declarations)): a rename relies on them, and a blank line (or an error) may hide a use or an `impl` |

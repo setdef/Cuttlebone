@@ -279,8 +279,12 @@ fn allows(question: Question, source: Source) -> bool {
     match source {
         Source::Fresh | Source::Guarded => true,
         // Only what's blank changed, but references (and the other
-        // questions about the whole project) must find every use.
-        Source::Repaired => !question.whole_project(),
+        // questions about the whole project) must find every use, and
+        // outgoing calls every call in the method: a blank line may have
+        // one, even after the position (the method's name).
+        Source::Repaired => {
+            !question.whole_project() && !matches!(question, Question::OutgoingCalls)
+        }
         Source::Stale => matches!(
             question,
             Question::Type
@@ -1324,18 +1328,15 @@ fn item(scope: &Scope, symbol: SymbolId) -> Option<Item> {
     };
     let (file, location) = scope.declaration(symbol)?;
     let module = scope.checked.modules[*scope.checked.files.get(&file)?].module_id;
-    let parsed = scope.outline(&file)?;
-    let (text, outline) = &*parsed;
-    let start = Lines::new(text).offset(location.line_start, location.column_start)?;
-    let (d, parents) = outline.named_at(start)?;
+    let text = scope.file(&file);
+    let start = text.offset(location.line_start, location.column_start);
+    let (whole, parents) = text.declarations()?.get(&start)?;
     let mut detail = module.name(db).to_string();
 
     for p in parents {
         detail.push('.');
-        detail.push_str(p.owner());
+        detail.push_str(p);
     }
-
-    let positions = Positions::new(text, scope.encoding);
 
     Some(Item {
         name,
@@ -1343,12 +1344,12 @@ fn item(scope: &Scope, symbol: SymbolId) -> Option<Item> {
         detail,
         place: Place {
             file: file.clone(),
-            range: Range {
-                start: positions.at(d.range.start),
-                end: positions.at(d.range.end),
-            },
+            range: text.range(whole.clone(), scope.encoding),
         },
-        selection: scope.place(&file, location),
+        selection: Place {
+            file: file.clone(),
+            range: text.location(&location, scope.encoding),
+        },
     })
 }
 
@@ -2715,25 +2716,114 @@ struct Scope<'a, 'db> {
     at: HirPosition,
     target: &'a Target,
     encoding: Encoding,
-    /// Each file's text and outline, read once for the hierarchies' items
-    /// (`Scope::outline`).
+    /// Other files' texts, read once for an answer (`Scope::file`).
     outlines: &'a Outlines,
 }
 
-/// Files' texts and outlines, by path: `None` for one that doesn't parse.
-type Outlines = RefCell<HashMap<PathBuf, Option<Rc<(String, syntax::Outline)>>>>;
+/// Files' texts and what's read from them, by path (`FileText`).
+type Outlines = RefCell<HashMap<PathBuf, Rc<FileText>>>;
+
+/// A checked file's text, with where its lines start, and its
+/// declarations, read once for an answer with many places in it: the
+/// hierarchies' items, implementations, references.
+struct FileText {
+    text: String,
+    /// Where each of the compiler's lines starts (after each `\n`).
+    hir: Vec<usize>,
+    /// Where each of LSP's lines starts (`position::line_starts`).
+    lsp: Vec<usize>,
+    /// Each declaration, by where its name starts (`Outline::named_at`):
+    /// the whole declaration, and the names of what it's in
+    /// (`Declaration::owner`), outermost first. `None` for text that
+    /// doesn't parse.
+    declarations: OnceCell<Option<Declarations>>,
+}
+
+/// A file's declarations, by where each name starts (`FileText`).
+type Declarations = HashMap<usize, (std::ops::Range<usize>, Vec<String>)>;
+
+impl FileText {
+    fn new(text: String) -> FileText {
+        FileText {
+            hir: std::iter::once(0)
+                .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+                .collect(),
+            lsp: crate::position::line_starts(&text),
+            text,
+            declarations: OnceCell::new(),
+        }
+    }
+
+    /// The byte offset of a compiler line and column, as `Lines::offset`
+    /// has it, or else the end of the text.
+    fn offset(&self, line: u32, column: u32) -> usize {
+        let Some(start) = self.hir.get(line.saturating_sub(1) as usize) else {
+            return self.text.len();
+        };
+        let rest = &self.text[*start..];
+        let rest = &rest[..rest.find('\n').unwrap_or(rest.len())];
+        let count = column.saturating_sub(1) as usize;
+        let width: usize = if rest.is_ascii() {
+            count.min(rest.len())
+        } else {
+            use unicode_segmentation::UnicodeSegmentation;
+
+            rest.graphemes(true).take(count).map(str::len).sum()
+        };
+
+        start + width
+    }
+
+    /// A range of bytes as positions in `encoding`.
+    fn range(&self, bytes: std::ops::Range<usize>, encoding: Encoding) -> Range {
+        let positions = Positions::with_starts(&self.text, &self.lsp, encoding);
+
+        Range {
+            start: positions.at(bytes.start),
+            end: positions.at(bytes.end),
+        }
+    }
+
+    /// A compiler location as positions, as `range` converts one.
+    fn location(&self, location: &Location, encoding: Encoding) -> Range {
+        self.range(
+            self.offset(location.line_start, location.column_start)
+                ..self.offset(location.line_end, location.column_end + 1),
+            encoding,
+        )
+    }
+
+    fn declarations(&self) -> Option<&Declarations> {
+        self.declarations
+            .get_or_init(|| {
+                let outline = syntax::parse(&self.text)?;
+                let mut out = HashMap::new();
+
+                for (d, parents) in outline.all() {
+                    if d.kind != syntax::Kind::Implementation {
+                        out.insert(
+                            d.name_range.start,
+                            (
+                                d.range.clone(),
+                                parents.iter().map(|p| p.owner().to_string()).collect(),
+                            ),
+                        );
+                    }
+                }
+
+                Some(out)
+            })
+            .as_ref()
+    }
+}
 
 impl Scope<'_, '_> {
-    /// A checked file's text and its outline (`syntax::parse`), read once.
-    fn outline(&self, file: &Path) -> Option<Rc<(String, syntax::Outline)>> {
+    /// A checked file's text, and what's read from it, once per answer.
+    fn file(&self, file: &Path) -> Rc<FileText> {
         self.outlines
             .borrow_mut()
             .entry(file.to_path_buf())
-            .or_insert_with(|| {
-                let text = self.checked.text(file);
-
-                syntax::parse(&text).map(|o| Rc::new((text.to_string(), o)))
-            })
+            .or_insert_with(|| Rc::new(FileText::new(self.checked.text(file))))
             .clone()
     }
 
@@ -2759,11 +2849,9 @@ impl Scope<'_, '_> {
             };
         }
 
-        let text = self.checked.text(file);
-
         Place {
             file: file.to_path_buf(),
-            range: range(&Lines::with_encoding(&text, self.encoding), &location),
+            range: self.file(file).location(&location, self.encoding),
         }
     }
 

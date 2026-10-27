@@ -15,6 +15,32 @@ selection ranges, imports rewritten when files move, pull diagnostics, and
 latency limits scaled by each CI runner's measured speed.
 [Report](docs/history/MILESTONE-14.md).
 
+- **`textDocument/implementation`**: a trait's implementing types, and a
+  trait's method's implementations (required, or a default redefined),
+  from the type database, across the project, its dependencies and std.
+- **`textDocument/declaration`**: a type's method that implements a
+  trait's is declared by the trait's method; anything else as definition.
+- **Call hierarchy** (`prepareCallHierarchy`, `incomingCalls`,
+  `outgoingCalls`) and **type hierarchy** (`prepareTypeHierarchy`,
+  `supertypes`, `subtypes`: traits a trait requires, traits a type
+  implements), by the compiler's ids.
+- **`textDocument/selectionRange`**: tokens, chains, elements,
+  statements, brackets and declarations, from the syntax, also in code
+  that doesn't parse.
+- **`workspace/willRenameFiles`**: the edits to every import of a module
+  (or a directory's modules) that moves, and to its uses by its own name,
+  for clients that rename files.
+- **Pull diagnostics** (`textDocument/diagnostic`, `workspace/diagnostic`)
+  for clients that pull them, which then get no pushes: the same as
+  `inko check`, for files open or not, with result ids and a long poll.
+- **Fixed:** nothing that's in a release; the call hierarchy's first
+  version panicked at an external function (`fn extern`), found by the
+  std oracle before any release.
+- The strict latency limits are scaled by each machine's measured
+  baseline (scripts/latency.sh), and the latency job is a workflow of its
+  own (`.github/workflows/latency.yml`). No patch change, no new
+  extension.
+
 ## 0.13.0
 
 Milestone 13: answers after an edit is undone, folding ranges, formatting,
