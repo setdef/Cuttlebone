@@ -1246,6 +1246,13 @@ mod tests {
     }
 
     #[test]
+    fn one_line_folds_nothing() {
+        let text = "# One.\nlet A = [\n  1]\nlet B = 2\n";
+
+        assert_eq!(fold_lines(text), []);
+    }
+
+    #[test]
     fn comment_lines_in_a_body_fold() {
         let text = "type A {\n  # One.\n  #\n  # Two.\n  let @a: Int\n}\n";
 

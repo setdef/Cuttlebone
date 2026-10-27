@@ -141,7 +141,7 @@ import std.fmt (Format)
 type async Main {
 fn async main {
       let s = 'héllo 中文😀'   +    'x'
-  Stdout.new.print(s)
+  Stdout.new.print(s + 'é'  )
   }
 }
 ";
@@ -266,7 +266,7 @@ fn formatting_over_lsp_gives_inko_fmts_text_and_writes_nothing() {
 fn formatting_text_that_doesnt_parse_has_no_answer() {
     let (root, main) = project("broken", MESSY);
     let mut client = server(&root, false);
-    let broken = MESSY.replace("Stdout.new.print(s)", "Stdout.new.print(s");
+    let broken = MESSY.replace("Stdout.new.print(s + 'é'  )", "Stdout.new.print(s + 'é'");
 
     assert_eq!(inko_fmt(&broken), None);
     client.open(&main, &broken);

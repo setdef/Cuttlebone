@@ -467,10 +467,10 @@ M = [
  # Folding ranges and formatting (milestone 13).
  ("whitespace breaks comment lines", "src/syntax.rs", "            T::Whitespace => continue,\n", "", "--lib comment_lines_in_a_body"),
  ("a comment after code is a comment line", "src/syntax.rs", "        if token.kind == T::Comment && first {", "        if token.kind == T::Comment {", "--lib a_comment_after_code"),
- ("one comment line folds", "src/syntax.rs", "    (last > from).then_some(Fold {", "    (last >= from).then_some(Fold {", "--test folding blocks_comments"),
+ ("one comment line folds", "src/syntax.rs", "    (last > from).then_some(Fold {", "    (last >= from).then_some(Fold {", "--lib one_line_folds_nothing"),
  ("imports don't fold", "src/syntax.rs", "    text[start..end].contains('\\n').then_some(Fold {", "    false.then_some(Fold {", "--test folding blocks_comments"),
  ("any bracket closes a block", "src/syntax.rs", "open.iter().rposition(|(k, _, _)| *k == opening)", "open.len().checked_sub(1)", "--test folding code_that_doesnt_parse"),
- ("two-line blocks fold", "src/syntax.rs", "                    if l.line_start >= from + 2 {", "                    if l.line_start > from {", "--test folding blocks_comments"),
+ ("two-line blocks fold", "src/syntax.rs", "                    if l.line_start >= from + 2 {", "                    if l.line_start > from {", "--lib one_line_folds_nothing"),
  ("a block's closing line folds", "src/lsp.rs", "                        syntax::FoldKind::Block => (last.saturating_sub(1), None),", "                        syntax::FoldKind::Block => (last, None),", "--test folding blocks_comments"),
  ("folding kinds for every client", "src/lsp.rs", "(last, self.support.comment_folds.then_some(\"comment\"))", "(last, Some(\"comment\"))", "--test folding folds_have_kinds"),
  ("no folding range limit", "src/lsp.rs", "ranges.len() == self.support.folding_limit.unwrap_or(usize::MAX)", "ranges.len() == usize::MAX", "--test folding folds_have_kinds"),
@@ -610,7 +610,12 @@ def verdict_of(r, out):
 
 
 def run_sh(command):
-    r = subprocess.run(command, shell=True, cwd=ROOT, capture_output=True, text=True, timeout=TIMEOUT)
+    # A command may run every test (`--control`), which takes longer than
+    # one mutation's tests.
+    try:
+        r = subprocess.run(command, shell=True, cwd=ROOT, capture_output=True, text=True, timeout=3 * TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "TIMED OUT after %ds" % (3 * TIMEOUT)
     out = r.stdout + r.stderr
     reason = next((l.strip() for l in out.splitlines() if l.startswith("error") or l.startswith("the ") or l.startswith("patches/")), "")
     return "caught by %s: %s" % (command, reason) if r.returncode != 0 else "NOT CAUGHT"
