@@ -1321,7 +1321,12 @@ two other checks, in this order:
    bodies with no error in a declaration (a query's, or a diagnostics
    check's), and every edit since. The
    position is mapped back through the edits, and every range in the
-   answer forward. Answers are `stale`.
+   answer forward. Answers are `stale`. A document closed since has its file's text
+   from then on: the edits end at the text on disk when it was closed,
+   and a change on disk after that (a `git checkout`, a refactoring with
+   no editor open), or opening it again with other text, is one more
+   change. Edits are never paired with a text they don't end at
+   (tests/undo.rs).
 
 | Request | Answers from |
 |---|---|

@@ -6,7 +6,7 @@
 //! imports, with the documents' text exactly as it is: a new check, or one
 //! a `Cache` kept from an earlier question about the same text.
 use crate::check::{Fingerprint, Reported, Target, diagnose, project_root, run, run_after_errors};
-use crate::edits::{Changes, Fallback};
+use crate::edits::{Changes, Fallback, exact};
 use crate::position::{
     Encoding, HirPosition, Lines, Position, Positions, byte_offset, contains, line_end, position_at,
 };
@@ -2662,16 +2662,17 @@ fn declaration_changes(now: &Request, fallback: &Fallback) -> Option<Vec<Cause>>
     );
     let mut out = Vec::new();
 
-    for (path, changes) in &fallback.changes {
-        let Ok(path) = canonical(path) else {
+    for (raw, changes) in &fallback.changes {
+        let Ok(path) = canonical(raw) else {
             continue;
         };
         let text =
             |map: &HashMap<PathBuf, String>| map.get(&path).cloned().or_else(|| read(&path).ok());
         let (before, after) = (text(&old)?, text(&new)?);
         let outline = Outline::parse(&before)?;
+        let end = fallback.ends.get(raw).map(String::as_str);
 
-        for change in changes.changed() {
+        for change in exact(changes, end, &before, &after).changed() {
             // Its range is in the text then, not the text checked.
             let e = Effect {
                 old: None,
@@ -3246,6 +3247,7 @@ fn repaired_copy(
     let mut out = Fallback {
         contents: docs.clone(),
         changes: HashMap::new(),
+        ends: HashMap::new(),
     };
 
     for (path, text) in &docs {
@@ -3372,7 +3374,7 @@ fn changed_lines(
             .map(|(_, v)| v)
     }
 
-    let (Some(changes), Some(old)) = (
+    let (Some(recorded), Some(old)) = (
         find(&fallback.changes, path),
         find(&fallback.contents, path),
     ) else {
@@ -3384,6 +3386,8 @@ fn changed_lines(
     else {
         return (changed, declarations);
     };
+    let end = find(&fallback.ends, path).map(String::as_str);
+    let changes = exact(recorded, end, old, &new);
     let line = |byte: usize| new[..byte.min(new.len())].matches('\n').count();
     let outline = Outline::parse(old);
 
@@ -3457,27 +3461,26 @@ fn from_older(
         |map: &HashMap<PathBuf, String>, p: &Path| map.get(p).cloned().or_else(|| read(p).ok());
     let mut versions: HashMap<PathBuf, Version> = HashMap::new();
 
-    for (path, changes) in &fallback.changes {
-        let Ok(path) = canonical(path) else {
+    for (raw, changes) in &fallback.changes {
+        let Ok(path) = canonical(raw) else {
             continue;
         };
+
+        let (Some(old), Some(new)) = (text(&contents, &path), text(&current, &path)) else {
+            return (nothing(), false);
+        };
+        let changes = exact(
+            changes,
+            fallback.ends.get(raw).map(String::as_str),
+            &old,
+            &new,
+        );
 
         if changes.is_none() {
             continue;
         }
 
-        let (Some(old), Some(new)) = (text(&contents, &path), text(&current, &path)) else {
-            return (nothing(), false);
-        };
-
-        versions.insert(
-            path,
-            Version {
-                old,
-                new,
-                changes: changes.clone(),
-            },
-        );
+        versions.insert(path, Version { old, new, changes });
     }
 
     let Some(old) = text(&contents, &file) else {

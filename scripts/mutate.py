@@ -500,6 +500,11 @@ M = [
  ("code actions not advertised", "src/lsp.rs", "                code_action_provider: self.support.code_actions.then(|| {", "                code_action_provider: false.then(|| {", "--test lsp initialize_advertises"),
  ("ascii matching keeps case", "src/index.rs", "    if n.len() >= q.len() && n[..q.len()].eq_ignore_ascii_case(q) {", "    if n.starts_with(q) {", "--lib ascii_names_match"),
  ("ascii subsequences keep case", "src/index.rs", "        let (at, _) = chars.find(|(_, d)| d.eq_ignore_ascii_case(c))?;", "        let (at, _) = chars.find(|(_, d)| *d == c)?;", "--lib ascii_names_match"),
+ # Changes of a file closed and changed on disk (milestone 13).
+ ("changes paired with other text", "src/edits.rs", "    if out.old_len != old.len() || out.new_len != new.len() {\n        return Changes::between(old, new);\n    }\n", "", "--lib exact_changes"),
+ ("changes don't go on from where they end", "src/edits.rs", "        && end != new\n    {\n        out.replace_text(end, new);", "        && end != new\n        && false\n    {\n        out.replace_text(end, new);", "--lib exact_changes"),
+ ("closing records no end", "src/edits.rs", "            if v.changes.contains_key(file) {\n                v.ends", "            if false {\n                v.ends", "--lib a_closed_file"),
+ ("opening ignores where changes ended", "src/edits.rs", "            if let Some(end) = v.ends.remove(file) {", "            if let Some(end) = None::<String> {", "--lib a_closed_file"),
  # After an undo (milestone 13).
  ("an undo answered from a check of other text", "src/query.rs", "list.iter().position(|k| k.target == *target)", "list.iter().position(|k| k.target.root == target.root && k.target.file == target.file && k.target.tests == target.tests)", "--test undo undone_incremental"),
  ("an undo answered from a check of a module since restored", "src/query.rs", "            if entry.fingerprint.current() {", "            if true {", "--test undo a_module_changed"),

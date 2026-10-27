@@ -210,6 +210,35 @@ pub struct Fallback {
     pub contents: HashMap<PathBuf, String>,
     /// How each file changed since. Files without an entry didn't.
     pub changes: HashMap<PathBuf, Changes>,
+    /// For each file closed since, the text its `changes` end at: its
+    /// file's text on disk when it was closed. The file may have changed
+    /// on disk since, which no edit records (`exact`).
+    #[serde(default)]
+    pub ends: HashMap<PathBuf, String>,
+}
+
+/// How a file changed from its text then (`old`) to its text now (`new`):
+/// the `changes` recorded, which end at the document's text, or for a file
+/// closed since, at its text on disk then (`end`), followed by how that
+/// changed on disk since. Changes recorded against another text than
+/// `old` and `new` (which nothing should leave, but a file can change on
+/// disk at any time) are never paired with them: then it's the difference
+/// between the two, one change.
+pub fn exact(changes: &Changes, end: Option<&str>, old: &str, new: &str) -> Changes {
+    let mut out = changes.clone();
+
+    if let Some(end) = end
+        && out.new_len == end.len()
+        && end != new
+    {
+        out.replace_text(end, new);
+    }
+
+    if out.old_len != old.len() || out.new_len != new.len() {
+        return Changes::between(old, new);
+    }
+
+    out
 }
 
 /// The most versions of the documents `Snapshots` keeps.
@@ -248,6 +277,7 @@ impl Snapshots {
             Fallback {
                 contents: contents.clone(),
                 changes: HashMap::new(),
+                ends: HashMap::new(),
             },
         );
     }
@@ -283,17 +313,39 @@ impl Snapshots {
     }
 
     /// A document opened with `text`, while the file on disk has `disk`.
-    /// A version that read the file from disk sees that as an edit.
+    /// A version that read the file from disk sees that as an edit. One
+    /// whose changes of it end where it was closed sees an edit from that
+    /// text, whatever happened to the file since.
     pub fn opened(&mut self, file: &Path, disk: Option<&str>, text: &str) {
-        let Some(disk) = disk else {
-            return;
-        };
-
         for v in self.all() {
-            if !v.contents.contains_key(file) {
+            if let Some(end) = v.ends.remove(file) {
+                v.changes
+                    .entry(file.to_path_buf())
+                    .or_insert_with(|| Changes::none(end.len()))
+                    .replace_text(&end, text);
+            } else if let Some(disk) = disk
+                && !v.contents.contains_key(file)
+            {
                 v.contents.insert(file.to_path_buf(), disk.to_string());
                 v.changes
                     .insert(file.to_path_buf(), Changes::between(disk, text));
+            }
+        }
+    }
+
+    /// A document closed: its text was `text`, and its file now has `disk`
+    /// (`None` if it's gone), which replaces it. Every version's changes of
+    /// it end at that text from now on, and the file can change on disk
+    /// after (`exact`).
+    pub fn closed(&mut self, file: &Path, text: &str, disk: Option<&str>) {
+        if let Some(disk) = disk {
+            self.replaced(file, text, disk);
+        }
+
+        for v in self.all() {
+            if v.changes.contains_key(file) {
+                v.ends
+                    .insert(file.to_path_buf(), disk.unwrap_or(text).to_string());
             }
         }
     }
@@ -388,6 +440,52 @@ mod tests {
     fn apply(text: &mut String, changes: &mut Changes, start: usize, end: usize, with: &str) {
         text.replace_range(start..end, with);
         changes.replace(start, end, with.len());
+    }
+
+    #[test]
+    fn exact_changes_go_on_from_where_they_end() {
+        let mut changes = Changes::none(7);
+
+        // "a b c d" to "a B c d", where a file was closed; then "a B c d x"
+        // on disk. `c` is unchanged throughout, which the difference
+        // between the first and the last alone can't tell.
+        changes.replace(2, 3, 1);
+
+        let on = exact(&changes, Some("a B c d"), "a b c d", "a B c d x");
+
+        assert_eq!(on.new_offset(4), Some(4));
+        assert_eq!(on.new_offset(2), None);
+
+        // Recorded against other text: the difference alone.
+        let other = exact(&changes, None, "a b c d", "a b c d e f");
+
+        assert_eq!(other, Changes::between("a b c d", "a b c d e f"));
+    }
+
+    #[test]
+    fn a_closed_file_opened_again_goes_on_from_its_text_then() {
+        let file = Path::new("/p/src/lib.inko");
+        let mut snapshots = Snapshots::default();
+
+        snapshots.sent(
+            1,
+            &HashMap::from([(file.to_path_buf(), "a b c".to_string())]),
+        );
+        snapshots.finished(1, &[file.to_path_buf()]);
+        snapshots.edited(file, "a b c", 2, 3, 1);
+        // Closed unsaved: the file still has "a b c". It changes on disk,
+        // and is opened with that text.
+        snapshots.closed(file, "a B c", Some("a b c"));
+        snapshots.opened(file, Some("zz a b c"), "zz a b c");
+
+        let fallback = snapshots.fallback(file, None).unwrap();
+        let changes = &fallback.changes[file];
+
+        assert!(fallback.ends.is_empty());
+        // `c` and `a` were never touched; `b` was edited and changed back.
+        assert_eq!(changes.new_offset(4), Some(7));
+        assert_eq!(changes.new_offset(0), Some(3));
+        assert_eq!(changes.new_offset(2), None);
     }
 
     #[test]

@@ -403,6 +403,7 @@ fn what_changed_in_declarations_since_the_last_good_check_counts_too() {
     let fallback = cuttlebone::edits::Fallback {
         contents: [(p.path(MAIN), old.clone())].into_iter().collect(),
         changes: [(p.path(MAIN), changes)].into_iter().collect(),
+        ends: Default::default(),
     };
     let request = p.request(MAIN, Some(&new), "Point(x: x", 0);
     let ask = |fallback| {

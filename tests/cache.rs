@@ -403,6 +403,7 @@ fn repaired_and_stale_answers_come_from_kept_checks() {
     let fallback = Fallback {
         contents: HashMap::from([(main.clone(), MAIN.to_string())]),
         changes: HashMap::from([(main.clone(), Changes::between(MAIN, &broken))]),
+        ends: Default::default(),
     };
 
     for (repair, source) in [(true, Source::Repaired), (false, Source::Stale)] {
@@ -667,6 +668,7 @@ fn an_answer_with_no_result_is_cached_only_if_no_check_ran_for_it() {
     let fallback = Fallback {
         contents: HashMap::from([(main.clone(), MAIN.to_string())]),
         changes: HashMap::from([(main.clone(), Changes::between(MAIN, &text))]),
+        ends: Default::default(),
     };
 
     // A repaired copy (the open call's line blank), or the last good check.

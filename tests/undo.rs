@@ -184,6 +184,7 @@ fn answers(client: &mut Client, main: &Path, text: &str, utf8: bool) -> Vec<(Str
                     "result": result,
                     "status": status["status"],
                     "repaired": status.get("repaired"),
+                    "reason": status.pointer("/reason/code"),
                 }),
             ));
         }
@@ -466,4 +467,126 @@ fn undone_changes_in_one_notification_answer_for_the_text_as_it_is() {
 fn a_document_closed_unsaved_and_opened_again_answers_for_the_text_as_it_is() {
     undo("reopened", Change::Reopened, Save::No, false);
     undo("reopened-saved", Change::Reopened, Save::Between, true);
+}
+
+/// A module edited while open, closed without saving, and then changed on
+/// disk (or opened again with other text), while the last good check's
+/// documents still have its text then: answers from that check must map
+/// through the change on disk too, never pair the edits recorded until
+/// the close with another text. Parakeet's sweep found 0.12.0's checks
+/// panicking in `units::widen` here.
+#[test]
+fn a_module_closed_and_changed_on_disk_is_mapped_from_its_text_on_disk() {
+    for reopened in [false, true] {
+        for shape in ["longer", "shorter", "reordered"] {
+            let shorter = shape;
+            let name = format!("closed-{}-{}", reopened, shorter);
+            let name = name.as_str();
+            let root = project(name);
+            let main = root.join("src/main.inko");
+            let lib = root.join("src/lib.inko");
+            // Without repaired copies, answers come from the last good check,
+            // which maps every changed file's text, lib's too (a fault only
+            // tests have).
+            let mut client = Client::initialized_with(
+                Launch {
+                    env: vec![("CUTTLEBONE_FAULT", "norepair:.inko".to_string())],
+                    unset: vec![NO_CACHE_VARIABLE],
+                    ..Launch::default()
+                },
+                &root,
+                json!({ "statusNotifications": true, "diagnostics": false }),
+                json!({ "general": { "positionEncodings": ["utf-16"] } }),
+            );
+            let mut oracle = Oracle {
+                root: root.clone(),
+                utf8: false,
+                answers: HashMap::new(),
+            };
+
+            client.open(&main, MAIN);
+            client.open(&lib, LIB);
+            // A good check of both, kept as the last good one.
+            answers(&mut client, &main, MAIN, false);
+
+            // lib edited, then closed without saving.
+            client.change(
+                &lib,
+                2,
+                json!([{ "text": LIB.replace("value + 1", "value + 2") }]),
+            );
+            answers(&mut client, &main, MAIN, false);
+            client.close(&lib);
+
+            // lib on disk gains a function at its start, so every offset of
+            // its text then moves, or gets shorter than where the edits
+            // recorded until the close were.
+            // Or keeps its length, its two functions swapped, which only
+            // where the edits ended can tell.
+            let (helper, other) = LIB.split_at(LIB.find("fn pub other").unwrap());
+            let disk = match shape {
+                "shorter" => "fn pub helper(value: Int) -> Int {\n  0\n}\n".to_string(),
+                "reordered" => format!("{}\n{}", other, helper.trim_end_matches('\n')) + "\n",
+                _ => format!("fn pub first -> Int {{\n  0\n}}\n\n{}", LIB),
+            };
+
+            std::fs::write(&lib, &disk).unwrap();
+
+            if reopened {
+                client.open(&lib, &disk);
+            }
+
+            // main stops parsing: answers come from repaired copies or the
+            // last good check, which map lib's changes.
+            // main stops parsing, or has an error in a declaration: answers
+            // come from the last good check, or past the error, and either
+            // maps lib's changes.
+            for (version, broken) in [
+                MAIN.replace("fn second -> Int {", "fn second -> Int {\n  if true {"),
+                MAIN.replace("fn first -> Int {", "fn first -> Nope {"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                client.change(&main, version as i32 + 2, json!([{ "text": broken }]));
+
+                for (question, got) in answers(&mut client, &main, &broken, false) {
+                    assert!(
+                        !matches!(
+                            got["reason"].as_str(),
+                            Some("checkCrashed" | "compilerPanic")
+                        ),
+                        "{}: {}",
+                        question,
+                        got
+                    );
+
+                    // A definition in lib is at `helper` in lib as it is.
+                    for place in got["result"].as_array().into_iter().flatten() {
+                        if place["uri"] == json!(uri(&lib)) && question.contains("definition") {
+                            let r = &place["range"];
+                            let line = disk
+                                .lines()
+                                .nth(r["start"]["line"].as_u64().unwrap() as usize)
+                                .unwrap();
+                            let (from, to) = (
+                                r["start"]["character"].as_u64().unwrap() as usize,
+                                r["end"]["character"].as_u64().unwrap() as usize,
+                            );
+
+                            assert_eq!(&line[from..to], "helper", "{}: {}", question, got);
+                        }
+                    }
+                }
+            }
+
+            let stderr = client.stderr.lock().unwrap().clone();
+
+            assert!(!stderr.contains("panicked"), "{}: {}", name, stderr);
+
+            // And once main parses again, every answer is a new server's.
+            client.change(&main, 4, json!([{ "text": MAIN }]));
+            compare(&mut client, &mut oracle, &main, MAIN, name);
+        }
+    }
 }

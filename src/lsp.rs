@@ -785,9 +785,7 @@ impl Server {
                     let disk = std::fs::read_to_string(&path).ok();
                     let unsaved = disk.as_ref() != Some(&doc.text);
 
-                    if let Some(disk) = &disk {
-                        self.snapshots.replaced(&path, &doc.text, disk);
-                    }
+                    self.snapshots.closed(&path, &doc.text, disk.as_deref());
 
                     self.edited(connection, &path, unsaved, true);
                 }
