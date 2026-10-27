@@ -20,7 +20,10 @@ trap 'rm -rf "$fresh"' EXIT
 
 git -C "$dir" archive "$version" | tar -x -C "$fresh"
 
-if ! (cd "$fresh" && git apply --check "$patch"); then
+# Without the repository's environment: a hook in a linked worktree has
+# GIT_DIR set, and `git apply` would then check against the repository
+# instead of the fresh copy.
+if ! (cd "$fresh" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git apply --check "$patch"); then
     echo "patches/upstream.patch doesn't apply to a fresh $version" >&2
     exit 1
 fi

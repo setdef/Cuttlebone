@@ -205,7 +205,7 @@ M = [
  # The baseline: strict limits scale by the machine's measured speed,
  # and a slower Cuttlebone still fails them (scripts/latency.sh).
  ("strict limits not scaled by the baseline", "tests/latency.rs", "    base.mul_f64(scale.unwrap_or(1.0))", "    base.mul_f64(scale.map_or(1.0, |_| 1.0))", "--test latency strict_limits_scale"),
- ("a deliberate slowdown under the scaled limits", "src/query.rs", ") -> Result<Option<Vec<Place>>, Unavailable> {\n    {\n        let Some(reference) = symbol_at(", ") -> Result<Option<Vec<Place>>, Unavailable> {\n    std::thread::sleep(Duration::from_millis(1000));\n    {\n        let Some(reference) = symbol_at(", "sh:scripts/latency.sh references_across_std"),
+ ("a deliberate slowdown under the scaled limits", "src/query.rs", ") -> Result<Option<Vec<Place>>, Unavailable> {\n    {\n        let Some(reference) = symbol_at(", ") -> Result<Option<Vec<Place>>, Unavailable> {\n    std::thread::sleep(Duration::from_millis(3000));\n    {\n        let Some(reference) = symbol_at(", "sh:scripts/latency.sh references_across_std"),
  ("published checksums not checked", "scripts/dist-check-release.py", "expect(sha256 == build[\"sha256\"]", "expect(True", "sh:scripts/check-dist.sh"),
  # Diagnostics (milestone 4).
  ("diagnostics skip MIR", "src/check.rs", "            inspect(db, hir);\n            true", "            inspect(db, hir);\n            false", "--test diagnostics every_fixture"),
