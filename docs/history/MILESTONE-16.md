@@ -1,5 +1,10 @@
 # Milestone 16: what a client that relies on Cuttlebone lost
 
+**Done, but not released yet.** Everything for 0.16.0 is committed and
+the release workflow's dry run passed on f7c64a4 (section 9); pushing the
+tag `v0.16.0` was refused by the session's permissions, and is left to
+you.
+
 Parakeet, slimmed to rely on Cuttlebone (its `slimming-2` branch,
 docs/history/SESSION-slimming-2.md), accepted regressions wherever
 Cuttlebone had no answer. This milestone answers them, by the compiler's
@@ -366,4 +371,18 @@ a runner (it was cancelled after 28 minutes, with no steps); it was run
 again, outside this session, and 0.15.0 was published before 0.16.0, so
 the index lists both in order.
 
-The dry run and the release follow below.
+**The dry run** on this report's commit, f7c64a4 (run 40767709553,
+workflow_dispatch, 33 minutes), passed every job: the release checks,
+the latency job (the limits as written, scaled by its runner's
+baseline), all 16 mutation shards and the dist shard (each control
+passing, every mutation caught), and the four builds.
+
+**Not released.** Pushing the tag `v0.16.0` (on f7c64a4) was refused by
+this session's permission system as creating a public surface, so
+nothing is published and nothing was checked from outside. To release:
+
+    git tag -a v0.16.0 -m "Cuttlebone 0.16.0" f7c64a4
+    git push origin v0.16.0
+
+The workflow then runs the release tier again, publishes, and checks the
+published release and the index on four runners.
