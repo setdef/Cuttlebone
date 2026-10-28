@@ -1087,10 +1087,14 @@ Quick fixes for the [diagnostics](#diagnostics) in the requested range,
 chosen by each diagnostic's ID and what its message names. **Every fix is
 checked before it's offered:** its edits are applied to a copy of the
 documents, which is checked in full, as `inko check` checks (to MIR, as
-diagnostics are), and the fix is given only if that reports no error at
-all, and not the diagnostic it fixes. So a file with another error gets
-no fixes until that's fixed too. Nothing is written: the client applies
-the edit.
+diagnostics are), and the fix is given only if that reports fewer of the
+diagnostic it fixes, and no error the documents didn't have: each error
+after it, counted by file, ID and message (positions move with the
+edits), is at most as many as before, less the one fixed. So a file with
+other errors, as one being typed usually has, still gets the fixes that
+remove theirs and break nothing else; a fix that would add an error, or
+leave its diagnostic, isn't offered. Nothing is written: the client
+applies the edit.
 
 | ID | Message | Fix (`title`) |
 |---|---|---|
@@ -1115,9 +1119,12 @@ the edit.
 
 - **Which diagnostics:** those the check of the documents as they are
   reports in the document, overlapping the range, whatever the client's
-  `context.diagnostics` says. The client's are read only for the names
-  to import (`invalid-symbol`), which the server's index of modules
-  offers. Each action's `diagnostics` is the one it fixes, as published.
+  `context.diagnostics` says. The names to import (`invalid-symbol`),
+  which the server's index of modules offers, are those the client's
+  say are undefined and every name in the requested range (from the
+  start of the word it starts in to the end of the one it ends in), so a
+  client that shows diagnostics of its own, and sends none, gets them
+  too. Each action's `diagnostics` is the one it fixes, as published.
 - **Only for clients that take literals:** the server advertises
   `codeActionProvider` only to a client with `codeActionLiteralSupport`,
   since it has no commands, and answers others `[]`. A request whose
@@ -1132,8 +1139,8 @@ the edit.
   request.
 
 The tests apply every fix offered to a copy of the project and run the
-installed `inko check` on it: no error, and not the diagnostic
-(tests/actions.rs).
+installed `inko check` on it: fewer of the diagnostic, and no error that
+`inko check` didn't report before (tests/actions.rs).
 
 ## `workspace/symbol`
 

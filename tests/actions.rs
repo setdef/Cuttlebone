@@ -1,8 +1,9 @@
 //! `textDocument/codeAction` (docs/lsp.md): quick fixes for diagnostics,
 //! chosen by their IDs, over LSP in both encodings. The oracle is the
 //! installed `inko check`, run on a copy of the project with each fix
-//! applied: every fix offered must leave no error, and not the diagnostic
-//! it fixes. Fixes that wouldn't aren't offered.
+//! applied: every fix offered must leave fewer of the diagnostic it fixes,
+//! and no error the project didn't have. Fixes that wouldn't aren't
+//! offered.
 use crate::common::client::{Client, uri};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -209,9 +210,33 @@ fn with_id<'a>(diagnostics: &'a [Value], id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no {} in {:?}", id, diagnostics))
 }
 
-/// Checks that every action fixes its diagnostic without an error, by the
-/// oracle, and returns their titles and the main file after each.
+/// Checks that every action fixes its diagnostic without adding an error,
+/// by the oracle: `inko check` on the project with it applied reports
+/// fewer of the diagnostic than on the project as it is, and each error
+/// (by file, ID and message) at most as often as before, less the one
+/// fixed. Returns their titles and the main file after each.
 fn fixed(project: &Project, actions: &Value, fixes: &Value, file: &str) -> Vec<(String, String)> {
+    let before = inko_check(&project.root);
+    let key = |d: &Value| {
+        (
+            d["file"]
+                .as_str()
+                .unwrap_or_default()
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .to_string(),
+            d["id"].as_str().unwrap_or_default().to_string(),
+            d["message"].as_str().unwrap_or_default().to_string(),
+        )
+    };
+    let count = |list: &[Value], k: &(String, String, String), errors: bool| {
+        list.iter()
+            .filter(|d| (!errors || d["level"] == "error") && key(d) == *k)
+            .count()
+    };
+    let is_fixed = |d: &Value| d["id"] == fixes["code"] && d["message"] == fixes["message"];
+
     actions
         .as_array()
         .unwrap()
@@ -223,19 +248,26 @@ fn fixed(project: &Project, actions: &Value, fixes: &Value, file: &str) -> Vec<(
             let after = project.checked(a);
 
             assert!(
-                after.iter().all(|d| d["level"] != "error"),
-                "{}: {:?}",
-                a["title"],
-                after
-            );
-            assert!(
-                !after
-                    .iter()
-                    .any(|d| d["id"] == fixes["code"] && d["message"] == fixes["message"]),
+                after.iter().filter(|d| is_fixed(d)).count()
+                    < before.iter().filter(|d| is_fixed(d)).count(),
                 "{} left {:?}",
                 a["title"],
                 after
             );
+
+            for e in after.iter().filter(|d| d["level"] == "error") {
+                let k = key(e);
+                let less = usize::from(is_fixed(e));
+
+                assert!(
+                    count(&after, &k, true) <= count(&before, &k, true).saturating_sub(less),
+                    "{} added {}: before {:?}, after {:?}",
+                    a["title"],
+                    e,
+                    before,
+                    after
+                );
+            }
 
             let text = project
                 .applied(a)
@@ -494,30 +526,163 @@ type async Main {
     }
 }
 
-/// "Every fix's result must type check": with another error in the file,
-/// a fix that leaves it isn't offered.
+/// A file with other errors still gets the fixes that remove their
+/// diagnostic and add no error: both undefined names are imported, each
+/// on its own, the other left undefined.
 #[test]
-fn no_fix_is_offered_when_an_error_would_be_left() {
-    let main = "type async Main {
+fn fixes_are_offered_in_a_file_with_other_errors() {
+    let main = "import std.stdio (Stderr)
+
+type async Main {
   fn async main {
     let _ = helper
+    let _ = Stdout.new
+    let _ = nope
+  }
+}
+";
+
+    for utf8 in [false, true] {
+        let mut project = Project::new(
+            "others",
+            utf8,
+            &[("src/main.inko", main), ("src/lib.inko", LIB)],
+            json!({}),
+        );
+        let published = project.open("src/main.inko");
+        let find = |message: &str| {
+            published
+                .iter()
+                .find(|d| d["message"] == message)
+                .unwrap_or_else(|| panic!("no {:?} in {:?}", message, published))
+                .clone()
+        };
+
+        for (message, title, before, after) in [
+            (
+                "the symbol 'helper' is undefined",
+                "Import helper from lib",
+                "import std.stdio (Stderr)",
+                "import lib (helper)\nimport std.stdio (Stderr)",
+            ),
+            (
+                "the symbol 'Stdout' is undefined",
+                "Import Stdout from std.stdio",
+                "import std.stdio (Stderr)",
+                "import std.stdio (Stderr, Stdout)",
+            ),
+        ] {
+            let d = find(message);
+            let (id, actions) =
+                project.actions("src/main.inko", std::slice::from_ref(&d), json!({}));
+
+            assert_eq!(
+                fixed(&project, &actions, &d, "src/main.inko"),
+                [(title.to_string(), main.replace(before, after))],
+                "UTF-8: {}",
+                utf8
+            );
+            assert_eq!(client_status(&project, id), "fresh");
+        }
+    }
+}
+
+/// A fix that would add an error isn't offered, though the file has
+/// another: `other`'s `helper` is a `String`, where an `Int` is needed.
+#[test]
+fn no_fix_is_offered_that_adds_an_error() {
+    let main = "type async Main {
+  fn async main {
+    let a: Int = helper
+    let _ = a
     let _ = nope
   }
 }
 ";
     let mut project = Project::new(
-        "left",
+        "adds",
+        false,
+        &[("src/main.inko", main), ("src/other.inko", OTHER)],
+        json!({}),
+    );
+    let published = project.open("src/main.inko");
+    let undefined = published
+        .iter()
+        .find(|d| d["message"] == "the symbol 'helper' is undefined")
+        .unwrap()
+        .clone();
+    let (id, actions) =
+        project.actions("src/main.inko", std::slice::from_ref(&undefined), json!({}));
+
+    assert_eq!(actions, json!([]));
+    assert_eq!(client_status(&project, id), "fresh");
+
+    // With `lib`'s too, only that one.
+    let mut project = Project::new(
+        "adds-lib",
+        false,
+        &[
+            ("src/main.inko", main),
+            ("src/other.inko", OTHER),
+            ("src/lib.inko", LIB),
+        ],
+        json!({}),
+    );
+    let published = project.open("src/main.inko");
+    let undefined = published
+        .iter()
+        .find(|d| d["message"] == "the symbol 'helper' is undefined")
+        .unwrap()
+        .clone();
+    let (_, actions) =
+        project.actions("src/main.inko", std::slice::from_ref(&undefined), json!({}));
+    let titles: Vec<String> = fixed(&project, &actions, &undefined, "src/main.inko")
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+
+    assert_eq!(titles, ["Import helper from lib"]);
+}
+
+/// A client that sends no diagnostics in the context (it has its own)
+/// still gets imports, for the names in the requested range.
+#[test]
+fn imports_are_offered_without_diagnostics_in_the_context() {
+    let main = "type async Main {
+  fn async main {
+    let _ = helper
+  }
+}
+";
+    let mut project = Project::new(
+        "nocontext",
         false,
         &[("src/main.inko", main), ("src/lib.inko", LIB)],
         json!({}),
     );
     let published = project.open("src/main.inko");
-    let undefined = with_id(&published, "invalid-symbol");
-    let (id, actions) =
-        project.actions("src/main.inko", std::slice::from_ref(undefined), json!({}));
+    let undefined = with_id(&published, "invalid-symbol").clone();
+    let id = project.client.send_request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri(&project.path("src/main.inko")) },
+            // Inside the name, not all of it.
+            "range": {
+                "start": { "line": 2, "character": 13 },
+                "end": { "line": 2, "character": 14 },
+            },
+            "context": { "diagnostics": [] },
+        }),
+    );
+    let actions = project.client.response(id)["result"].clone();
 
-    assert_eq!(actions, json!([]));
-    assert_eq!(client_status(&project, id), "fresh");
+    assert_eq!(
+        fixed(&project, &actions, &undefined, "src/main.inko"),
+        [(
+            "Import helper from lib".to_string(),
+            format!("import lib (helper)\n\n{}", main)
+        )]
+    );
 }
 
 #[test]

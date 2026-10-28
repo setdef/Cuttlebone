@@ -1761,8 +1761,9 @@ struct Edit {
 
 /// The diagnostics `inko check` reports in `request.file` that overlap
 /// `request.position..end`, each with the quick fixes for it, chosen by
-/// its ID (`candidates`), whose result has no error at all and not that
-/// diagnostic (docs/lsp.md, "textDocument/codeAction"): each fix is
+/// its ID (`candidates`), whose result has fewer of that diagnostic and no
+/// error the documents didn't have (`fixed_without_errors`; docs/lsp.md,
+/// "textDocument/codeAction"): each fix is
 /// applied to a copy of the documents, which is checked in full, as for
 /// diagnostics. A fix that doesn't pass isn't given. Diagnostics without
 /// a fix aren't either. Nothing is written.
@@ -1804,13 +1805,15 @@ pub fn fixes(
             start: request.position,
             end,
         };
-        let found: Vec<Diagnostic> = checked(request.contents.clone())?
-            .into_iter()
+        let before = checked(request.contents.clone())?;
+        let found: Vec<Diagnostic> = before
+            .iter()
             .filter(|d| {
                 canonical(&d.file).is_ok_and(|f| f == file)
                     && d.range.start <= asked.end
                     && asked.start <= d.range.end
             })
+            .cloned()
             .collect();
         let mut out = Vec::new();
         let mut tried = 0;
@@ -1847,13 +1850,8 @@ pub fn fixes(
                 let Ok(after) = checked(contents) else {
                     continue;
                 };
-                let same = |a: &Diagnostic| {
-                    a.id == d.id
-                        && a.message == d.message
-                        && canonical(&a.file).is_ok_and(|f| f == file)
-                };
 
-                if after.iter().any(|a| a.error) || after.iter().filter(|a| same(a)).count() >= 1 {
+                if !fixed_without_errors(&before, &after, &d) {
                     continue;
                 }
 
@@ -1892,6 +1890,38 @@ pub fn fixes(
         typed: false,
         cached: false,
     }
+}
+
+/// Whether a fix's result (`after`) no longer has the diagnostic `fixed`
+/// and adds no error to those of the documents as they were (`before`):
+/// the errors after it, counted by file, ID and message (their positions
+/// move with the edits), are each at most as many as before, less the one
+/// fixed. A file with other errors keeps them, and still gets the fix.
+fn fixed_without_errors(before: &[Diagnostic], after: &[Diagnostic], fixed: &Diagnostic) -> bool {
+    let key = |d: &Diagnostic| {
+        (
+            canonical(&d.file).unwrap_or_else(|_| d.file.clone()),
+            d.id.clone(),
+            d.message.clone(),
+        )
+    };
+    let count = |list: &[Diagnostic], k: &(PathBuf, String, String), errors: bool| {
+        list.iter()
+            .filter(|d| (!errors || d.error) && key(d) == *k)
+            .count()
+    };
+    let fixed_key = key(fixed);
+
+    if count(after, &fixed_key, false) >= count(before, &fixed_key, false) {
+        return false;
+    }
+
+    after.iter().filter(|a| a.error).all(|a| {
+        let k = key(a);
+        let less = usize::from(k == fixed_key);
+
+        count(after, &k, true) <= count(before, &k, true).saturating_sub(less)
+    })
 }
 
 /// The fixes to try for a diagnostic, by its ID and what its message
@@ -5136,5 +5166,76 @@ fn trait_methods(
 
     for req in id.required_traits(db) {
         trait_methods(db, req.instance_of(), add, visited);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diagnostic(error: bool, message: &str, line: u32) -> Diagnostic {
+        Diagnostic {
+            file: PathBuf::from("main.inko"),
+            error,
+            id: "invalid-symbol".to_string(),
+            message: message.to_string(),
+            range: Range {
+                start: Position { line, character: 0 },
+                end: Position { line, character: 1 },
+            },
+            lines: [line + 1, line + 1],
+            columns: [1, 1],
+        }
+    }
+
+    #[test]
+    fn a_fix_removes_its_diagnostic_and_adds_no_error() {
+        let a = diagnostic(true, "the symbol 'a' is undefined", 1);
+        let a_moved = diagnostic(true, "the symbol 'a' is undefined", 2);
+        let b = diagnostic(true, "the symbol 'b' is undefined", 3);
+        let b_moved = diagnostic(true, "the symbol 'b' is undefined", 4);
+        let warning = diagnostic(false, "the symbol 'c' is unused", 5);
+
+        // The other error stays, moved: fixed.
+        assert!(fixed_without_errors(
+            &[a.clone(), b.clone()],
+            std::slice::from_ref(&b_moved),
+            &a
+        ));
+        // A warning added isn't an error.
+        assert!(fixed_without_errors(
+            &[a.clone(), b.clone()],
+            &[b_moved.clone(), warning.clone()],
+            &a
+        ));
+        // Left as it was: not fixed.
+        assert!(!fixed_without_errors(
+            &[a.clone(), b.clone()],
+            &[a_moved.clone(), b_moved.clone()],
+            &a
+        ));
+        // One of two the same: fixed, the other left.
+        assert!(fixed_without_errors(
+            &[a.clone(), a_moved.clone()],
+            std::slice::from_ref(&a_moved),
+            &a
+        ));
+        // A new error, or one more of an error there was.
+        assert!(!fixed_without_errors(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&b),
+            &a
+        ));
+        assert!(!fixed_without_errors(
+            &[a.clone(), b.clone()],
+            &[b.clone(), b_moved],
+            &a
+        ));
+        // A warning fixed, with an error that stays.
+        assert!(fixed_without_errors(
+            &[warning.clone(), b.clone()],
+            std::slice::from_ref(&b),
+            &warning
+        ));
     }
 }

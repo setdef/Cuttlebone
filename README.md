@@ -17,8 +17,8 @@ compiler's own ids. It publishes the same diagnostics as `inko check`,
 highlights a symbol's uses in a file, shows the signature of the call being
 typed, and shows inferred types and parameter names as inlay hints. It
 folds blocks, comments and imports, formats exactly as `inko fmt` does,
-and offers quick fixes for its diagnostics, each checked to leave no
-error. It finds a trait's implementations, the trait method a method
+and offers quick fixes for its diagnostics, each checked to remove its
+diagnostic and add no error. It finds a trait's implementations, the trait method a method
 declares, call and type hierarchies (all from the type database), expands
 selections from the syntax, rewrites imports when files move, and answers
 pull diagnostics for the whole project. Where a
@@ -214,7 +214,7 @@ also fast enough for the latency limits.
 | `tests/corpus_hierarchy.rs` | over all of std, against the type database: every implementation it records is found from its trait (or trait's method), and nothing else; every type's and trait's supertypes and subtypes; outgoing calls are their callees' incoming calls |
 | `tests/rename_files.rs` | `workspace/willRenameFiles` over LSP in both encodings: imports and uses by name, aliases, directories, moves out of `src/`; the project checks with the edits applied and the file moved |
 | `tests/pull.rs` | pull diagnostics over LSP: the same as the core's for every fixture project, unchanged reports, files not open, a long poll, no pushes to a client that pulls |
-| `tests/actions.rs` | quick fixes over LSP in both encodings, each checked by the installed `inko check` on a copy of the project with it applied: imports, unused imports, variables and results, `mut` for variables and fields; none where an error would be left, for other kinds, or for clients without literals |
+| `tests/actions.rs` | quick fixes over LSP in both encodings, each checked by the installed `inko check` on a copy of the project with it applied: imports, unused imports, variables and results, `mut` for variables and fields; in files with other errors; none that would add an error, for other kinds, or for clients without literals |
 | `tests/undo.rs` | answers after edits are undone over LSP, in both encodings: incremental and whole-text changes, several in one notification, closing and opening again, with and without a save between, a module changed on disk and restored; every answer from the documents as they are is a new server's, at every step |
 | `tests/corpus.rs` | every expression in std (src/ and test/) has a type, except for the allow-listed kinds |
 

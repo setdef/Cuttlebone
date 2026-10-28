@@ -1252,12 +1252,16 @@ impl Server {
         false
     }
 
-    /// The imports the index offers for each name a diagnostic in a code
-    /// action request's context says is undefined, as completion offers
-    /// them: public types, traits, methods and constants of the modules the
-    /// file can import, by name.
+    /// The imports the index offers for each name that may be undefined
+    /// where a code action is asked for, as completion offers them: public
+    /// types, traits, methods and constants of the modules the file can
+    /// import, by name. The names are those the context's diagnostics say
+    /// are undefined, and every name in the requested range of the
+    /// document's text, since a client needn't send diagnostics it didn't
+    /// get from the server. The worker offers only the imports of names
+    /// its own check reports undefined.
     fn import_fixes(&mut self, uri: &Url, params: &Value) -> Vec<query::ImportFix> {
-        let names: Vec<String> = params
+        let mut names: Vec<String> = params
             .pointer("/context/diagnostics")
             .and_then(Value::as_array)
             .into_iter()
@@ -1277,6 +1281,42 @@ impl Server {
         let Some(text) = self.documents.get(uri).map(|d| d.text.clone()) else {
             return Vec::new();
         };
+        let range: Option<lsp::Range> = params
+            .get("range")
+            .and_then(|r| serde_json::from_value(r.clone()).ok());
+
+        if let Some(r) = range {
+            let at = |p: lsp::Position| {
+                byte_offset(
+                    &text,
+                    Position {
+                        line: p.line,
+                        character: p.character,
+                    },
+                    self.encoding,
+                )
+                .unwrap_or(text.len())
+            };
+            let (start, end) = (at(r.start), at(r.end));
+
+            if start <= end {
+                // From the start of the word the range starts in, to the end
+                // of the one it ends in.
+                let word = |c: char| c.is_alphanumeric() || c == '_' || c == '?';
+                let start = text[..start].rfind(|c| !word(c)).map_or(0, |i| i + 1);
+                let end = text[end..]
+                    .find(|c| !word(c))
+                    .map_or(text.len(), |i| end + i);
+
+                for w in text[start..end].split(|c| !word(c)) {
+                    if w.starts_with(|c: char| c.is_alphabetic() || c == '_')
+                        && !names.iter().any(|n| n == w)
+                    {
+                        names.push(w.to_string());
+                    }
+                }
+            }
+        }
 
         if names.is_empty() {
             return Vec::new();
