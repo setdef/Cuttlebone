@@ -13,7 +13,7 @@
 use crate::position::Lines;
 use location::Location;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -300,6 +300,36 @@ impl Outline {
             .min()
             .copied();
 
+        // Whether the text is deeper than the copy only because of braces
+        // opened on blank lines in methods' bodies: the grammar has no
+        // declaration a body can hold, so they close in those methods,
+        // and every declaration is where the copy has it, but those
+        // methods, which may end at another `}` (`open`).
+        let mut open: Vec<Range<usize>> = Vec::new();
+        let in_bodies = blank.iter().all(|&b| {
+            let (Some(a), Some(after)) = (ours.get(b), ours.get(b + 1)) else {
+                return true;
+            };
+            let start: usize = lines[..b].iter().map(|l| l.len() + 1).sum();
+            let end = start + lines[b].len();
+            let method = self.all().into_iter().map(|(d, _)| d).rfind(|d| {
+                matches!(
+                    d.kind,
+                    Kind::Method | Kind::StaticMethod | Kind::ModuleMethod
+                ) && d.header.end <= start
+                    && end < d.range.end
+            });
+
+            match (after - a, method) {
+                (0, _) => true,
+                (1.., Some(m)) => {
+                    open.push(m.range.clone());
+                    true
+                }
+                _ => false,
+            }
+        });
+
         self.declarations.retain(|d| {
             let (first, last) = (line_of(d.range.start), line_of(d.range.end));
             let (Some(o), Some(c)) = (ours.get(first), theirs.get(first)) else {
@@ -307,13 +337,43 @@ impl Outline {
             };
 
             header.is_none_or(|h| first < h)
-                && o <= c
-                && (first..=last).all(|l| match (ours.get(l), theirs.get(l)) {
-                    (Some(a), Some(b)) => a - o == b - c,
-                    _ => false,
-                })
+                && (in_bodies
+                    || o <= c
+                        && (first..=last).all(|l| match (ours.get(l), theirs.get(l)) {
+                            (Some(a), Some(b)) => a - o == b - c,
+                            _ => false,
+                        }))
         });
+
+        if in_bodies {
+            fn without(list: &mut Vec<Declaration>, open: &[Range<usize>]) {
+                list.retain(|d| !open.contains(&d.range));
+
+                for d in list {
+                    without(&mut d.children, open);
+                }
+            }
+
+            without(&mut self.declarations, &open);
+        }
+
         self
+    }
+
+    /// Whether it has every declaration `other` has (in the same place,
+    /// in the same declarations), and more.
+    fn keeps(&self, other: &Outline) -> bool {
+        let key = |(d, outer): (&Declaration, Vec<&Declaration>)| {
+            (
+                d.name.clone(),
+                d.range.clone(),
+                outer.iter().map(|o| o.range.clone()).collect::<Vec<_>>(),
+            )
+        };
+        let ours: HashSet<_> = self.all().into_iter().map(key).collect();
+        let theirs: Vec<_> = other.all().into_iter().map(key).collect();
+
+        ours.len() > theirs.len() && theirs.iter().all(|t| ours.contains(t))
     }
 
     /// The innermost declaration whose name starts at `start`, and the
@@ -508,9 +568,24 @@ pub fn outline(text: &str) -> Option<Outline> {
         return Some(outline);
     }
 
+    let (unclosed, misclosed) = unclosed_or_misclosed(text);
+    let first = repaired_outline(text, unclosed);
+
+    // Which bracket is left open isn't known: a copy with the other
+    // likely one blank may keep more, and everything the first keeps.
+    match (first, misclosed.map(|m| repaired_outline(text, Some(m)))) {
+        (Some(a), Some(Some(b))) if b.keeps(&a) => Some(b),
+        (None, Some(b)) => b,
+        (a, _) => a,
+    }
+}
+
+/// The outline of a copy of `text` with lines blank until it parses,
+/// starting with `start`'s (`outline`).
+fn repaired_outline(text: &str, start: Option<usize>) -> Option<Outline> {
     let mut lines = BTreeSet::new();
 
-    if let Some(line) = unclosed(text) {
+    if let Some(line) = start {
         lines.insert(line);
     }
 
@@ -1015,8 +1090,19 @@ fn depths(text: &str) -> Vec<i32> {
 /// The parser reports these where it notices, which may be lines later.
 /// Strings and comments are skipped.
 pub fn unclosed(text: &str) -> Option<usize> {
+    unclosed_or_misclosed(text).0
+}
+
+/// What `unclosed` says, and if a bracket is left open at the end, the
+/// line of the first `{` closed by a `}` that starts a line indented
+/// otherwise than the `{`'s line: which `{` is left open isn't known, and
+/// it's often this one, which a `}` meant for another closed.
+fn unclosed_or_misclosed(text: &str) -> (Option<usize>, Option<usize>) {
     let mut open: Vec<(char, usize)> = Vec::new();
     let mut quote = None;
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut misclosed: Option<usize> = None;
 
     for (number, line) in text.lines().enumerate() {
         let mut chars = line.chars();
@@ -1039,9 +1125,17 @@ pub fn unclosed(text: &str) -> Option<usize> {
                     };
 
                     match open.pop() {
-                        Some((o, _)) if o == expected => {}
-                        Some((_, line)) => return Some(line),
-                        None => return Some(number),
+                        Some((o, at)) if o == expected => {
+                            if c == '}'
+                                && misclosed.is_none()
+                                && line.trim_start().starts_with('}')
+                                && indent(line) != indent(lines[at])
+                            {
+                                misclosed = Some(at);
+                            }
+                        }
+                        Some((_, line)) => return (Some(line), None),
+                        None => return (Some(number), None),
                     }
                 }
                 _ => {}
@@ -1049,7 +1143,10 @@ pub fn unclosed(text: &str) -> Option<usize> {
         }
     }
 
-    open.last().map(|(_, line)| *line)
+    match open.last() {
+        Some((_, line)) => (Some(*line), misclosed.filter(|m| m != line)),
+        None => (None, None),
+    }
 }
 
 /// The line (0-based) where parsing a module's source stops, or `None` if
@@ -2034,7 +2131,50 @@ fn pub main {}
 
         let read = read.moved(&copy, text).nested_as_in(text, &copy, &lines);
 
-        assert!(read.declarations.is_empty(), "{:?}", read.declarations);
+        // `b` stays where it is: no body can hold it, so the `if` closes
+        // in `a`. `a` may end at another `}`.
+        assert_eq!(
+            read.declarations
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>(),
+            ["b"]
+        );
+
+        // In a type: the type and its other members stay.
+        let text = "type T {\n  fn a {\n    if x {\n  }\n\n  fn b {}\n}\n\nfn c {}\n";
+        let lines = BTreeSet::from([2]);
+        let copy = blank(text, &lines);
+        let read = parse(&copy)
+            .unwrap()
+            .moved(&copy, text)
+            .nested_as_in(text, &copy, &lines);
+        let names: Vec<(&str, Vec<&str>)> = read
+            .declarations
+            .iter()
+            .map(|d| {
+                (
+                    d.name.as_str(),
+                    d.children.iter().map(|c| c.name.as_str()).collect(),
+                )
+            })
+            .collect();
+
+        assert_eq!(names, [("T", vec!["b"]), ("c", vec![])]);
+
+        // A brace opened outside a method's body (a type's header being
+        // typed) moves what follows.
+        let text = "type T {\n  fn a {}\n\ntype U {\n  fn b {}\n}\n";
+        let lines = BTreeSet::from([0]);
+        let copy = blank(text, &lines);
+
+        if let Some(read) = parse(&copy) {
+            let read = read.moved(&copy, text).nested_as_in(text, &copy, &lines);
+
+            assert!(read.declarations.is_empty(), "{:?}", read.declarations);
+        }
+
+        let lines = BTreeSet::from([1]);
 
         // A balanced blank line moves nothing.
         let text = "fn a {\n  if x { 1 } else {}\n}\n\nfn b {}\n";

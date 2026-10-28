@@ -223,6 +223,32 @@ fn document_symbols_in_code_that_does_not_parse() {
             .collect();
 
         assert_eq!(out, expected, "utf8: {}", utf8);
+
+        // A brace a method's body opens and nothing closes yet: the type
+        // and everything after it stay (no body can hold a declaration,
+        // so it closes in the method); the method, which may end at
+        // another `}`, is gone.
+        let open = text.replacen(
+            "    @count += amount\n",
+            "    @count += amount\n    if true {\n",
+            1,
+        );
+
+        client.change(&file, 4, json!([{ "text": open }]));
+
+        let (id, result) = symbols(&mut client, &uri(&file));
+        let mut out = Vec::new();
+
+        shown(&open, &result, utf8, 0, &mut out);
+
+        let expected: Vec<&str> = EXPECTED
+            .iter()
+            .copied()
+            .filter(|s| !s.contains("add(amount"))
+            .collect();
+
+        assert_eq!(out, expected, "utf8: {}", utf8);
+        assert_eq!(client.status(id).unwrap()["repaired"], true);
     }
 }
 

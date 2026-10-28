@@ -956,7 +956,10 @@ answers in code that doesn't type check, in documents that aren't files
 **In code that doesn't parse**, the symbols are those of a copy of the text
 with the lines in the way blank: the line of a bracket nothing closes, then
 the line the parser stops at or the line before it (whichever lets it get
-further), in turn, until the copy parses (at most 16 lines). Blank lines
+further), in turn, until the copy parses (at most 16 lines). Which `{` is
+left open isn't always known: if a `}` that starts a line closes a `{` on
+a line indented otherwise, that `{` is tried first too, and its copy is
+the answer if it keeps every symbol the other does, and more. Blank lines
 keep every other line where it is, so the ranges are the text's own, in
 the negotiated encoding. A symbol is given only where the copy can't have
 changed it:
@@ -972,9 +975,15 @@ changed it:
   that starts a type, trait or `impl` block in the text (`type pub Foo`
   without its `{` yet): what follows may be in it
 
+**A brace opened in a method's body**, on a blank line, and not closed
+yet, moves nothing: no body can hold a declaration, so it closes in that
+method. Where every blank line that opens a brace is in a method's body
+(and none closes one), every symbol the copy has is given, but the
+methods with those lines, which may end at another `}` once it's closed.
+
 So typing a statement in a method leaves every symbol there, and typing
-`if x {` without its `}` leaves out the type the method is in, until the
-brace is closed. The [status](#status) says `"repaired": true` for such an
+`if x {` without its `}` leaves out only that method, until the brace is
+closed: the type it's in, and everything after it, stay. The [status](#status) says `"repaired": true` for such an
 answer. If no copy parses, the result is `null`, with reason `noHir`.
 
 The tests check the names and ranges against the compiler's own
