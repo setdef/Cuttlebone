@@ -5811,6 +5811,12 @@ mod tests {
             &[b.clone(), b_moved],
             &a
         ));
+        // A warning left as it was: not fixed.
+        assert!(!fixed_without_errors(
+            std::slice::from_ref(&warning),
+            std::slice::from_ref(&warning),
+            &warning
+        ));
         // A warning fixed, with an error that stays.
         assert!(fixed_without_errors(
             &[warning.clone(), b.clone()],

@@ -536,7 +536,7 @@ M = [
  ("formatting not advertised", "src/lsp.rs", "                document_formatting_provider: Some(lsp::OneOf::Left(true)),", "                document_formatting_provider: None,", "--test lsp initialize_advertises"),
  # Quick fixes (milestone 13).
  ("fixes not checked", "src/query.rs", "                if !fixed_without_errors(&before, &after, &d) {", "                if false {", "--test actions no_fix_is_offered"),
- ("fixes need no error at all", "src/query.rs", "    after.iter().filter(|a| a.error).all(|a| {", "    after.iter().filter(|a| a.error).all(|_| false) || after.iter().filter(|a| a.error).all(|a| {", "--test actions fixes_are_offered_in_a_file"),
+ ("fixes need no error at all", "src/query.rs", "    after.iter().filter(|a| a.error).all(|a| {", "    after.iter().filter(|a| a.error).all(|_| false) && after.iter().filter(|a| a.error).all(|a| {", "--test actions fixes_are_offered_in_a_file"),
  ("fixes may add an error the file had", "src/query.rs", "        count(after, &k, true) <= count(before, &k, true).saturating_sub(less)", "        count(before, &k, true) > 0 || count(after, &k, true) <= less", "--lib a_fix_removes_its_diagnostic"),
  ("fixes may add one more of an error", "src/query.rs", "        let less = usize::from(k == fixed_key);", "        let less = usize::from(k == fixed_key) + 1;", "--lib a_fix_removes_its_diagnostic"),
  ("fixes may leave their diagnostic", "src/query.rs", "    if count(after, &fixed_key, false) >= count(before, &fixed_key, false) {", "    if count(after, &fixed_key, false) > count(before, &fixed_key, false) {", "--lib a_fix_removes_its_diagnostic"),
