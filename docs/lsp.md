@@ -946,6 +946,15 @@ answers in code that doesn't type check, in documents that aren't files
   on one line: `fn pub static new(label: String, count: Int) -> Counter`
   for a signature written over several lines, `let pub MAX = 10` for a
   constant. Type arguments are as written, not filled in.
+- **A trait's required and default methods.** A trait's method with a
+  body, a default one, has ` { ... }` after its signature in `detail`
+  (`fn pub double -> Float { ... }`); a required one, which every `impl`
+  of the trait must write, has none (`fn pub area -> Float`). So a
+  client can list what implementing the trait must write and what it may
+  override, from the trait's file's symbols (definition at the `impl`'s
+  trait name finds it). tests/corpus_symbols.rs checks both against the
+  type database for every trait in std. `SymbolTag` has only
+  `Deprecated`, so `detail` is the place the spec has.
 - **Kinds every client has.** A client whose
   `documentSymbol.symbolKind.valueSet` doesn't have Object and EnumMember
   (past Array, 18, the last every client has) gets Class (5) for an `impl`

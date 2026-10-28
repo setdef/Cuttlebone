@@ -130,7 +130,8 @@ fn check_fixture(utf8: bool) {
             "  22 Square | case Square | Square | case Square ... case Square",
             "11 Area | trait pub Area | Area | trait pub Area { ... }",
             "  6 area | fn pub area -> Float | area | fn pub area -> Float ... fn pub area -> Float",
-            "  6 double | fn pub double -> Float | double | fn pub double -> Float { ... }",
+            // A default method, apart from the required one.
+            "  6 double | fn pub double -> Float { ... } | double | fn pub double -> Float { ... }",
             "19 impl Area for Shape | impl Area for Shape | Shape | impl Area for Shape { ... }",
             "  6 area | fn pub area -> Float | area | fn pub area -> Float { ... }",
             "12 shape_count | fn pub shape_count -> Int | shape_count | fn pub shape_count -> Int { ... }",

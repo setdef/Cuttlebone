@@ -3056,19 +3056,28 @@ impl Server {
             list: &[Declaration],
             range: &impl Fn(&std::ops::Range<usize>) -> lsp::Range,
             support: Support,
+            in_trait: bool,
         ) -> Vec<Value> {
             list.iter()
                 .map(|d| {
+                    // A trait's default method, apart from its required
+                    // ones: what implementing it must write, and what it
+                    // may.
+                    let detail = match in_trait && d.has_body() {
+                        true => format!("{} {{ ... }}", d.detail()),
+                        false => d.detail(),
+                    };
                     let mut symbol = json!({
                         "name": d.name,
-                        "detail": d.detail(),
+                        "detail": detail,
                         "kind": symbol_kind(d.kind, support),
                         "range": range(&d.range),
                         "selectionRange": range(&d.name_range),
                     });
 
                     if !d.children.is_empty() {
-                        symbol["children"] = json!(nested(&d.children, range, support));
+                        symbol["children"] =
+                            json!(nested(&d.children, range, support, d.kind == Kind::Trait));
                     }
 
                     symbol
@@ -3076,7 +3085,7 @@ impl Server {
                 .collect()
         }
 
-        Value::Array(nested(&outline.declarations, &range, self.support))
+        Value::Array(nested(&outline.declarations, &range, self.support, false))
     }
 
     /// The `cuttlebone/status` notification for a request answered from

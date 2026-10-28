@@ -124,6 +124,12 @@ impl Declaration {
     pub fn detail(&self) -> String {
         one_line(&self.signature)
     }
+
+    /// Whether it has a body after its signature: every method but a
+    /// trait's required ones (and an external function) does.
+    pub fn has_body(&self) -> bool {
+        self.header.end < self.range.end
+    }
 }
 
 /// A symbol in an import's list: its name, its alias, and its range (with

@@ -10,13 +10,14 @@ use cuttlebone::index::{self, Index};
 use cuttlebone::position::Lines;
 use cuttlebone::query::{Index as Declarations, symbols_at};
 use cuttlebone::syntax::{self, Kind};
-use cuttlebone::walker::Walker;
+use cuttlebone::walker::{SymbolId, Walker};
 use std::collections::HashMap;
 use std::path::Path;
 
 /// Checks the modules of `root` under `only`, and returns how many
 /// declarations it compared.
-fn compare(root: &Path, only: &Path) -> usize {
+/// How many declarations were compared, and how many of them were traits.
+fn compare(root: &Path, only: &Path) -> (usize, usize) {
     let std = upstream_std().canonicalize().unwrap();
     let mut target = Target::new(root, std.clone()).unwrap();
     let mut index = Index::default();
@@ -24,7 +25,7 @@ fn compare(root: &Path, only: &Path) -> usize {
     target.tests = false;
     index.refresh(&index::roots(&std, &[root.to_path_buf()]), &HashMap::new());
 
-    let (count, problems) = run(&target, false, false, |db, modules| {
+    let ((count, traits), problems) = run(&target, false, false, |db, modules| {
         let mut declared = Declarations::from_modules(db, modules);
         let mut walked = Vec::new();
 
@@ -44,6 +45,7 @@ fn compare(root: &Path, only: &Path) -> usize {
         }
 
         let mut count = 0;
+        let mut traits = 0;
         let mut problems = Vec::new();
         // What a search for each name finds: each place, once.
         let mut searched: HashMap<String, Vec<(std::path::PathBuf, usize)>> = HashMap::new();
@@ -100,6 +102,55 @@ fn compare(root: &Path, only: &Path) -> usize {
                         })
                         .collect();
 
+                // A trait's required methods are those without a body, by
+                // the type database: what document symbols mark as default
+                // (`has_body`) is what it records as default.
+                if d.kind == Kind::Trait {
+                    let id = symbols_at(&walker.references, &walker.declarations, at)
+                        .into_iter()
+                        .find_map(|r| match r.symbol {
+                            SymbolId::Trait(id) => Some(id),
+                            _ => None,
+                        });
+                    let names = |ms: Vec<types::MethodId>| -> Vec<String> {
+                        let mut out: Vec<String> = ms.iter().map(|m| m.name(db).clone()).collect();
+
+                        out.sort();
+                        out
+                    };
+                    let split = |body: bool| -> Vec<String> {
+                        let mut out: Vec<String> = d
+                            .children
+                            .iter()
+                            .filter(|c| c.has_body() == body)
+                            .map(|c| c.name.clone())
+                            .collect();
+
+                        out.sort();
+                        out
+                    };
+
+                    match id {
+                        Some(id) => {
+                            traits += 1;
+
+                            if names(id.required_methods(db)) != split(false)
+                                || names(id.default_methods(db)) != split(true)
+                            {
+                                problems.push(format!(
+                                    "{}: required {:?} and default {:?}, but {:?} and {:?} have bodies or not",
+                                    what,
+                                    names(id.required_methods(db)),
+                                    names(id.default_methods(db)),
+                                    split(false),
+                                    split(true)
+                                ));
+                            }
+                        }
+                        None => problems.push(format!("{}: no trait at its name", what)),
+                    }
+                }
+
                 if !places.contains(&(file.clone(), d.name_range.start, d.name_range.end)) {
                     problems.push(format!(
                         "{} (line {}): definition goes to {:?}",
@@ -109,7 +160,7 @@ fn compare(root: &Path, only: &Path) -> usize {
             }
         }
 
-        (count, problems)
+        ((count, traits), problems)
     })
     .unwrap()
     .inspected
@@ -127,14 +178,17 @@ fn compare(root: &Path, only: &Path) -> usize {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    count
+    (count, traits)
 }
 
 #[test]
 fn every_document_symbol_in_std_is_a_workspace_symbol_and_its_own_definition() {
     let std = upstream_std().canonicalize().unwrap();
 
-    assert!(compare(std.parent().unwrap(), &std) > 3000);
+    let (count, traits) = compare(std.parent().unwrap(), &std);
+
+    assert!(count > 3000, "{}", count);
+    assert!(traits > 40, "{}", traits);
 }
 
 #[test]
@@ -142,6 +196,6 @@ fn every_document_symbol_in_the_fixtures_is_a_workspace_symbol_and_its_own_defin
     for name in ["symbols", "features", "navigation", "members"] {
         let root = crate::common::fixture(name);
 
-        assert!(compare(&root, &root.join("src")) > 5, "{}", name);
+        assert!(compare(&root, &root.join("src")).0 > 5, "{}", name);
     }
 }
