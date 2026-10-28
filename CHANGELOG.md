@@ -8,6 +8,14 @@ the entry links to the milestone's report, which its last commit adds
 (AGENTS.md, "Versions"). Milestones 1 to 6 were all built as 0.1.0; their
 versions here were given afterwards.
 
+## 0.15.0
+
+Milestone 15: what a client that indexes Inko itself still needed: quick fixes in files with other errors and four more of them,
+completion of names in code being edited and keywords, document symbols
+that hold still while typing, signature help for constructors, folding
+ranges' collapsed text, and workspace symbols for clients that index.
+[Report](docs/history/MILESTONE-15.md).
+
 ## 0.14.0
 
 Milestone 14: implementations, declarations, call and type hierarchies,
