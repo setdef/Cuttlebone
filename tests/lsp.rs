@@ -952,10 +952,22 @@ fn a_hung_check_times_out_is_killed_and_the_server_keeps_going() {
     );
     assert!(client.stderr.lock().unwrap().contains("timed out"));
 
+    // The server keeps going: the next hover is answered. Its own check
+    // may take longer than 500 ms on a loaded machine (a load average of
+    // 460 did), and time out too, so it's asked again then; nothing but a
+    // timeout may come between.
     let (line, character) = at(&text, "name.size", 5, false);
-    let (_, response) = client.hover(&main, line, character);
 
-    assert_eq!(hover_type(&response), "Int");
+    for attempt in 1.. {
+        let (id, response) = client.hover(&main, line, character);
+
+        if !response["result"].is_null() || attempt == 20 {
+            assert_eq!(hover_type(&response), "Int");
+            break;
+        }
+
+        assert_eq!(client.status(id).unwrap()["reason"]["code"], "timeout");
+    }
 }
 
 #[test]
