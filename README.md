@@ -19,9 +19,10 @@ typed, and shows inferred types and parameter names as inlay hints. It
 folds blocks, comments and imports, formats exactly as `inko fmt` does,
 and offers quick fixes for its diagnostics, each checked to remove its
 diagnostic and add no error. It finds a trait's implementations, the trait method a method
-declares, call and type hierarchies (all from the type database), expands
-selections from the syntax, rewrites imports when files move, and answers
-pull diagnostics for the whole project. Where a
+declares, call and type hierarchies (all from the type database), and
+all of a document's as code lenses in one request, expands selections from
+the syntax, rewrites imports when files move, and answers pull diagnostics
+for the whole project, also past a module that doesn't parse. Where a
 declaration has an error, it type checks the method bodies anyway, and
 answers wherever the error can't matter. In code being edited that
 doesn't parse, it answers from a repaired copy of the documents or from
@@ -193,8 +194,8 @@ also fast enough for the latency limits.
 | `tests/definition.rs` | definition, type definition and references on every kind of name, same-named symbols in different modules, broken code, both encodings |
 | `tests/navigation.rs` | the same over LSP, in UTF-8 and UTF-16, with status reasons, an installed std that isn't `.upstream/`, and a package in `dep/` |
 | `tests/corpus_definition.rs` | every reference in std/src selects its own symbol, and goes to a declaration of the same id and name |
-| `tests/diagnostics.rs` | the oracle: diagnostics match the installed `inko check --format json` exactly (file, lines, columns, level, ID, message, order) for every project in tests/fixtures/diagnostics, which between them produce every diagnostic `inko check` can, for std, and for unsaved text |
-| `tests/publish.rs` | diagnostics over LSP: every file published without opening it, ranges in both encodings, every fixture project, edits that add and fix errors (and clear them), the debounce, queries first, superseded and hung checks, a compiler panic, what's a target, turning them off |
+| `tests/diagnostics.rs` | the oracle: diagnostics match the installed `inko check --format json` exactly (file, lines, columns, level, ID, message, order) for every project in tests/fixtures/diagnostics, which between them produce every diagnostic `inko check` can, for std, and for unsaved text; past a module that doesn't parse, `inko check` of the project without it and what imports it |
+| `tests/publish.rs` | diagnostics over LSP: every file published without opening it, ranges in both encodings, every fixture project, edits that add and fix errors (and clear them), a module that doesn't parse leaving the others', the debounce, queries first, superseded and hung checks, a compiler panic, what's a target, turning them off |
 | `tests/highlight.rs` | document highlights over LSP in both encodings: bindings and assignments as writes, fields, same-named symbols, methods, types, closure arguments, `null`, broken code |
 | `tests/signature.rs` | signature help over LSP in both encodings: positional and named arguments (in any order), nested calls, type arguments, unclosed argument lists while typing, a type's constructor and its fields, `null` outside parentheses, for operators and unresolved methods |
 | `tests/inlay.rs` | inlay hints over LSP in both encodings: every rule for type and parameter hints, and the requested range |
@@ -210,13 +211,13 @@ also fast enough for the latency limits.
 | `tests/hover.rs` | hover over LSP in both encodings: the type, the declaration as written and where it is, and its doc comment, for the project, a dependency and std, an implementation with its trait's doc comment, a module, a declaration's own name, plain text, and a stale hover after its doc comment changed |
 | `tests/syntax.rs` | outlines from the syntax alone: names and ranges against the compiler's declarations in every module of std and the fixtures, and doc comments against the installed `inko doc` |
 | `tests/symbols.rs` | document and workspace symbols over LSP in both encodings: every kind of declaration, `impl` blocks, every symbol for an empty query and as partial results, code that doesn't parse, an unclosed brace in a method, documents that aren't files, a dependency, files changed on disk, clients without hierarchy or the newer kinds |
-| `tests/corpus_symbols.rs` | every declaration document symbols report, in std and the fixtures, is found by workspace symbols at the same place, and is its own definition |
+| `tests/corpus_symbols.rs` | every declaration document symbols report, in std and the fixtures, is found by workspace symbols at the same place, and is its own definition; every trait's required and default methods are the type database's |
 | `tests/folding.rs` | folding ranges over LSP in both encodings: blocks, comment lines, imports, the text shown collapsed, code that doesn't parse, `\r\n` and lone `\r`, clients without kinds, collapsed text or with a limit; every declaration's body and doc comment in std folds |
 | `tests/formatting.rs` | formatting against the installed `inko fmt` over every module of std and the fixtures, as they are and flattened; over LSP in both encodings, with nothing written, and text that doesn't parse |
-| `tests/selection.rs` | selection ranges over LSP in both encodings: tokens, chains, elements, statements, brackets, declarations, code that doesn't parse; every declaration around every name in std is selected, nested |
-| `tests/hierarchy.rs` | implementations, declarations, and call and type hierarchies over LSP in both encodings, across the project, a dependency and std; complete or none in broken code |
+| `tests/selection.rs` | selection ranges over LSP in both encodings: tokens, chains, elements, statements, brackets, declarations, code that doesn't parse; every declaration around every name in std is selected, nested, and again with its doc comment |
+| `tests/hierarchy.rs` | implementations, declarations, and call and type hierarchies over LSP in both encodings, across the project, a dependency and std; complete or none in broken code, and past an error in a declaration elsewhere where it can't hide a part of them; code lenses, each its own request's answer, their coverage and their command |
 | `tests/corpus_hierarchy.rs` | over all of std, against the type database: every implementation it records is found from its trait (or trait's method), and nothing else; every type's and trait's supertypes and subtypes; outgoing calls are their callees' incoming calls |
-| `tests/rename_files.rs` | `workspace/willRenameFiles` over LSP in both encodings: imports and uses by name, aliases, directories, moves out of `src/`; the project checks with the edits applied and the file moved |
+| `tests/rename_files.rs` | `workspace/willRenameFiles` over LSP in both encodings: imports and uses by name, aliases, directories, moves out of `src/`; the project checks with the edits applied and the file moved; a status for every rename, naming its files |
 | `tests/pull.rs` | pull diagnostics over LSP: the same as the core's for every fixture project, unchanged reports, files not open, a long poll, no pushes to a client that pulls |
 | `tests/actions.rs` | quick fixes over LSP in both encodings, each checked by the installed `inko check` on a copy of the project with it applied: imports, unused imports, variables and results, `mut` for variables and fields, missing fields, methods and traits, unreachable code; in files with other errors; none that would add an error, for other kinds, or for clients without literals |
 | `tests/undo.rs` | answers after edits are undone over LSP, in both encodings: incremental and whole-text changes, several in one notification, closing and opening again, with and without a save between, a module changed on disk and restored; every answer from the documents as they are is a new server's, at every step |
