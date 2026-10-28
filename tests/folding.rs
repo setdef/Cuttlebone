@@ -252,6 +252,22 @@ fn folds_are_on_lsps_lines() {
     );
     // A comment's first line, without the `\r` that ends it.
     assert_eq!(got[0]["collapsedText"], "# The module's doc comment,");
+
+    // A lone `\r` in a comment ends LSP's line, not the comment: the text
+    // shown collapsed is that line's.
+    let lone = TEXT.replacen("# A doc comment\n", "# A doc\r comment\n", 1);
+
+    client.change(&main, 3, json!([{ "text": lone }]));
+
+    let got = folds(&mut client, &main).1;
+    let doc = got
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["startLine"] == 7)
+        .unwrap_or_else(|| panic!("no fold at line 7: {}", got));
+
+    assert_eq!(doc["collapsedText"], "# A doc", "{}", doc);
 }
 
 /// Every declaration with a body over three lines or more, in std and the

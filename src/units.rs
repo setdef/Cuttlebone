@@ -745,6 +745,47 @@ fn main {
         out
     }
 
+    /// What completion of names reads of a change: what it declares, the
+    /// containers it's only inside of, and whether it's at the top.
+    #[test]
+    fn what_a_change_declares_for_names() {
+        let sorted = |set: &HashSet<String>| {
+            let mut out: Vec<String> = set.iter().cloned().collect();
+
+            out.sort();
+            out
+        };
+
+        // A type's header: the type, at the top.
+        let e = effect_of("Counter {", 7, "Counters");
+
+        assert_eq!(sorted(&e.declares), ["Counter", "Counters"]);
+        assert!(e.within.is_empty() && e.top);
+
+        // A method's signature in it: the method, in the type.
+        let e = effect_of("amount: Int)", 6, "amounts");
+
+        assert!(e.declares.contains("add") && !e.declares.contains("Counter"));
+        assert_eq!(sorted(&e.within), ["Counter"]);
+        assert!(!e.top);
+
+        // A method added between its members: only the new name.
+        let e = effect_of("\n  fn add", 0, "\n  fn other {}\n");
+
+        assert_eq!(sorted(&e.declares), ["other"]);
+        assert_eq!(sorted(&e.within), ["Counter"]);
+
+        // A new declaration at the top.
+        let e = effect_of("fn main", 0, "fn helper {}\n\n");
+
+        assert!(e.declares.contains("helper") && e.top);
+
+        // A method's body: nothing.
+        let e = effect_of("@count + amount", 6, "@count");
+
+        assert!(e.body && e.declares.is_empty() && !e.top);
+    }
+
     #[test]
     fn units() {
         let outline = Outline::parse(TEXT).unwrap();

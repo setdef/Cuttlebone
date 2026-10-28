@@ -2117,6 +2117,28 @@ fn pub main {}
         assert!(names.contains(&"Shape".to_string()));
     }
 
+    /// Which `{` is left open: the misindented one's copy is the answer
+    /// only if it keeps everything the other does, and more.
+    #[test]
+    fn the_brace_left_open_is_the_copy_that_keeps_more() {
+        let names = |text: &str| -> Vec<String> {
+            outline(text)
+                .map(|o| o.all().iter().map(|(d, _)| d.name.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        // `if x {` at a method's end: the method's `}` closes it, and the
+        // type's the method, so the type's is left open. With the `if`
+        // blank, the type and its other method stay.
+        assert_eq!(
+            names("type T {\n  fn a {\n      1\n  }\n\n  fn b {\n    if x {\n  }\n}\n"),
+            ["T", "a"]
+        );
+        // `fn b {` left open, and a `}` indented otherwise than the `if`
+        // it closes: blanking the `if` keeps less than blanking `fn b {`.
+        assert_eq!(names("fn a {\n  if x {\n  1\n}\n}\n\nfn b {\n"), ["a"]);
+    }
+
     #[test]
     fn a_blank_line_that_opened_a_brace_moves_what_follows() {
         // In the text, `b` is in `a`, whose `if` isn't closed, and `a`
@@ -2162,8 +2184,20 @@ fn pub main {}
 
         assert_eq!(names, [("T", vec!["b"]), ("c", vec![])]);
 
-        // A brace opened outside a method's body (a type's header being
-        // typed) moves what follows.
+        // A brace opened outside a method's body (a method's header being
+        // typed): what follows starts deeper in the text, so it may be in
+        // the method.
+        let text = "fn a {\n\nfn b {}\n";
+        let lines = BTreeSet::from([0]);
+        let copy = blank(text, &lines);
+        let read = parse(&copy)
+            .unwrap()
+            .moved(&copy, text)
+            .nested_as_in(text, &copy, &lines);
+
+        assert!(read.declarations.is_empty(), "{:?}", read.declarations);
+
+        // A type's header being typed moves what follows too.
         let text = "type T {\n  fn a {}\n\ntype U {\n  fn b {}\n}\n";
         let lines = BTreeSet::from([0]);
         let copy = blank(text, &lines);

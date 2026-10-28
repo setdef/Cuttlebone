@@ -603,6 +603,17 @@ fn names_past_declarations_that_cant_change_them() {
         assert_eq!(result, Value::Null, "{}", status);
         assert_eq!(status["reason"]["code"], "declarationErrors", "{}", status);
 
+        // A method of that type half typed, blank in the repaired copy (so
+        // not among the names): no names either.
+        let typed = in_add(text.replacen(
+            "  fn pub mut add(amount: Int) {\n",
+            "  fn pub helper(by: ) {}\n\n  fn pub mut add(amount: Int) {\n",
+            1,
+        ));
+        let (result, status) = e.complete(&typed, "    am\n");
+
+        assert_eq!(result, Value::Null, "{}", status);
+
         // In a trait the type of the method implements: no names.
         let main = e.file.clone();
 
@@ -616,6 +627,16 @@ fn names_past_declarations_that_cant_change_them() {
         assert_eq!(status["status"], "fresh", "{}", status);
         assert!(labels(&result).contains(&"area".to_string()));
 
+        // A method of the trait half typed, blank in the repaired copy.
+        let typed = in_area(&shapes.replacen(
+            "  fn pub double -> Float {",
+            "  fn pub helper(by: ) {}\n\n  fn pub double -> Float {",
+            1,
+        ));
+        let (result, status) = e.complete(&typed, "    ar\n");
+
+        assert_eq!(result, Value::Null, "{}", status);
+
         let typed = in_area(&shapes.replacen("fn pub double -> Float", "fn pub double -> Floa", 1));
         let (result, status) = e.complete(&typed, "    ar\n");
 
@@ -627,17 +648,36 @@ fn names_past_declarations_that_cant_change_them() {
         // module imports from there (`Area`'s header).
         let other = main.with_file_name("shapes.inko");
 
-        for (from, to, answered) in [
+        let importing = text.replacen(
+            "import shapes (Area, Shape)",
+            "import shapes (Area, Shape, shape_count)",
+            1,
+        );
+
+        for (main_text, from, to, answered) in [
             (
+                &text,
                 "fn pub shape_count -> Int",
                 "fn pub shape_count -> Intt",
                 true,
             ),
-            ("trait pub Area {", "trait pub Area[T: Nope] {", false),
+            // The same, imported: the answer lists it.
+            (
+                &importing,
+                "fn pub shape_count -> Int",
+                "fn pub shape_count -> Intt",
+                false,
+            ),
+            (
+                &text,
+                "trait pub Area {",
+                "trait pub Area[T: Nope] {",
+                false,
+            ),
         ] {
             e.client.open(&other, &shapes.replacen(from, to, 1));
 
-            let (result, status) = e.complete(&in_total(text.clone()), "  sh\n");
+            let (result, status) = e.complete(&in_total(main_text.clone()), "  sh\n");
 
             e.client.close(&other);
 
