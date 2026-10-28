@@ -363,6 +363,14 @@ there.
 | 2 | What the module binds: its own types, traits, constants and methods, what it imports (modules, and symbols), and the prelude's (`Int`, `String`, `Array`, `Option`, `panic`, ...). | Class (7), Interface (8), Constant (21, or Value), Function (3), Module (9) |
 | 3 | Public types, traits, methods and constants of the modules the file can import but doesn't, whose names match what's typed (as [workspace symbols](#workspacesymbol) match), at most 100, each with the edit that imports it. Not while nothing's typed. | as above |
 
+- **Keywords**, as Keyword (14), after the names (`sortText` starting
+  with 4), where the grammar takes them: where an expression starts,
+  those that start one (`async`, `await`, `break`, `false`, `fn`, `for`,
+  `if`, `let`, `loop`, `match`, `mut`, `next`, `nil`, `recover`, `ref`,
+  `return`, `self`, `throw`, `true`, `try`, `while`); in a type's name,
+  those that start a type (`fn`, `move`, `mut`, `ref`, `uni`), or only
+  `fn` right after `ref`, `mut`, `uni` or `move`. The type checker may
+  still refuse one there (`break` outside a loop).
 - **After `@`**, the fields of the type of the method it's in, private
   ones too, and nothing else (`isIncomplete` `false`).
 - **In a type's name** (a signature, a field's type, an annotation), only
@@ -401,14 +409,36 @@ modules, with no check (so in code that doesn't type check or parse):
 | Answer from | Members | Names |
 |---|---|---|
 | the documents as they are | yes | yes |
-| past an error in a declaration ([Errors in declarations](#errors-in-declarations)) | where the error can't matter | only if no declaration has an error (but the placeholder's own, a type that doesn't exist yet in a signature): any may bind another name, or none |
-| a repaired copy ([Answers in code being edited](#answers-in-code-being-edited)) | where the blank lines can't matter | the same, and only if every blank line is in a method's body: one outside may bind a name |
+| past an error in a declaration ([Errors in declarations](#errors-in-declarations)) | where the error can't matter | where the error can't matter, and no error can bind or hide a name the answer has (below) |
+| a repaired copy ([Answers in code being edited](#answers-in-code-being-edited)) | where the blank lines can't matter | the same, for the blank lines too |
 | the last good check (`stale`) | never: items are inserted into the code | never |
 
+**Where a declaration differs** (a line outside a method's body blank in
+a repaired copy, or an error in a declaration), names are refused only
+where it can bind or hide a name, or change what the answer says of
+one. Each such change, or error, refuses them if it's
+- in the file asked about, outside every type, trait and `impl` block
+  (an import, a module's method or constant, a declaration being typed):
+  it may bind a name anywhere in the module;
+- a declaration of a name the answer lists, binds (`bound`, which
+  decides the symbols to import) or mentions in a `detail` (a signature,
+  a type), or the header of a type or trait of that name; or
+- inside the type or trait of the method the position is in, or inside
+  a trait whose methods that type has (it implements it, or a trait it
+  implements requires it), or an `impl` block of one: a member added
+  there is in scope through `self`.
+
+A change or error anywhere else, such as a method of another type being
+typed, or an error in another module's declaration the file doesn't
+import, leaves the names as they are. As for every answer, the position's
+own method must not mention what the error is about, and the blank
+lines of a repaired copy mustn't be before it in the same method.
+
 So names are answered while a method's body is typed (the unfinished line
-is blank in the copy, before the position), and not while a signature,
-an import or another declaration is unfinished, or has an error. The
-symbols to import and the `import` lines come from the text alone, as
+is blank in the copy, before the position), and while another type's
+declarations are, and not while a declaration they depend on is
+unfinished, or has an error. The symbols to import and the `import`
+lines come from the text alone, as
 [document symbols](#textdocumentdocumentsymbol) do.
 
 The result is `null` when the position isn't code, or when there's no

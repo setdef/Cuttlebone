@@ -1790,6 +1790,7 @@ impl Server {
                 let mut result = completion(answer.result, self.support);
 
                 if let Some(names) = names {
+                    keywords(&names, &mut result);
                     self.imports(&pending, &names, &mut result);
                 }
 
@@ -3170,6 +3171,23 @@ fn completion(result: Result<Option<MembersAt>, Unavailable>, support: Support) 
 /// What LSP calls a completion of a kind. A client without the kinds past
 /// Reference (18) gets the nearest it has: Value for a constant, Class for
 /// a type parameter.
+/// Adds the keywords the grammar takes where a name is being typed
+/// (`query::Names::keywords`) to a completion of names, after the names
+/// (`sortText` 4), as Keyword.
+fn keywords(names: &Names, result: &mut Value) {
+    let Some(items) = result["items"].as_array_mut() else {
+        return;
+    };
+
+    items.extend(names.keywords.iter().map(|w| {
+        json!({
+            "label": w,
+            "kind": lsp::CompletionItemKind::KEYWORD,
+            "sortText": format!("4{}", w),
+        })
+    }));
+}
+
 fn completion_kind(kind: MemberKind, support: Support) -> lsp::CompletionItemKind {
     match kind {
         MemberKind::Method => lsp::CompletionItemKind::METHOD,

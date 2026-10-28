@@ -150,7 +150,7 @@ impl Outline {
 
     /// The innermost item containing all of `range`. An empty range (an
     /// insertion) at an item's very start or end is outside it.
-    fn innermost(&self, range: &Range<usize>) -> Option<usize> {
+    pub fn innermost(&self, range: &Range<usize>) -> Option<usize> {
         self.items
             .iter()
             .enumerate()
@@ -464,6 +464,19 @@ pub struct Effect {
     pub added: Vec<String>,
     /// Whether it's inside a method's body.
     pub body: bool,
+    /// For completion of names: the names whose binding it may change, or
+    /// whose declaration it may change (a method's signature, a type's
+    /// header), but not those of the types, traits and `impl` blocks it's
+    /// merely in (`within`).
+    pub declares: HashSet<String>,
+    /// The names of the types, traits and `impl` blocks (their trait and
+    /// type) it's in, if it isn't in their headers: a member added or
+    /// changed there is in scope wherever `self` is one of them.
+    pub within: HashSet<String>,
+    /// Whether it's outside every type, trait and `impl` block (an import,
+    /// a module's method or constant, a new declaration): it may bind or
+    /// hide a name anywhere in the module.
+    pub top: bool,
     /// For an error, where each item it's in names what the error is
     /// about: its header (a method's signature, a type's or `impl`'s line,
     /// a field, an import), and the names there. A unit that mentions
@@ -504,6 +517,9 @@ pub fn effect(outline: &Outline, old: &str, new: &str, change: &Change) -> Effec
         // something.
         if !(blank(removed) && blank(added)) {
             changed(&mut effect);
+            effect.top = true;
+            effect.declares = effect.names.clone();
+            effect.declares.extend(effect.prefixes.iter().cloned());
         }
 
         return effect;
@@ -547,7 +563,35 @@ pub fn effect(outline: &Outline, old: &str, new: &str, change: &Change) -> Effec
         changed(&mut effect);
     }
 
+    let header = item.kind == Kind::Container && in_header(old, item, &old_range);
+
+    // The containers it's only inside of: a member of, or between the
+    // members of. What it declares is what it changed, but their names.
+    for a in outline.ancestors(index) {
+        if a.kind == Kind::Container && !(header && a.range == item.range) {
+            effect.within.extend(a.names.iter().cloned());
+        }
+    }
+
+    effect.declares = effect
+        .names
+        .iter()
+        .chain(&effect.prefixes)
+        .filter(|n| !effect.within.contains(*n))
+        .cloned()
+        .collect();
+    effect.top = effect.within.is_empty();
     effect
+}
+
+/// Whether `range` of `text` is in a type's, trait's or `impl` block's
+/// header: before its `{`.
+fn in_header(text: &str, item: &Item, range: &Range<usize>) -> bool {
+    let open = text[item.range.clone()]
+        .find('{')
+        .map_or(item.range.end, |i| item.range.start + i);
+
+    range.start <= open
 }
 
 /// What an error the type checker reported at `range` of a file's text
@@ -558,7 +602,7 @@ pub enum ErrorEffect {
     Body,
     /// It's in a declaration: units that mention the names it's about may
     /// get other types once it's fixed, and its own unit is touched.
-    Declaration(Effect),
+    Declaration(Box<Effect>),
     /// It's in no item (or nowhere in the text), so nothing says what it's
     /// about.
     Unknown,
@@ -615,7 +659,32 @@ pub fn error_effect(outline: &Outline, text: &str, range: Range<usize>) -> Error
         effect.named.push((header, named));
     }
 
-    ErrorEffect::Declaration(effect)
+    // For completion of names: the item with the error, or the container
+    // whose header has it.
+    let header = item.kind == Kind::Container
+        && in_header(text, item, effect.old.as_ref().unwrap_or(&(0..0)));
+
+    for a in outline.ancestors(index) {
+        if a.kind == Kind::Container && !(header && a.range == item.range) {
+            effect.within.extend(a.names.iter().cloned());
+        }
+    }
+
+    effect.declares = item
+        .names
+        .iter()
+        .cloned()
+        .chain(
+            (item.kind == Kind::Import)
+                .then(|| import_names(&text[item.range.clone()]).map(String::from))
+                .into_iter()
+                .flatten(),
+        )
+        .filter(|n| !effect.within.contains(n))
+        .collect();
+    effect.top = effect.within.is_empty();
+
+    ErrorEffect::Declaration(Box::new(effect))
 }
 
 #[cfg(test)]

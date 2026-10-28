@@ -416,8 +416,16 @@ type async Main {
                 .clone();
             let (_, actions) =
                 project.actions("src/main.inko", std::slice::from_ref(&d), json!({}));
+            let fixes = fixed(project, &actions, &d, "src/main.inko");
 
-            fixed(project, &actions, &d, "src/main.inko")
+            // None for the diagnostics outside the range.
+            assert_eq!(
+                fixes.len(),
+                actions.as_array().unwrap().len(),
+                "{}",
+                actions
+            );
+            fixes
         };
 
         assert_eq!(
@@ -1055,10 +1063,10 @@ fn unreachable_code_is_removed() {
   fn f(v: Option[Int]) -> Int {
     match v {
       case Some(_) -> 1
-      case None -> 2
-      case _ -> {
+      case Some(2) -> {
         3
       }
+      case None -> 2
     }
   }
 }
@@ -1087,7 +1095,7 @@ fn unreachable_code_is_removed() {
                 ),
                 (
                     "Remove the unreachable code".to_string(),
-                    main.replace("      case _ -> {\n        3\n      }\n", "")
+                    main.replace("      case Some(2) -> {\n        3\n      }\n", "")
                 ),
             ],
             "UTF-8: {}",

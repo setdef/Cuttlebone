@@ -156,6 +156,14 @@ pub struct Names {
     /// prelude's) and every name in scope: a symbol imported as one of
     /// these would clash, or is there already.
     pub bound: Vec<String>,
+    /// The type (or trait) of the method it's in, and every trait that
+    /// has methods in scope through `self`: a member added to one of them
+    /// is in scope (`Guard::names_hold`).
+    #[serde(default)]
+    pub depends: Vec<String>,
+    /// The keywords the grammar takes there (`keywords_at`).
+    #[serde(default)]
+    pub keywords: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -815,6 +823,8 @@ fn names_in(scope: &Scope) -> Result<Option<MembersAt>, Unavailable> {
                 field: true,
                 types: false,
                 bound: Vec::new(),
+                depends: method.map(|m| self_types(db, m)).unwrap_or_default(),
+                keywords: Vec::new(),
             }),
         }));
     }
@@ -955,8 +965,77 @@ fn names_in(scope: &Scope) -> Result<Option<MembersAt>, Unavailable> {
             field: false,
             types,
             bound,
+            depends: method.map(|m| self_types(db, m)).unwrap_or_default(),
+            keywords: keywords_at(&text[..start], types),
         }),
     }))
+}
+
+/// The keywords that start an expression (the parser's `value`).
+const EXPRESSION_KEYWORDS: &[&str] = &[
+    "async", "await", "break", "false", "fn", "for", "if", "let", "loop", "match", "mut", "next",
+    "nil", "recover", "ref", "return", "self", "throw", "true", "try", "while",
+];
+
+/// The keywords that start a type (`type_reference`).
+const TYPE_KEYWORDS: &[&str] = &["fn", "move", "mut", "ref", "uni"];
+
+/// The keywords the grammar takes where a name starts, after `before`:
+/// those that start an expression, or in a type's name, those that start
+/// a type, but only `fn` after `ref`, `mut`, `uni` or `move`
+/// (`reference_type`).
+fn keywords_at(before: &str, types: bool) -> Vec<String> {
+    let words = if !types {
+        EXPRESSION_KEYWORDS
+    } else if before
+        .trim_end()
+        .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .next()
+        .is_some_and(|w| ["ref", "mut", "uni", "move"].contains(&w))
+        && before.ends_with(char::is_whitespace)
+    {
+        &["fn"]
+    } else {
+        TYPE_KEYWORDS
+    };
+
+    words.iter().map(|w| w.to_string()).collect()
+}
+
+/// The names of the type (or trait) of a method, and of every trait whose
+/// methods it has: those the type implements, those a trait requires, and
+/// theirs.
+fn self_types(db: &Database, method: MethodId) -> Vec<String> {
+    let mut traits: Vec<TraitId> = Vec::new();
+    let mut out = Vec::new();
+
+    match method.receiver_id(db) {
+        TypeEnum::TypeInstance(ins) => {
+            let typ = ins.instance_of();
+
+            out.push(typ.name(db).clone());
+            traits.extend(typ.implemented_traits(db).map(|i| i.instance.instance_of()));
+        }
+        TypeEnum::Type(typ) => {
+            out.push(typ.name(db).clone());
+            traits.extend(typ.implemented_traits(db).map(|i| i.instance.instance_of()));
+        }
+        TypeEnum::TraitInstance(ins) => traits.push(ins.instance_of()),
+        _ => {}
+    }
+
+    let mut seen: HashSet<TraitId> = HashSet::new();
+
+    while let Some(t) = traits.pop() {
+        if seen.insert(t) {
+            out.push(t.name(db).clone());
+            traits.extend(t.required_traits(db).into_iter().map(|r| r.instance_of()));
+        }
+    }
+
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Where the symbol at a position is declared: a method (for a call, the
@@ -4464,7 +4543,7 @@ impl<'db> Checked<'db> {
                         ErrorEffect::Declaration(effect) => {
                             let ids = self.ids(&error.file, text, &effect);
 
-                            out.push((error.file.clone(), effect, ids))
+                            out.push((error.file.clone(), *effect, ids))
                         }
                         ErrorEffect::Unknown => return None,
                     }
@@ -4927,7 +5006,7 @@ fn through(
         // depend on its unit.
         return match inspect(question, scope) {
             Ok(Some(Reply::Members(m)))
-                if m.names.as_ref().is_some_and(|n| n.types) && guard.bodies_only() =>
+                if m.names.as_ref().is_some_and(|n| n.types) && guard.names_hold(&m) =>
             {
                 guard.reply(Some(Reply::Members(m))).map(Ok)
             }
@@ -4941,10 +5020,10 @@ fn through(
         (Question::InlayHints { end }, Some(Reply::Hints(hints))) => {
             guard.hints(hints, position, end).map(|h| Ok(Some(h)))
         }
-        // Names list what every declaration in scope binds: any change
-        // outside a method's body (or error in a declaration) may bind
-        // another, or none.
-        (_, Some(Reply::Members(m))) if m.names.is_some() && !guard.bodies_only() => None,
+        // Names list what the declarations in scope bind: a change outside
+        // a method's body (or an error in a declaration) may bind another,
+        // or none (`names_hold`).
+        (_, Some(Reply::Members(m))) if m.names.is_some() && !guard.names_hold(&m) => None,
         (_, reply) => guard.reply(reply).map(Ok),
     }
 }
@@ -5064,10 +5143,39 @@ impl<'a> Guard<'a> {
         })
     }
 
-    /// Whether every change since the check, and every error in it, is
-    /// inside a method's body: no declaration is different.
-    fn bodies_only(&self) -> bool {
-        self.all.iter().all(|(e, _)| e.body)
+    /// Whether completion of names (`names`) still holds: no change since
+    /// the check outside a method's body, and no error in a declaration,
+    /// can bind or hide a name it lists (or would list), or change what it
+    /// says of one (docs/lsp.md, "In code being edited"). So none of them
+    /// - in the file, is outside every type, trait and `impl` block (it may
+    ///   bind a name anywhere in the module),
+    /// - declares a name it lists, binds or mentions (in a signature or a
+    ///   type), or
+    /// - is in the type or trait of the method the position is in, or a
+    ///   trait whose methods `self` has (a member added there is in
+    ///   scope).
+    fn names_hold(&self, m: &MembersAt) -> bool {
+        let Some(names) = &m.names else {
+            return false;
+        };
+        let mut depends: HashSet<&str> = HashSet::new();
+
+        for member in &m.members {
+            depends.insert(&member.name);
+            depends.extend(crate::units::names(&member.signature));
+            depends.extend(crate::units::names(&member.typ));
+        }
+
+        depends.extend(names.bound.iter().map(String::as_str));
+
+        let containers: HashSet<&str> = names.depends.iter().map(String::as_str).collect();
+
+        self.effects.iter().all(|e| e.body || !e.top)
+            && self.all.iter().all(|(e, _)| {
+                e.body
+                    || (!e.declares.iter().any(|n| depends.contains(n.as_str()))
+                        && !e.within.iter().any(|n| containers.contains(n.as_str())))
+            })
     }
 
     /// Whether the unit the old text's byte `offset` is in means what it

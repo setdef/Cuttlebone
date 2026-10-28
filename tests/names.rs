@@ -47,10 +47,16 @@ impl Edited {
     }
 }
 
-/// Each item as `kind label | detail`, sorted by `sortText`.
+/// Each item as `kind label | detail`, sorted by `sortText`, but the
+/// keywords (`keywords_where_the_grammar_takes_them`).
 #[track_caller]
 fn items(result: &Value) -> Vec<String> {
-    let mut list: Vec<&Value> = result["items"].as_array().unwrap().iter().collect();
+    let mut list: Vec<&Value> = result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["kind"] != KEYWORD)
+        .collect();
 
     list.sort_by_key(|i| i["sortText"].as_str().unwrap_or("").to_string());
     list.iter()
@@ -65,12 +71,17 @@ fn items(result: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The completion item kind of keywords.
+const KEYWORD: u32 = 14;
+
+/// The items' labels, but the keywords'.
 #[track_caller]
 fn labels(result: &Value) -> Vec<String> {
     result["items"]
         .as_array()
         .unwrap_or_else(|| panic!("no items: {}", result))
         .iter()
+        .filter(|i| i["kind"] != KEYWORD)
         .map(|i| i["label"].as_str().unwrap().to_string())
         .collect()
 }
@@ -535,4 +546,186 @@ fn names_in_code_being_edited() {
 
     assert_eq!(result, Value::Null, "{}", status);
     assert_eq!(status["reason"]["code"], "noHir", "{}", status);
+}
+
+/// The narrower rule (docs/lsp.md, "In code being edited"): a declaration
+/// that differs, or has an error, only refuses names where it can bind
+/// or hide one, or change what's said of one.
+#[test]
+fn names_past_declarations_that_cant_change_them() {
+    for utf8 in [false, true] {
+        let (mut e, text) = edited("narrower", utf8);
+        // In `total`, which mentions nothing of `Counter`'s.
+        let in_total = |text: String| {
+            text.replacen(
+                "  shape.area + shape.double\n",
+                "  sh\n  shape.area + shape.double\n",
+                1,
+            )
+        };
+        // In `Counter.add`.
+        let in_add = |text: String| {
+            text.replacen(
+                "    @count += amount\n",
+                "    @count += amount\n    am\n",
+                1,
+            )
+        };
+        let (wanted, _) = e.complete(&in_total(text.clone()), "  sh\n");
+        let error = text.replacen(
+            "fn pub same(other: ref Counter)",
+            "fn pub same(other: ref Countr)",
+            1,
+        );
+
+        // An error in another type's method's signature: answered, the
+        // same as without it.
+        let (result, status) = e.complete(&in_total(error.clone()), "  sh\n");
+
+        assert_eq!(status["status"], "fresh", "{}", status);
+        assert_eq!(items(&result), items(&wanted), "UTF-8: {}", utf8);
+
+        // A method of that type half typed, blank in the repaired copy.
+        let typed = in_total(text.replacen(
+            "impl Counter {\n",
+            "impl Counter {\n  fn pub helper(by: ) {}\n\n",
+            1,
+        ));
+        let (result, status) = e.complete(&typed, "  sh\n");
+
+        assert_eq!(status["repaired"], true, "{}", status);
+        assert_eq!(items(&result), items(&wanted), "UTF-8: {}", utf8);
+
+        // The same error, in the type of the method the position is in: a
+        // method added there is in scope, so no names.
+        let (result, status) = e.complete(&in_add(error), "    am\n");
+
+        assert_eq!(result, Value::Null, "{}", status);
+        assert_eq!(status["reason"]["code"], "declarationErrors", "{}", status);
+
+        // In a trait the type of the method implements: no names.
+        let main = e.file.clone();
+
+        e.file = main.with_file_name("shapes.inko");
+
+        let shapes = std::fs::read_to_string(&e.file).unwrap();
+        let in_area =
+            |text: &str| text.replacen("    match self {\n", "    ar\n    match self {\n", 1);
+        let (result, status) = e.complete(&in_area(&shapes), "    ar\n");
+
+        assert_eq!(status["status"], "fresh", "{}", status);
+        assert!(labels(&result).contains(&"area".to_string()));
+
+        let typed = in_area(&shapes.replacen("fn pub double -> Float", "fn pub double -> Floa", 1));
+        let (result, status) = e.complete(&typed, "    ar\n");
+
+        assert_eq!(result, Value::Null, "{}", status);
+        assert_eq!(status["reason"]["code"], "declarationErrors", "{}", status);
+        e.file = main.clone();
+
+        // An error in another module: answered unless it's in what the
+        // module imports from there (`Area`'s header).
+        let other = main.with_file_name("shapes.inko");
+
+        for (from, to, answered) in [
+            (
+                "fn pub shape_count -> Int",
+                "fn pub shape_count -> Intt",
+                true,
+            ),
+            ("trait pub Area {", "trait pub Area[T: Nope] {", false),
+        ] {
+            e.client.open(&other, &shapes.replacen(from, to, 1));
+
+            let (result, status) = e.complete(&in_total(text.clone()), "  sh\n");
+
+            e.client.close(&other);
+
+            // What the check says (not the symbols to import, from the
+            // index, whose details are the module's as it is).
+            let checked = |result: &Value| -> Vec<String> {
+                items(result)
+                    .into_iter()
+                    .filter(|i| !i.contains("shape_"))
+                    .collect()
+            };
+
+            if answered {
+                assert_eq!(checked(&result), checked(&wanted), "{}: {}", to, status);
+            } else {
+                assert_eq!(result, Value::Null, "{}: {}", to, status);
+            }
+        }
+
+        // An error outside every type (a module's method, which is
+        // listed): no names.
+        let typed = in_total(text.replacen(
+            "fn pub describe(name: String)",
+            "fn pub describe(name: Strin)",
+            1,
+        ));
+        let (result, status) = e.complete(&typed, "  sh\n");
+
+        assert_eq!(result, Value::Null, "{}", status);
+    }
+}
+
+#[test]
+fn keywords_where_the_grammar_takes_them() {
+    let keywords = |result: &Value| -> Vec<String> {
+        let mut out: Vec<String> = result["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["kind"] == KEYWORD)
+            .map(|i| {
+                assert!(i["sortText"].as_str().unwrap().starts_with('4'), "{}", i);
+                i["label"].as_str().unwrap().to_string()
+            })
+            .collect();
+
+        out.sort();
+        out
+    };
+
+    for utf8 in [false, true] {
+        let (mut e, text) = edited("keywords", utf8);
+
+        // Where an expression starts.
+        let typed = text.replacen(
+            "    counter.add(NAMES.size)\n",
+            "    le\n    counter.add(NAMES.size)\n",
+            1,
+        );
+        let (result, _) = e.complete(&typed, "    le\n");
+
+        assert_eq!(
+            keywords(&result),
+            [
+                "async", "await", "break", "false", "fn", "for", "if", "let", "loop", "match",
+                "mut", "next", "nil", "recover", "ref", "return", "self", "throw", "true", "try",
+                "while"
+            ],
+            "UTF-8: {}",
+            utf8
+        );
+
+        // In a type's name, and after `ref` in one.
+        let typed = text.replacen("-> Float {", "-> Fl {", 1);
+        let (result, _) = e.complete(&typed, "-> Fl");
+
+        assert_eq!(keywords(&result), ["fn", "move", "mut", "ref", "uni"]);
+
+        let typed = text.replacen("fn total(shape: ref Shape)", "fn total(shape: ref Sha)", 1);
+        let (result, _) = e.complete(&typed, "ref Sha");
+
+        assert_eq!(keywords(&result), ["fn"]);
+
+        // After `@`: fields only.
+        let typed = text.replacen("    @count += amount\n", "    @count += @c\n", 1);
+        let (result, _) = e.complete(&typed, "@count += @c");
+
+        assert_eq!(keywords(&result), Vec::<String>::new());
+        assert!(!labels(&result).is_empty());
+    }
 }
