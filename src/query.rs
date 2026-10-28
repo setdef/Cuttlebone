@@ -1817,16 +1817,33 @@ pub fn fixes(
             .collect();
         let mut out = Vec::new();
         let mut tried = 0;
+        // What each fix tried so far gave: one that fixes several
+        // diagnostics (all of an `impl` block's methods) is checked once.
+        let mut outcomes: Vec<(String, Vec<Edit>, Option<Fix>)> = Vec::new();
 
         for d in found {
             let mut good = Vec::new();
 
-            for (title, edits) in candidates(session, request, &file, &text, &d, imports) {
+            for (title, edits) in candidates(session, request, &file, &text, &d, &before, imports) {
+                let same = |(t, e, _): &&(String, Vec<Edit>, Option<Fix>)| {
+                    *t == title
+                        && e.len() == edits.len()
+                        && e.iter().zip(&edits).all(|(a, b)| {
+                            a.file == b.file && a.range == b.range && a.text == b.text
+                        })
+                };
+
+                if let Some((_, _, outcome)) = outcomes.iter().find(same) {
+                    good.extend(outcome.clone());
+                    continue;
+                }
+
                 if tried == MAX_FIXES {
                     break;
                 }
 
                 tried += 1;
+                outcomes.push((title.clone(), edits.clone(), None));
 
                 // The documents with the fix, and the files it edits.
                 let mut contents = request.contents.clone();
@@ -1855,7 +1872,7 @@ pub fn fixes(
                     continue;
                 }
 
-                good.push(Fix {
+                let fix = Fix {
                     title,
                     edits: edits
                         .iter()
@@ -1872,7 +1889,13 @@ pub fn fixes(
                             )
                         })
                         .collect(),
-                });
+                };
+
+                if let Some(last) = outcomes.last_mut() {
+                    last.2 = Some(fix.clone());
+                }
+
+                good.push(fix);
             }
 
             if !good.is_empty() {
@@ -1935,12 +1958,25 @@ fn fixed_without_errors(before: &[Diagnostic], after: &[Diagnostic], fixed: &Dia
 /// - `unused-result`: `let _ = ` before the expression
 /// - `invalid-assign`, "the variable (or field) 'x' is immutable": `mut`
 ///   in the `let` that defines it, as definition finds it (`assigned`)
+/// - `missing-field`, "the field 'x' must be assigned a value": `x: v` in
+///   the call, for a value of the field's type as its type declares it
+///   (`default_value`), and `x: x`, if the text has the name elsewhere
+/// - `invalid-implementation`, "the method 'SIG' must be implemented for
+///   'T'": every method the `impl` block lacks, by the compiler's
+///   signatures (`stubs`)
+/// - `missing-trait`, "the trait 'R' isn't implemented for type 'T'":
+///   `impl R for T` after the `impl` block that needs it, with the methods
+///   a check of it says it lacks
+/// - `unreachable`, "this code is unreachable": the statement and the rest
+///   of its block, or the `case` arm
+#[allow(clippy::too_many_arguments)] // Each is what one kind of fix reads.
 fn candidates(
     session: &Session,
     request: &Request,
     file: &Path,
     text: &str,
     d: &Diagnostic,
+    before: &[Diagnostic],
     imports: &[ImportFix],
 ) -> Vec<(String, Vec<Edit>)> {
     let Some(start) = byte_offset(text, d.range.start, request.encoding) else {
@@ -2082,7 +2118,551 @@ fn candidates(
                 .take(1)
                 .collect()
         }
+        "missing-field" => {
+            let Some(field) = quoted("the field '", "' must be assigned a value") else {
+                return Vec::new();
+            };
+
+            missing_field(session, request, text, d, start, &field)
+                .into_iter()
+                .map(|(title, range, with)| (title, vec![edit(range, &with)]))
+                .collect()
+        }
+        "invalid-implementation" => {
+            let signature = |m: &str| {
+                m.strip_prefix("the method '")?
+                    .rsplit_once("' must be implemented for '")
+                    .map(|(s, _)| s.to_string())
+            };
+
+            if signature(&d.message).is_none() {
+                return Vec::new();
+            }
+
+            // Every method this `impl` block lacks: the compiler reports
+            // each at the block.
+            let lacking: Vec<String> = before
+                .iter()
+                .filter(|b| {
+                    b.id == d.id
+                        && b.range == d.range
+                        && canonical(&b.file).is_ok_and(|f| f == file)
+                })
+                .filter_map(|b| signature(&b.message))
+                .collect();
+            let title = match lacking.as_slice() {
+                [one] => format!("Implement {}", method_name(one)),
+                _ => "Implement the missing methods".to_string(),
+            };
+
+            stubs(session, request, text, start, &lacking)
+                .map(|(range, with)| vec![(title, vec![edit(range, &with)])])
+                .unwrap_or_default()
+        }
+        "missing-trait" => {
+            let Some((name, typ)) = d
+                .message
+                .strip_prefix("the trait '")
+                .and_then(|m| m.strip_suffix("'"))
+                .and_then(|m| m.split_once("' isn't implemented for type '"))
+            else {
+                return Vec::new();
+            };
+
+            missing_trait(session, request, file, text, start, name, typ)
+                .map(|(at, with)| {
+                    vec![(
+                        format!("Implement {} for {}", name, typ),
+                        vec![edit(at..at, &with)],
+                    )]
+                })
+                .unwrap_or_default()
+        }
+        "unreachable" if d.message == "this code is unreachable" => unreachable(
+            text,
+            start,
+            byte_offset(text, d.range.end, request.encoding),
+        )
+        .map(|range| {
+            vec![(
+                "Remove the unreachable code".to_string(),
+                vec![edit(range, "")],
+            )]
+        })
+        .unwrap_or_default(),
         _ => Vec::new(),
+    }
+}
+
+/// What definition finds at a position of `text` (in bytes), in the
+/// documents of `request`: the text of the file it's in, and its outline's
+/// declaration there.
+fn declaration_of(
+    session: &Session,
+    request: &Request,
+    text: &str,
+    offset: usize,
+) -> Option<(String, syntax::Declaration)> {
+    let position = position_at(text, offset, request.encoding);
+    let at = Request {
+        position,
+        ..request.clone()
+    };
+    let Some(Ok(Some(Reply::Places(places)))) =
+        ask(session, &at, &[(Question::Definition, position)])
+            .pop()
+            .map(|a| a.result)
+    else {
+        return None;
+    };
+    let place = places.into_iter().next()?;
+    let t = request
+        .contents
+        .get(&place.file)
+        .cloned()
+        .or_else(|| std::fs::read_to_string(&place.file).ok())?;
+    let start = byte_offset(&t, place.range.start, request.encoding)?;
+    let declaration = syntax::parse(&t)?.named_at(start)?.0.clone();
+
+    Some((t, declaration))
+}
+
+/// A method's name in the compiler's signature of it: `area` in `fn pub
+/// area -> Int`, `==` in `fn pub ==(other: ref Self) -> Bool`.
+fn method_name(signature: &str) -> &str {
+    let mut rest = signature.strip_prefix("fn ").unwrap_or(signature);
+
+    for keyword in ["pub ", "static ", "mut ", "move ", "async "] {
+        rest = rest.strip_prefix(keyword).unwrap_or(rest);
+    }
+
+    rest.split(['(', ' ', '[']).next().unwrap_or(rest)
+}
+
+/// A value of a type, as written in a field's declaration, for a fix to
+/// fill in: `0`, `0.0`, `''`, `false`, `[]` or `Option.None`. `None` for
+/// any other type.
+fn default_value(typ: &str) -> Option<&'static str> {
+    let head = typ.split('[').next().unwrap_or(typ).trim();
+
+    Some(match head {
+        "Int" => "0",
+        "Float" => "0.0",
+        "String" => "''",
+        "Bool" => "false",
+        "Array" => "[]",
+        "Option" => "Option.None",
+        _ => return None,
+    })
+}
+
+/// The edits that add a field to the call `d` reports (`missing-field`),
+/// the arguments ending at its `)`: a value of its type, then the variable
+/// of its name. Each with its title.
+fn missing_field(
+    session: &Session,
+    request: &Request,
+    text: &str,
+    d: &Diagnostic,
+    start: usize,
+    field: &str,
+) -> Vec<(String, std::ops::Range<usize>, String)> {
+    let Some(end) = byte_offset(text, d.range.end, request.encoding) else {
+        return Vec::new();
+    };
+
+    if end <= start || !text[..end].ends_with(')') {
+        return Vec::new();
+    }
+
+    let close = end - 1;
+    let Some(open) = text[start..close].find('(').map(|i| start + i) else {
+        return Vec::new();
+    };
+    // The type's name: the last of `Point` or `geometry.Point`.
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let name = text[start..open]
+        .rfind(|c| !word(c))
+        .map_or(start, |i| start + i + 1);
+    let typ = declaration_of(session, request, text, name).and_then(|(_, declaration)| {
+        declaration
+            .children
+            .into_iter()
+            .find(|c| c.kind == syntax::Kind::Field && c.name == field)
+            .and_then(|c| Some(c.signature.split_once(':')?.1.trim().to_string()))
+    });
+    let written = text[..close].trim_end();
+    let separator = if written.ends_with('(') {
+        ""
+    } else if written.ends_with(',') {
+        " "
+    } else {
+        ", "
+    };
+    let at = written.len();
+    let mut values: Vec<String> = typ
+        .as_deref()
+        .and_then(default_value)
+        .map(str::to_string)
+        .into_iter()
+        .collect();
+    let elsewhere = text.match_indices(field).any(|(i, _)| {
+        (i < start || i >= end)
+            && !text[..i].ends_with(|c: char| word(c) || c == '@')
+            && !text[i + field.len()..].starts_with(word)
+    });
+
+    if elsewhere {
+        values.push(field.to_string());
+    }
+
+    values
+        .into_iter()
+        .map(|v| {
+            (
+                format!("Add {}: {}", field, v),
+                at..at,
+                format!("{}{}: {}", separator, field, v),
+            )
+        })
+        .collect()
+}
+
+/// The edit that adds a method to the `impl` block starting at `start` for
+/// each signature (the compiler's, `fn area -> Int`), each with a body
+/// that panics: before its `}`, or as its body if it has none. A trait's
+/// type parameters in the signatures are replaced by the block's type
+/// arguments (`T` by `Int` in `impl Iter[Int] for Numbers`), as the
+/// trait's declaration names them.
+fn stubs(
+    session: &Session,
+    request: &Request,
+    text: &str,
+    start: usize,
+    signatures: &[String],
+) -> Option<(std::ops::Range<usize>, String)> {
+    let outline = syntax::parse(text)?;
+    let block = outline
+        .all()
+        .into_iter()
+        .map(|(d, _)| d)
+        .find(|d| d.kind == syntax::Kind::Implementation && d.range.start == start)?;
+    let header = block.name.strip_prefix("impl ")?;
+    let (implemented, _) = header.split_once(" for ")?;
+    let arguments = written_arguments(implemented);
+    let mut replace: Vec<(String, String)> = Vec::new();
+
+    if !arguments.is_empty() {
+        let trait_name = implemented.split('[').next()?.trim();
+        let declaration = trait_declaration(session, request, text, trait_name)?;
+        let declared = declaration
+            .signature
+            .split_once('[')
+            .map(|(_, rest)| format!("X[{}", rest))
+            .unwrap_or_default();
+        let parameters: Vec<String> = written_arguments(declared.split(':').next()?)
+            .into_iter()
+            .map(|p| p.split(':').next().unwrap_or(&p).trim().to_string())
+            .collect();
+
+        if parameters.len() != arguments.len() {
+            return None;
+        }
+
+        replace = parameters.into_iter().zip(arguments).collect();
+    }
+
+    let line = text[..start].rfind('\n').map_or(0, |i| i + 1);
+    let indent = &text[line..start];
+
+    if !indent.trim().is_empty() {
+        return None;
+    }
+
+    let inner = format!("{}  ", indent);
+    let methods: Vec<String> = signatures
+        .iter()
+        .map(|s| {
+            format!(
+                "{inner}{} {{\n{inner}  panic('not implemented')\n{inner}}}",
+                substitute(s, &replace)
+            )
+        })
+        .collect();
+    let close = block.range.end.checked_sub(1)?;
+
+    if !text[close..].starts_with('}') {
+        return None;
+    }
+
+    let open = start + text[start..close].rfind('{')?;
+
+    if text[open + 1..close].trim().is_empty() {
+        Some((
+            open..close + 1,
+            format!("{{\n{}\n{}}}", methods.join("\n\n"), indent),
+        ))
+    } else {
+        let close_line = text[..close].rfind('\n').map_or(0, |i| i + 1);
+
+        if !text[close_line..close].trim().is_empty() {
+            return None;
+        }
+
+        Some((
+            close_line..close_line,
+            format!("\n{}\n", methods.join("\n\n")),
+        ))
+    }
+}
+
+/// The declaration of the trait `name` (`Iter`, or `iter.Iter`) as the
+/// syntax of `text` finds it, since definition gives nothing in an `impl`
+/// block's header with an error: in `text` itself, or in the module its
+/// imports bring it from, in std or the project's `src/` or `test/` (or
+/// any of the session's projects').
+fn trait_declaration(
+    session: &Session,
+    request: &Request,
+    text: &str,
+    name: &str,
+) -> Option<syntax::Declaration> {
+    let outline = syntax::parse(text)?;
+    let named = |outline: &syntax::Outline, name: &str| {
+        outline
+            .declarations
+            .iter()
+            .find(|d| d.kind == syntax::Kind::Trait && d.name == name)
+            .cloned()
+    };
+    let (module, name) = match name.rsplit_once('.') {
+        Some((module, name)) => (Some(module), name),
+        None => (None, name),
+    };
+    let path = match module {
+        None => {
+            if let Some(d) = named(&outline, name) {
+                return Some(d);
+            }
+
+            outline.imports.iter().find_map(|i| {
+                let (original, _, _) = i
+                    .symbols
+                    .as_deref()?
+                    .iter()
+                    .find(|(n, alias, _)| alias.as_deref().unwrap_or(n) == name)?;
+
+                Some((i.path.clone(), original.clone()))
+            })?
+        }
+        Some(module) => {
+            let import = outline
+                .imports
+                .iter()
+                .find(|i| i.symbols.is_none() && i.path.last().is_some_and(|l| l == module))?;
+
+            (import.path.clone(), name.to_string())
+        }
+    };
+    let relative = format!("{}.inko", path.0.join("/"));
+    let root = project_root(&request.file);
+    let mut directories = vec![session.std.clone(), root.join("src"), root.join("test")];
+
+    for project in &session.projects {
+        directories.push(project.join("src"));
+        directories.push(project.join("test"));
+    }
+
+    directories.into_iter().find_map(|d| {
+        let file = d.join(&relative);
+        let text = request
+            .contents
+            .get(&file)
+            .cloned()
+            .or_else(|| std::fs::read_to_string(&file).ok())?;
+
+        named(&syntax::parse(&text)?, &path.1)
+    })
+}
+
+/// The type arguments of `Name[A, B[C]]`, as written: `A` and `B[C]`.
+fn written_arguments(typ: &str) -> Vec<String> {
+    let Some((_, rest)) = typ.split_once('[') else {
+        return Vec::new();
+    };
+    let Some(inside) = rest.trim_end().strip_suffix(']') else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut depth = 0;
+    let mut current = String::new();
+
+    for c in inside.chars() {
+        match c {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(current.trim().to_string());
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+
+        current.push(c);
+    }
+
+    if !current.trim().is_empty() {
+        out.push(current.trim().to_string());
+    }
+
+    out
+}
+
+/// `signature` with each name in `replace` replaced, as a whole word.
+fn substitute(signature: &str, replace: &[(String, String)]) -> String {
+    let mut out = String::new();
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        match replace.iter().find(|(from, _)| from == word) {
+            Some((_, to)) => out.push_str(to),
+            None => out.push_str(word),
+        }
+
+        word.clear();
+    };
+
+    for c in signature.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+
+    flush(&mut word, &mut out);
+    out
+}
+
+/// The text that implements a trait (`missing-trait`) after the `impl`
+/// block starting at `start`, and where: `impl R for T`, with the methods
+/// a check of the documents with it added says it lacks (`stubs`).
+fn missing_trait(
+    session: &Session,
+    request: &Request,
+    file: &Path,
+    text: &str,
+    start: usize,
+    name: &str,
+    typ: &str,
+) -> Option<(usize, String)> {
+    let outline = syntax::parse(text)?;
+    let block = outline
+        .all()
+        .into_iter()
+        .map(|(d, _)| d)
+        .find(|d| d.kind == syntax::Kind::Implementation && d.range.start == start)?;
+    let line = text[..start].rfind('\n').map_or(0, |i| i + 1);
+    let indent = &text[line..start];
+    let at = block.range.end;
+    let empty = format!("\n\n{}impl {} for {} {{}}", indent, name, typ);
+    let added = at + 2 + indent.len();
+    let mut with = text.to_string();
+
+    with.insert_str(at, &empty);
+
+    let mut contents = request.contents.clone();
+
+    contents.insert(file.to_path_buf(), with.clone());
+
+    let target = diagnostics_target(session, file)?;
+    let checked = diagnostics(
+        session,
+        &Request {
+            file: target,
+            contents: contents.clone(),
+            ..request.clone()
+        },
+    )
+    .result
+    .ok()??;
+    let added_at = position_at(&with, added, request.encoding);
+    let lacking: Vec<String> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.id == "invalid-implementation"
+                && d.range.start == added_at
+                && canonical(&d.file).is_ok_and(|f| f == file)
+        })
+        .filter_map(|d| {
+            d.message
+                .strip_prefix("the method '")?
+                .rsplit_once("' must be implemented for '")
+                .map(|(s, _)| s.to_string())
+        })
+        .collect();
+
+    if lacking.is_empty() {
+        return Some((at, empty));
+    }
+
+    let edited = Request {
+        file: file.to_path_buf(),
+        contents,
+        ..request.clone()
+    };
+    let (range, stubbed) = stubs(session, &edited, &with, added, &lacking)?;
+
+    with.replace_range(range.clone(), &stubbed);
+
+    let end = at + empty.len() + stubbed.len() - range.len();
+
+    Some((at, with[at..end].to_string()))
+}
+
+/// What to remove for unreachable code starting at `start` (and ending at
+/// `end`, if known): the lines of a `case` arm, or else the lines from the
+/// statement to the end of its block, with the blank lines before it.
+fn unreachable(text: &str, start: usize, end: Option<usize>) -> Option<std::ops::Range<usize>> {
+    let line = text[..start].rfind('\n').map_or(0, |i| i + 1);
+
+    if !text[line..start].trim().is_empty() {
+        return None;
+    }
+
+    // The blank lines before it go too.
+    let mut from = line;
+
+    while from > 0 {
+        let previous = text[..from - 1].rfind('\n').map_or(0, |i| i + 1);
+
+        if !text[previous..from].trim().is_empty() || previous == from {
+            break;
+        }
+
+        from = previous;
+    }
+
+    if text[start..].starts_with("case ") {
+        let end = end?;
+        let rest = &text[end..];
+        let line_end = end + rest.find('\n').map_or(rest.len(), |i| i + 1);
+
+        return text[end..line_end]
+            .trim()
+            .is_empty()
+            .then_some(line..line_end);
+    }
+
+    let close = syntax::block_end(text, start)?;
+    let close_line = text[..close].rfind('\n').map_or(0, |i| i + 1);
+
+    if text[close_line..close].trim().is_empty() && close_line > line {
+        Some(from..close_line)
+    } else {
+        None
     }
 }
 

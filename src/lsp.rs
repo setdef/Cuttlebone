@@ -1353,15 +1353,28 @@ impl Server {
     }
 
     /// The quick fixes the worker found (`query::fixes`), as code actions:
-    /// each with the diagnostic it fixes, as published, and its edits.
+    /// each with the diagnostics it fixes, as published, and its edits. A
+    /// fix found for several diagnostics (the same title and edits) is one
+    /// action, with all of them.
     fn code_actions(&self, found: Vec<(query::Diagnostic, Vec<query::Fix>)>) -> Value {
-        let mut actions = Vec::new();
+        let mut actions: Vec<Value> = Vec::new();
+        let mut seen: Vec<query::Fix> = Vec::new();
 
         for (d, fixes) in found {
             let diagnostic = self.lsp_diagnostic(&d);
             let only = fixes.len() == 1;
 
             for fix in fixes {
+                if let Some(i) = seen.iter().position(|f| *f == fix) {
+                    if let Some(list) = actions[i]["diagnostics"].as_array_mut() {
+                        list.push(json!(diagnostic));
+                    }
+
+                    continue;
+                }
+
+                seen.push(fix.clone());
+
                 let mut changes: BTreeMap<String, Vec<Value>> = BTreeMap::new();
 
                 for (file, r, text) in fix.edits {

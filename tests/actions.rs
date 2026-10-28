@@ -211,7 +211,9 @@ fn with_id<'a>(diagnostics: &'a [Value], id: &str) -> &'a Value {
 }
 
 /// Checks that every action fixes its diagnostic without adding an error,
-/// by the oracle: `inko check` on the project with it applied reports
+/// of the actions for it (the request's range may have others, and an
+/// action may fix several), by the oracle: `inko check` on the project
+/// with it applied reports
 /// fewer of the diagnostic than on the project as it is, and each error
 /// (by file, ID and message) at most as often as before, less the one
 /// fixed. Returns their titles and the main file after each.
@@ -241,9 +243,15 @@ fn fixed(project: &Project, actions: &Value, fixes: &Value, file: &str) -> Vec<(
         .as_array()
         .unwrap()
         .iter()
+        .filter(|a| {
+            a["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d == fixes)
+        })
         .map(|a| {
             assert_eq!(a["kind"], "quickfix");
-            assert_eq!(a["diagnostics"], json!([fixes]), "{}", a);
 
             let after = project.checked(a);
 
@@ -741,4 +749,349 @@ fn code_actions_are_only_for_clients_and_kinds_that_take_them() {
 
     assert_eq!(actions.as_array().unwrap().len(), 1);
     assert!(actions[0].get("isPreferred").is_none());
+}
+
+/// Finds the published diagnostic with `message`.
+fn with_message(published: &[Value], message: &str) -> Value {
+    published
+        .iter()
+        .find(|d| d["message"] == message)
+        .unwrap_or_else(|| panic!("no {:?} in {:?}", message, published))
+        .clone()
+}
+
+#[test]
+fn a_missing_field_is_added_to_the_call() {
+    let main = "type Point {
+  let @x: Int
+  let @y: Float
+  let @name: String
+  let @tags: Array[String]
+  let @other: Main
+}
+
+type async Main {
+  fn async main {
+    let name = 'é'
+    let _ = Point(x: 1)
+  }
+}
+";
+
+    for utf8 in [false, true] {
+        let mut project =
+            Project::new("missing-field", utf8, &[("src/main.inko", main)], json!({}));
+        let published = project.open("src/main.inko");
+
+        for (field, fixes) in [
+            ("y", vec![("Add y: 0.0", "Point(x: 1, y: 0.0)")]),
+            (
+                "name",
+                vec![
+                    ("Add name: ''", "Point(x: 1, name: '')"),
+                    ("Add name: name", "Point(x: 1, name: name)"),
+                ],
+            ),
+            ("tags", vec![("Add tags: []", "Point(x: 1, tags: [])")]),
+            // No value of its type to give, and no variable of its name.
+            ("other", vec![]),
+        ] {
+            let d = with_message(
+                &published,
+                &format!("the field '{}' must be assigned a value", field),
+            );
+            let (_, actions) =
+                project.actions("src/main.inko", std::slice::from_ref(&d), json!({}));
+            let wanted: Vec<(String, String)> = fixes
+                .into_iter()
+                .map(|(t, call)| (t.to_string(), main.replace("Point(x: 1)", call)))
+                .collect();
+
+            assert_eq!(
+                fixed(&project, &actions, &d, "src/main.inko"),
+                wanted,
+                "{} (UTF-8: {})",
+                field,
+                utf8
+            );
+        }
+    }
+
+    // An empty call, and one across lines with a trailing comma.
+    let main = "type Point {
+  let @x: Int
+  let @y: Int
+}
+
+type async Main {
+  fn async main {
+    let _ = Point(
+      x: 1,
+    )
+    let _ = Point()
+  }
+}
+";
+    let mut project = Project::new(
+        "missing-fields",
+        false,
+        &[("src/main.inko", main)],
+        json!({}),
+    );
+    let published = project.open("src/main.inko");
+    let mut titles = Vec::new();
+
+    for d in published.iter().filter(|d| d["code"] == "missing-field") {
+        let (_, actions) = project.actions("src/main.inko", std::slice::from_ref(d), json!({}));
+
+        titles.extend(fixed(&project, &actions, d, "src/main.inko"));
+    }
+
+    assert!(titles.contains(&(
+        "Add y: 0".to_string(),
+        main.replace("      x: 1,\n", "      x: 1, y: 0\n")
+    )));
+    assert!(titles.contains(&(
+        "Add x: 0".to_string(),
+        main.replace("Point()", "Point(x: 0)")
+    )));
+}
+
+const SHAPES: &str = "import std.fmt (Format, Formatter)
+
+trait Shape: Format {
+  fn area -> Int
+
+  fn pub mut scale(by: Int, label: String) -> Array[Int]
+
+  fn twice -> Int {
+    area * 2
+  }
+}
+
+trait Gen[T] {
+  fn next -> Option[T]
+}
+
+type Point {
+  let @x: Int
+}
+
+impl Format for Point {
+  fn pub fmt(formatter: mut Formatter) {}
+}
+
+impl Shape for Point {
+  fn area -> Int {
+    1
+  }
+}
+
+impl Gen[Int] for Point {}
+
+type async Main {
+  fn async main {}
+}
+";
+
+#[test]
+fn an_implementation_gets_the_methods_it_lacks() {
+    for utf8 in [false, true] {
+        let mut project = Project::new("stubs", utf8, &[("src/main.inko", SHAPES)], json!({}));
+        let published = project.open("src/main.inko");
+        let scale = with_message(
+            &published,
+            "the method 'fn pub mut scale(by: Int, label: String) -> Array[Int]' must be implemented for 'Point'",
+        );
+        let (_, actions) =
+            project.actions("src/main.inko", std::slice::from_ref(&scale), json!({}));
+
+        assert_eq!(
+            fixed(&project, &actions, &scale, "src/main.inko"),
+            [(
+                "Implement scale".to_string(),
+                SHAPES.replace(
+                    "    1\n  }\n}",
+                    "    1\n  }\n\n  fn pub mut scale(by: Int, label: String) -> Array[Int] {\n    panic('not implemented')\n  }\n}"
+                )
+            )],
+            "UTF-8: {}",
+            utf8
+        );
+
+        // A trait's type parameter is the block's type argument, in a body
+        // that was empty.
+        let next = with_message(
+            &published,
+            "the method 'fn next -> Option[T]' must be implemented for 'Point'",
+        );
+        let (_, actions) = project.actions("src/main.inko", std::slice::from_ref(&next), json!({}));
+
+        assert_eq!(
+            fixed(&project, &actions, &next, "src/main.inko"),
+            [(
+                "Implement next".to_string(),
+                SHAPES.replace(
+                    "impl Gen[Int] for Point {}",
+                    "impl Gen[Int] for Point {\n  fn next -> Option[Int] {\n    panic('not implemented')\n  }\n}"
+                )
+            )]
+        );
+    }
+
+    // A trait imported from std, whose type parameter its own module
+    // names.
+    let main = "import std.iter (Iter)
+
+type Numbers {
+  let @n: Int
+}
+
+impl Iter[Int] for Numbers {}
+
+type async Main {
+  fn async main {}
+}
+";
+    let mut project = Project::new("stubs-std", false, &[("src/main.inko", main)], json!({}));
+    let published = project.open("src/main.inko");
+    let next = with_id(&published, "invalid-implementation").clone();
+    let (_, actions) = project.actions("src/main.inko", std::slice::from_ref(&next), json!({}));
+
+    assert_eq!(
+        fixed(&project, &actions, &next, "src/main.inko"),
+        [(
+            "Implement next".to_string(),
+            main.replace(
+                "impl Iter[Int] for Numbers {}",
+                "impl Iter[Int] for Numbers {\n  fn pub mut next -> Option[Int] {\n    panic('not implemented')\n  }\n}"
+            )
+        )]
+    );
+
+    // Several, in one fix for each of their diagnostics.
+    let text = SHAPES.replace("  fn area -> Int {\n    1\n  }\n", "");
+    let mut project = Project::new("stubs-all", false, &[("src/main.inko", &text)], json!({}));
+    let published = project.open("src/main.inko");
+    let area = with_message(
+        &published,
+        "the method 'fn area -> Int' must be implemented for 'Point'",
+    );
+    let (_, actions) = project.actions("src/main.inko", std::slice::from_ref(&area), json!({}));
+
+    // One action, for both diagnostics.
+    assert_eq!(actions.as_array().unwrap().len(), 1, "{}", actions);
+    assert_eq!(
+        actions[0]["diagnostics"].as_array().unwrap().len(),
+        2,
+        "{}",
+        actions
+    );
+    assert_eq!(
+        fixed(&project, &actions, &area, "src/main.inko"),
+        [(
+            "Implement the missing methods".to_string(),
+            text.replace(
+                "impl Shape for Point {\n}",
+                "impl Shape for Point {\n  fn area -> Int {\n    panic('not implemented')\n  }\n\n  fn pub mut scale(by: Int, label: String) -> Array[Int] {\n    panic('not implemented')\n  }\n}"
+            )
+        )]
+    );
+}
+
+#[test]
+fn a_missing_trait_is_implemented_with_its_methods() {
+    let text = SHAPES
+        .replace(
+            "impl Format for Point {\n  fn pub fmt(formatter: mut Formatter) {}\n}\n\n",
+            "",
+        )
+        .replace(
+            "  fn area -> Int {\n    1\n  }\n",
+            "  fn area -> Int {\n    1\n  }\n\n  fn pub mut scale(by: Int, label: String) -> Array[Int] {\n    []\n  }\n",
+        )
+        .replace("impl Gen[Int] for Point {}\n\n", "");
+
+    for utf8 in [false, true] {
+        let mut project = Project::new("trait", utf8, &[("src/main.inko", &text)], json!({}));
+        let published = project.open("src/main.inko");
+        let missing = with_id(&published, "missing-trait").clone();
+        let (_, actions) =
+            project.actions("src/main.inko", std::slice::from_ref(&missing), json!({}));
+        let block = "  fn pub mut scale(by: Int, label: String) -> Array[Int] {\n    []\n  }\n}";
+
+        assert_eq!(
+            fixed(&project, &actions, &missing, "src/main.inko"),
+            [(
+                "Implement Format for Point".to_string(),
+                text.replace(
+                    block,
+                    &format!(
+                        "{}\n\nimpl Format for Point {{\n  fn pub fmt(formatter: mut Formatter) {{\n    panic('not implemented')\n  }}\n}}",
+                        block
+                    )
+                )
+            )],
+            "UTF-8: {}",
+            utf8
+        );
+    }
+}
+
+#[test]
+fn unreachable_code_is_removed() {
+    let main = "type async Main {
+  fn async main {
+    let _ = 1
+
+    return
+
+    let _ = 2
+    let _ = [
+      3,
+    ]
+  }
+
+  fn f(v: Option[Int]) -> Int {
+    match v {
+      case Some(_) -> 1
+      case None -> 2
+      case _ -> {
+        3
+      }
+    }
+  }
+}
+";
+
+    for utf8 in [false, true] {
+        let mut project = Project::new("unreachable", utf8, &[("src/main.inko", main)], json!({}));
+        let published = project.open("src/main.inko");
+        let mut fixes = Vec::new();
+
+        for d in published.iter().filter(|d| d["code"] == "unreachable") {
+            let (_, actions) = project.actions("src/main.inko", std::slice::from_ref(d), json!({}));
+
+            fixes.extend(fixed(&project, &actions, d, "src/main.inko"));
+        }
+
+        assert_eq!(
+            fixes,
+            [
+                (
+                    "Remove the unreachable code".to_string(),
+                    main.replace(
+                        "    return\n\n    let _ = 2\n    let _ = [\n      3,\n    ]\n",
+                        "    return\n"
+                    )
+                ),
+                (
+                    "Remove the unreachable code".to_string(),
+                    main.replace("      case _ -> {\n        3\n      }\n", "")
+                ),
+            ],
+            "UTF-8: {}",
+            utf8
+        );
+    }
 }

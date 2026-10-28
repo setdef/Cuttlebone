@@ -1103,6 +1103,10 @@ applies the edit.
 | `unused-symbol` | the symbol 'x' is unused, a variable | `Rename x to _x`, which the compiler doesn't count as unused |
 | `unused-result` | the result of this expression is unused | `Assign the result to _`: `let _ = ` before it |
 | `invalid-assign` | the variable (or field) 'x' is immutable and can't be assigned a new value | `Make x mutable`: `mut` in the `let` that defines it, where the compiler looked the name up (the innermost variable of that name in scope, or the field of the method's type), in whichever file it is |
+| `missing-field` | the field 'x' must be assigned a value | `Add x: v`: the field added to the call, with a value of its type as the type's declaration writes it (`0` for `Int`, `0.0`, `''`, `false`, `[]` and `Option.None` for `Float`, `String`, `Bool`, `Array[...]` and `Option[...]`), and `Add x: x` if the file has the name `x` elsewhere; each only if it checks |
+| `invalid-implementation` | the method 'SIG' must be implemented for 'T' | `Implement m`, or `Implement the missing methods` if the `impl` block lacks several: each method it lacks, with the compiler's signature for it (a trait's type parameters replaced by the block's type arguments, from the trait's declaration in the file or the module it's imported from) and a body of `panic('not implemented')`, at the end of the block. One action, for all of the block's diagnostics |
+| `missing-trait` | the trait 'R' isn't implemented for type 'T' | `Implement R for T`: `impl R for T` after the `impl` block that requires it, with the methods a check of the documents with it says it lacks, as above |
+| `unreachable` | this code is unreachable | `Remove the unreachable code`: the statement, the rest of its block and the blank lines before it, or a `case` arm's lines |
 
 ```json
 → {"jsonrpc": "2.0", "id": 12, "method": "textDocument/codeAction", "params": {
@@ -1131,6 +1135,16 @@ applies the edit.
   `context.only` has no kind that includes `quickfix` gets `[]` at once.
 - **`isPreferred`**, for a client with `isPreferredSupport`, marks the
   only fix for a diagnostic.
+- **One action for several diagnostics:** a fix that's the same for
+  several (the same title and edits, as stubbing an `impl` block's
+  methods is for each method it lacks) is one action, whose
+  `diagnostics` has them all, checked once.
+- **What a check can't see:** the compiler stops after a pass that
+  reported an error (`missing-trait` is reported where types are
+  defined, before method bodies are checked), so a fix for such an error
+  lets later passes report what they find, and counts as adding those
+  errors if the documents have any: it isn't offered until they're
+  fixed.
 - **Edits** are `WorkspaceEdit.changes`, by URI, in the negotiated
   encoding.
 - **Cost:** one full check of the documents, and one for each fix (at

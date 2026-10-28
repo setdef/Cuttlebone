@@ -1192,6 +1192,65 @@ pub fn folds(text: &str) -> Vec<Fold> {
     out
 }
 
+/// Where the `}` is that closes the innermost `{` open at `offset` (in
+/// bytes), matching brackets as `folds` does, from the tokens (so not in
+/// strings or comments). `None` if nothing is open there, or nothing
+/// closes it.
+pub fn block_end(text: &str, offset: usize) -> Option<usize> {
+    use ast::lexer::{Lexer, TokenKind as T};
+
+    let lines = Lines::new(text);
+    let mut lexer = Lexer::new(text.as_bytes().to_vec());
+    let mut open: Vec<T> = Vec::new();
+    // How many brackets are open, and the innermost `{`, at `offset`.
+    let mut inner: Option<usize> = None;
+
+    loop {
+        let token = lexer.next_token();
+        let l = &token.location;
+
+        match token.kind {
+            T::Null => return None,
+            T::Whitespace | T::Comment => continue,
+            _ => {}
+        }
+
+        let at = lines
+            .offset(l.line_start, l.column_start)
+            .unwrap_or(text.len());
+
+        if inner.is_none() && at >= offset {
+            inner = Some(open.iter().rposition(|k| *k == T::CurlyOpen)?);
+        }
+
+        match token.kind {
+            T::CurlyOpen | T::ParenOpen | T::BracketOpen => open.push(token.kind),
+            T::CurlyClose | T::ParenClose | T::BracketClose => {
+                let opening = match token.kind {
+                    T::CurlyClose => T::CurlyOpen,
+                    T::ParenClose => T::ParenOpen,
+                    _ => T::BracketOpen,
+                };
+
+                if let Some(i) = open.iter().rposition(|k| *k == opening) {
+                    if inner == Some(i) {
+                        return Some(at);
+                    }
+
+                    open.truncate(i);
+
+                    if inner.is_some_and(|n| n > i) {
+                        // What was open at `offset` was closed by another
+                        // kind's bracket: it doesn't match.
+                        return None;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn comment_fold(run: Option<(u32, usize, u32, usize)>) -> Option<Fold> {
     let (from, start, last, end) = run?;
 
