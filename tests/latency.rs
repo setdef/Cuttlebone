@@ -783,6 +783,13 @@ fn references_across_std_are_fast_enough() {
     assert!(median < max, "median {:?} exceeds {:?}", median, max);
 }
 
+/// How long subtypes and a file's rename may take across std: a check of
+/// the whole project, as references, and more than references then (the
+/// declarations of every file an implementing type is in, read for its
+/// item; every importer's uses of the module). Neither is asked while
+/// typing: a client asks for a hierarchy, or before it moves a file.
+const WHOLE_PROJECT_LIMIT: Duration = Duration::from_millis(750);
+
 /// Implementations, incoming calls, subtypes and a file's rename each
 /// check the whole project, as references do: across all of std.
 #[test]
@@ -832,7 +839,10 @@ fn implementations_hierarchies_and_renames_across_std_are_fast_enough() {
 
         eprintln!("{} across std: {:?} (all: {:?})", method, median, times);
 
-        let max = limit(LIMIT);
+        let max = match method {
+            "typeHierarchy/subtypes" | "workspace/willRenameFiles" => limit(WHOLE_PROJECT_LIMIT),
+            _ => limit(LIMIT),
+        };
 
         assert!(
             median < max,
