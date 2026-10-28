@@ -570,6 +570,68 @@ fn workspace_symbols_are_fast_enough_to_type_into() {
     );
 }
 
+/// How long every workspace symbol may take, for a client that indexes
+/// (an empty query, or partial results): every module's declarations,
+/// read before, all of them sent.
+const EVERY_WORKSPACE_SYMBOL_LIMIT: Duration = Duration::from_millis(400);
+
+#[test]
+fn every_workspace_symbol_is_fast_enough_for_an_index() {
+    let _alone = alone();
+    let (root, _) = std_sized_project();
+    let mut client = uncached(&root, QUERIES_ONLY.clone());
+
+    // The index read first, as by the first query.
+    client.request("workspace/symbol", json!({ "query": "S" }));
+
+    let mut all = Vec::new();
+    let mut partial = Vec::new();
+
+    for _ in 0..5 {
+        let start = Instant::now();
+        let response = client.request("workspace/symbol", json!({ "query": "" }));
+
+        all.push(start.elapsed());
+        assert!(response["result"].as_array().unwrap().len() > 5000);
+
+        // Partial results: until the response, after every batch.
+        let start = Instant::now();
+        let response = client.request(
+            "workspace/symbol",
+            json!({ "query": "", "partialResultToken": 1 }),
+        );
+
+        partial.push(start.elapsed());
+        assert_eq!(response["result"], json!([]));
+        client.notifications.clear();
+    }
+
+    all.sort();
+    partial.sort();
+
+    let (all, partial) = (all[all.len() / 2], partial[partial.len() / 2]);
+
+    eprintln!(
+        "every workspace symbol on a std-sized project: {:?} in a response, {:?} as partial results (medians)",
+        all, partial
+    );
+
+    let max = limit(EVERY_WORKSPACE_SYMBOL_LIMIT);
+
+    assert!(
+        all < max,
+        "every symbol: median {:?} exceeds {:?}",
+        all,
+        max
+    );
+    assert!(
+        partial < max,
+        "every symbol as partial results: median {:?} exceeds {:?}",
+        partial,
+        max
+    );
+}
+
 #[test]
 fn completion_on_a_std_sized_project_is_fast_enough() {
     let _shared = shared();

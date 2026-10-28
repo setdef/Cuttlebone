@@ -8,7 +8,7 @@
 //! An `Index` is kept between requests: `refresh` reads a file again only
 //! if its size or modification time changed, or its open document's text
 //! did, and drops files that are gone. Nothing is written anywhere.
-use crate::syntax::{self, Declaration, Kind, Outline};
+use crate::syntax::{self, Declaration, Outline};
 use compiler::pkg::manifest::{MANIFEST_FILE, Manifest};
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -242,10 +242,10 @@ impl Index {
         out
     }
 
-    /// Every declaration other than `impl` blocks that matches `query`
-    /// (`matches`), best first (and of equal matches, the projects', then
-    /// their dependencies', then std's), at most `limit`: each with its module and
-    /// the declarations it's in.
+    /// Every declaration that matches `query` (`matches`; an `impl` block
+    /// by its header, `impl Area for Shape`), best first (and of equal
+    /// matches, the projects', then their dependencies', then std's), at
+    /// most `limit`: each with its module and the declarations it's in.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Found<'_>> {
         let mut found: Vec<(Score, Found)> = Vec::new();
 
@@ -258,9 +258,7 @@ impl Index {
             found: &mut Vec<(Score, Found<'a>)>,
         ) {
             for declaration in list {
-                if declaration.kind != Kind::Implementation
-                    && let Some(score) = matches(query, &declaration.name)
-                {
+                if let Some(score) = matches(query, &declaration.name) {
                     found.push((
                         score,
                         Found {

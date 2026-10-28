@@ -1203,44 +1203,53 @@ fn diagnostics_wait_for_a_cancelled_check() {
 /// afterwards is a lookup, in the same worker.
 #[test]
 fn a_cancelled_check_is_kept_by_its_worker() {
-    let root = copy_fixture("features", "cancel-kept");
-    let main = root.join("src/main.inko");
-    let text = std::fs::read_to_string(&main).unwrap();
-    let mut client = Client::initialized_with(
-        Launch {
-            env: vec![],
-            unset: vec![NO_CACHE_VARIABLE],
-            cwd: None,
-        },
-        &root,
-        json!({ "diagnostics": false, "debounceMs": 0, "statusNotifications": true }),
-        json!({}),
-    );
-    let (line, character) = at(&text, "numbers.iter", 0, false);
+    // The cancel must come while the check runs: once a worker runs it
+    // (a cancel sent at once may be read before the check starts, on a
+    // loaded machine), and before it's answered, which a fast check may
+    // be first. If it was answered, again, in a new session.
+    for attempt in 0.. {
+        let root = copy_fixture("features", &format!("cancel-kept-{}", attempt));
+        let main = root.join("src/main.inko");
+        let text = std::fs::read_to_string(&main).unwrap();
+        let mut client = Client::initialized_with(
+            Launch {
+                env: vec![],
+                unset: vec![NO_CACHE_VARIABLE],
+                cwd: None,
+            },
+            &root,
+            json!({ "diagnostics": false, "debounceMs": 0, "statusNotifications": true }),
+            json!({}),
+        );
+        let (line, character) = at(&text, "numbers.iter", 0, false);
 
-    client.open(&main, &text);
+        client.open(&main, &text);
 
-    // Sent at once: the server starts the check before it reads the
-    // cancel, and the second hover then waits for it.
-    let cancelled = client.send_at("textDocument/hover", &main, line, character);
+        let cancelled = client.send_at("textDocument/hover", &main, line, character);
 
-    client.notify("$/cancelRequest", json!({ "id": cancelled }));
+        wait_for_a_worker(&client);
+        client.notify("$/cancelRequest", json!({ "id": cancelled }));
 
-    let id = client.send_at("textDocument/hover", &main, line, character);
+        // The second hover then waits for the cancelled check.
+        let id = client.send_at("textDocument/hover", &main, line, character);
+        let first = client.response(cancelled);
 
-    assert_eq!(
-        client.response(cancelled)["error"]["code"],
-        REQUEST_CANCELLED
-    );
+        if first.get("result").is_some() && attempt < 5 {
+            continue;
+        }
 
-    let response = client.response(id);
-    let workers = client.workers();
+        assert_eq!(first["error"]["code"], REQUEST_CANCELLED, "{}", first);
 
-    assert!(response["result"].is_object(), "{}", response);
-    assert_eq!(client.status(id).unwrap()["cached"], true);
-    assert_eq!(workers.len(), 1);
-    client.hover(&main, line, character);
-    assert_eq!(client.workers(), workers);
+        let response = client.response(id);
+        let workers = client.workers();
+
+        assert!(response["result"].is_object(), "{}", response);
+        assert_eq!(client.status(id).unwrap()["cached"], true);
+        assert_eq!(workers.len(), 1);
+        client.hover(&main, line, character);
+        assert_eq!(client.workers(), workers);
+        break;
+    }
 }
 
 #[test]

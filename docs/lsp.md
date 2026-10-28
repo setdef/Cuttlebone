@@ -1225,7 +1225,10 @@ whose names match the query:
   and its dependencies', in its `dep/`, where its `inko.pkg` says the
   compiler finds them (`dep/<url>/v<major>/src`). The same declarations
   as [document symbols](#textdocumentdocumentsymbol) (all of them, private
-  ones too), without `impl` blocks, which declare nothing themselves.
+  ones too), `impl` blocks among them: named by their header (`impl
+  ToString for Counter`, which a query matches as any name), of the same
+  kind as in document symbols (Object, or Class), located at the type's
+  name, so a client that indexes finds every implementation.
 - **From the syntax alone**, as document symbols are: the projects needn't
   type check, or parse. An open document's text counts instead of its
   file's, so a method typed and not saved is found.
@@ -1235,7 +1238,21 @@ whose names match the query:
 - **Order:** the whole name first, then names that start with the query,
   then those that have it in a run, then the rest; the same case as the
   query first; then the workspace's own, then dependencies', then std's;
-  then by name. At most 500 are given, the best.
+  then by name. At most 500 are given, the best, for a query that isn't
+  empty.
+- **Everything, for a client that indexes:** an empty query gets every
+  declaration, with no limit. A client that sends a `partialResultToken`
+  gets every match of any query as partial results: `$/progress`
+  notifications with that token, 500 symbols each, in the same order,
+  and then an empty response, as the spec says partial results end.
+- **Whether a declaration is public** isn't in a workspace symbol: LSP
+  has no way to say it there. `SymbolTag` has only `Deprecated`,
+  `WorkspaceSymbol` has no `detail`, and `containerName` is the qualifier
+  clients show (and Cuttlebone's is the path, `std.string.String`).
+  Rather than an extension, the standard alternative is the module's
+  [document symbols](#textdocumentdocumentsymbol), whose `detail` is the
+  declaration as written, with its `pub` and its signature: a client
+  that indexes can ask for those of the modules it needs.
 - **`location`** is the name, as definition's ranges are, in the
   negotiated encoding. **`containerName`** is the module and what the
   declaration is in: `std.string.String` for `String.size`. A method of an
@@ -1254,7 +1271,10 @@ Nothing is written anywhere.
 **Cost.** On an Apple M1 Max, under `cargo test`, for a project that
 imports all of std: about 220 ms for the first request, which reads and
 parses every module, and 6 to 35 ms for each after it as a query is typed.
-tests/latency.rs holds them to 500 ms and 50 ms.
+Every symbol (an empty query, over 5,000 of them) takes 180 to 290 ms in
+one response, and 80 to 110 ms as partial results, measured at load
+averages around 350. tests/latency.rs holds them to 500 ms, 50 ms and
+400 ms.
 
 ## Diagnostics
 

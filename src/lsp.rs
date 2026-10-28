@@ -2899,7 +2899,10 @@ impl Server {
     /// module the session's projects can import (`index`), brought up to
     /// date with the files and the open documents first: the declarations
     /// whose names match the query, best first, at most
-    /// `WORKSPACE_SYMBOLS`. No check, so the projects needn't type check.
+    /// `WORKSPACE_SYMBOLS`, or all of them for an empty query or a client
+    /// that takes partial results (`partialResultToken`), which get them
+    /// `WORKSPACE_SYMBOLS` at a time in `$/progress`, and an empty
+    /// response. No check, so the projects needn't type check.
     fn workspace_symbols(&mut self, connection: &Connection, request: Request) {
         let start = Instant::now();
         let params: lsp::WorkspaceSymbolParams = match serde_json::from_value(request.params) {
@@ -2921,9 +2924,14 @@ impl Server {
         };
         // Each module's positions and URI, once.
         let mut modules: HashMap<&std::path::Path, Option<(Positions, Value)>> = HashMap::new();
+        let token = params.partial_result_params.partial_result_token;
+        let limit = match (params.query.is_empty(), &token) {
+            (false, None) => WORKSPACE_SYMBOLS,
+            _ => usize::MAX,
+        };
         let found: Vec<Value> = self
             .index
-            .search(&params.query, WORKSPACE_SYMBOLS)
+            .search(&params.query, limit)
             .into_iter()
             .filter_map(|f| {
                 let (positions, uri) = modules
@@ -2954,6 +2962,22 @@ impl Server {
             })
             .collect();
 
+        let result = match token {
+            Some(token) => {
+                for batch in found.chunks(WORKSPACE_SYMBOLS) {
+                    let _ = connection
+                        .sender
+                        .send(Message::Notification(Notification::new(
+                            "$/progress".to_string(),
+                            json!({ "token": token, "value": batch }),
+                        )));
+                }
+
+                json!([])
+            }
+            None => Value::Array(found),
+        };
+
         self.syntax_status(
             connection,
             &request.id,
@@ -2962,7 +2986,7 @@ impl Server {
             Ok(false),
             start.elapsed(),
         );
-        reply(connection, request.id, Value::Array(found));
+        reply(connection, request.id, result);
     }
 
     /// A document's declarations as `DocumentSymbol[]`, or as
@@ -3303,7 +3327,8 @@ fn slice_units(text: &str, start: u32, end: u32, encoding: Encoding) -> String {
 /// matches.
 const IMPORTABLE: usize = 100;
 
-/// How many workspace symbols an answer has at most, the best matches.
+/// How many workspace symbols an answer to a query has at most, the best
+/// matches, and how many each partial result has.
 const WORKSPACE_SYMBOLS: usize = 500;
 
 /// What LSP calls a declaration of a kind. A client without the kinds

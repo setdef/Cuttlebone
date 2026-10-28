@@ -523,8 +523,12 @@ fn workspace_symbols_from_the_project_its_dependencies_and_std() {
             found
         );
 
-        // `impl` blocks declare nothing.
-        assert!(found.iter().all(|f| !f.contains(" impl ")), "{:?}", found);
+        // An `impl` block, by its header, located at its type's name.
+        assert!(
+            found.contains(&"19 impl Area for Shape shapes src/shapes.inko:19:Shape".to_string()),
+            "{:?}",
+            found
+        );
 
         // std's, private ones too, with what they're in.
         let (_, found) = workspace(&mut client, &root, "Stdout", utf8);
@@ -651,4 +655,77 @@ fn workspace_symbols_for_a_client_without_newer_kinds() {
     assert_eq!(found[0], "9 Circle shapes.Shape src/shapes.inko:5:Circle");
     // Nothing is written: a project without a manifest still has none.
     assert!(!root.join("inko.pkg").exists());
+}
+
+/// For a client that indexes: an empty query has every declaration, past
+/// the limit a query has; and a client that sends a `partialResultToken`
+/// gets them all as partial results, at most 500 at a time, and an empty
+/// response.
+#[test]
+fn every_workspace_symbol_for_an_index() {
+    for utf8 in [false, true] {
+        let root = project_with_a_dependency(&format!("workspace-index-{}", utf8));
+        let mut client = session(&root, utf8);
+        let (_, all) = workspace(&mut client, &root, "", utf8);
+        let (_, one) = workspace(&mut client, &root, "e", utf8);
+
+        assert!(all.len() > 5000, "{}", all.len());
+        assert_eq!(one.len(), 500);
+
+        for wanted in [
+            "5 Counter main src/main.inko:11:Counter",
+            "19 impl Counter main src/main.inko:28:Counter",
+            "12 area geo dep/example.com-acme-geo/v1/src/geo.inko:3:area",
+        ] {
+            let wanted = wanted.replace("example.com-acme-geo", &dep_dir());
+
+            assert!(all.contains(&wanted), "{} isn't in them", wanted);
+        }
+
+        // Partial results: the same, in batches, and nothing in the
+        // response.
+        for query in ["", "e"] {
+            let id = client.send_request(
+                "workspace/symbol",
+                json!({ "query": query, "partialResultToken": "symbols" }),
+            );
+            let response = client.response(id);
+
+            assert_eq!(response["result"], json!([]), "{}", query);
+
+            let batches: Vec<Value> = client
+                .notifications
+                .iter()
+                .filter(|n| n["method"] == "$/progress" && n["params"]["token"] == "symbols")
+                .map(|n| n["params"]["value"].clone())
+                .collect();
+
+            client.notifications.retain(|n| n["method"] != "$/progress");
+
+            assert!(batches.len() > 1, "{}: {}", query, batches.len());
+            assert!(
+                batches.iter().all(
+                    |b| !b.as_array().unwrap().is_empty() && b.as_array().unwrap().len() <= 500
+                )
+            );
+
+            let streamed: usize = batches.iter().map(|b| b.as_array().unwrap().len()).sum();
+            // Every match, past the 500 of an answer to a query: a name
+            // with an `e`, in any case, for `e`.
+            let wanted = if query.is_empty() {
+                all.len()
+            } else {
+                let id = client.send_request("workspace/symbol", json!({ "query": "" }));
+
+                client.response(id)["result"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|s| s["name"].as_str().unwrap().to_lowercase().contains('e'))
+                    .count()
+            };
+
+            assert_eq!(streamed, wanted, "{}", query);
+        }
+    }
 }
