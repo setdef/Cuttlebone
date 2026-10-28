@@ -4,7 +4,7 @@
 Usage: scripts/dist-manifest.py BASE_URL ARCHIVE...
 
 BASE_URL is where the archives are downloaded from, such as
-https://github.com/setdef/Cuttlebone/releases/download/v0.15.0; each
+https://github.com/setdef/Cuttlebone/releases/download/v0.16.0; each
 archive's URL is BASE_URL/NAME. Every archive must be for this tree's
 version (Cargo.toml) and Inko version (UPSTREAM_VERSION), and each target
 must appear once.

@@ -8,6 +8,16 @@ the entry links to the milestone's report, which its last commit adds
 (AGENTS.md, "Versions"). Milestones 1 to 6 were all built as 0.1.0; their
 versions here were given afterwards.
 
+## 0.16.0
+
+Milestone 16: answers a client that relies on Cuttlebone lost:
+diagnostics past a module that doesn't parse, implementations,
+hierarchies and file renames past a declaration error elsewhere, code
+lenses with every declaration's implementations and supertypes in one
+request, a status for every file rename, a selection step with a
+declaration's doc comment, and a trait's required and default methods.
+[Report](docs/history/MILESTONE-16.md).
+
 ## 0.15.0
 
 Milestone 15: what a client that indexes Inko itself still needed.
