@@ -1,6 +1,7 @@
 //! `textDocument/foldingRange` (docs/lsp.md): blocks, comment lines,
 //! imports, from the tokens alone, over LSP in both encodings, in code
-//! that doesn't parse, for clients without kinds or with a limit; and
+//! that doesn't parse, with the text shown collapsed, for clients
+//! without kinds, collapsed text or with a limit; and
 //! against the declarations of every module of std and the fixtures.
 use crate::common::client::{Client, uri};
 use cuttlebone::dump::upstream_std;
@@ -42,28 +43,38 @@ type async Main {
 }
 ";
 
-/// The folds of `TEXT`: lines, and kind.
-const FOLDS: &[(u32, u32, Option<&str>)] = &[
-    (0, 1, Some("comment")),
-    (2, 5, Some("imports")),
-    (3, 4, None),
-    (7, 8, Some("comment")),
-    (9, 19, None),
-    (12, 14, None),
-    (15, 18, None),
-    (22, 29, None),
-    (23, 28, None),
-    (24, 26, None),
+/// The folds of `TEXT`: lines, kind, and the text shown collapsed.
+const FOLDS: &[(u32, u32, Option<&str>, &str)] = &[
+    (0, 1, Some("comment"), "# The module's doc comment,"),
+    (2, 5, Some("imports"), "import ..."),
+    (3, 4, None, "(...)"),
+    (7, 8, Some("comment"), "# A doc comment"),
+    (9, 19, None, "{...}"),
+    (12, 14, None, "(...)"),
+    (15, 18, None, "{...}"),
+    (22, 29, None, "{...}"),
+    (23, 28, None, "{...}"),
+    (24, 26, None, "[...]"),
 ];
 
+/// `FOLDS`, with kinds and collapsed text for a client that takes them
+/// (as the tests' clients do, unless they say otherwise).
 fn expected(kinds: bool) -> Value {
+    expected_with(kinds, kinds)
+}
+
+fn expected_with(kinds: bool, collapsed: bool) -> Value {
     FOLDS
         .iter()
-        .map(|(start, end, kind)| {
+        .map(|(start, end, kind, text)| {
             let mut v = json!({ "startLine": start, "endLine": end });
 
             if let (true, Some(kind)) = (kinds, kind) {
                 v["kind"] = json!(kind);
+            }
+
+            if collapsed {
+                v["collapsedText"] = json!(text);
             }
 
             v
@@ -149,7 +160,7 @@ fn code_that_doesnt_parse_folds() {
         .filter(|f| f["startLine"] != 9)
         .map(|f| {
             if f["startLine"] == 15 {
-                json!({ "startLine": 15, "endLine": 18 })
+                json!({ "startLine": 15, "endLine": 18, "collapsedText": "{...}" })
             } else if f["startLine"].as_u64() > Some(15) {
                 let mut f = f.clone();
 
@@ -179,6 +190,15 @@ fn folds_have_kinds_and_a_limit_only_as_the_client_says() {
     );
 
     assert_eq!(folds(&mut client, &main).1, expected(false));
+
+    // Kinds, but no collapsed text.
+    let mut client = server(
+        &root,
+        false,
+        json!({ "textDocument": { "foldingRange": { "foldingRange": null } } }),
+    );
+
+    assert_eq!(folds(&mut client, &main).1, expected_with(true, false));
 
     // Comments only, and at most 4.
     let mut client = server(
@@ -222,8 +242,16 @@ fn folds_are_on_lsps_lines() {
 
     let got = folds(&mut client, &main).1;
 
-    assert_eq!(got[7], json!({ "startLine": 22, "endLine": 30 }));
-    assert_eq!(got[8], json!({ "startLine": 24, "endLine": 29 }));
+    assert_eq!(
+        got[7],
+        json!({ "startLine": 22, "endLine": 30, "collapsedText": "{...}" })
+    );
+    assert_eq!(
+        got[8],
+        json!({ "startLine": 24, "endLine": 29, "collapsedText": "{...}" })
+    );
+    // A comment's first line, without the `\r` that ends it.
+    assert_eq!(got[0]["collapsedText"], "# The module's doc comment,");
 }
 
 /// Every declaration with a body over three lines or more, in std and the

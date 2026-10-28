@@ -497,6 +497,15 @@ fn gates(method: &str, value: &Value, capabilities: &Value) -> Result<(), String
                 if r["endLine"].as_u64() <= r["startLine"].as_u64() {
                     return Err(format!("a folding range of one line: {}", r));
                 }
+
+                if r.get("collapsedText").is_some()
+                    && !supports(
+                        capabilities,
+                        "textDocument.foldingRange.foldingRange.collapsedText",
+                    )
+                {
+                    return Err("collapsedText without foldingRange.collapsedText".to_string());
+                }
             }
         }
         "textDocument/documentSymbol" => {
@@ -628,6 +637,7 @@ pub fn capable_client() -> Value {
             },
             "foldingRange": {
                 "foldingRangeKind": { "valueSet": ["comment", "imports", "region"] },
+                "foldingRange": { "collapsedText": true },
             },
             "codeAction": {
                 "codeActionLiteralSupport": { "codeActionKind": { "valueSet": ["quickfix"] } },

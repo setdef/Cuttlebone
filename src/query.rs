@@ -3218,17 +3218,44 @@ fn signature(scope: &Scope) -> Option<Signature> {
         .iter()
         .filter(|l| paren(l) < at && at <= (l.location.line_end, l.location.column_end))
         .max_by_key(|l| paren(l))?;
-    let (method, arguments) = list.method.as_ref()?;
-    let format = || TypeFormatter::new(db, None, Some(arguments));
-    let label = format().format(*method);
-    let mut params = method.arguments(db);
+    // The parameters' names, and each as the label shows it: a method's,
+    // or a type's fields for its constructor (`Point(x: Int, y: Int)`).
+    let (label, names, labels): (String, Vec<String>, Vec<String>) =
+        match (&list.method, list.constructed) {
+            (Some((method, arguments)), _) => {
+                let format = || TypeFormatter::new(db, None, Some(arguments));
+                let mut params = method.arguments(db);
 
-    params.sort_by_key(|p| p.index);
+                params.sort_by_key(|p| p.index);
 
-    let labels: Vec<String> = params
-        .iter()
-        .map(|p| format!("{}: {}", p.name, format().format(p.value_type)))
-        .collect();
+                (
+                    format().format(*method),
+                    params.iter().map(|p| p.name.clone()).collect(),
+                    params
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name, format().format(p.value_type)))
+                        .collect(),
+                )
+            }
+            (None, Some(TypeRef::Owned(TypeEnum::TypeInstance(ins)))) => {
+                let arguments = ins.type_arguments(db).cloned();
+                let format = || {
+                    TypeFormatter::new(db, Some(TypeEnum::TypeInstance(ins)), arguments.as_ref())
+                };
+                let fields = ins.instance_of().fields(db);
+                let labels: Vec<String> = fields
+                    .iter()
+                    .map(|f| format!("{}: {}", f.name(db), format().format(f.value_type(db))))
+                    .collect();
+
+                (
+                    format!("{}({})", format_type(db, ins), labels.join(", ")),
+                    fields.iter().map(|f| f.name(db).clone()).collect(),
+                    labels,
+                )
+            }
+            _ => return None,
+        };
     let mut offset = label
         .find(&format!("({})", labels.join(", ")))
         .map_or(0, |i| i + 1);
@@ -3262,7 +3289,7 @@ fn signature(scope: &Scope) -> Option<Signature> {
     let active = match list.arguments.get(slot) {
         Some(ListArgument {
             name: Some(name), ..
-        }) => params.iter().position(|p| &p.name == name),
+        }) => names.iter().position(|p| p == name),
         Some(_) => Some(slot),
         // An argument not written yet: the next positional one, or the
         // first not given by name.
@@ -3274,14 +3301,14 @@ fn signature(scope: &Scope) -> Option<Signature> {
                 .filter_map(|a| a.name.as_ref())
                 .collect();
 
-            (positional..params.len()).find(|i| !named.contains(&&params[*i].name))
+            (positional..names.len()).find(|i| !named.contains(&&names[*i]))
         }
     };
 
     Some(Signature {
         label,
         parameters,
-        active: active.filter(|i| *i < params.len()).map(|i| i as u32),
+        active: active.filter(|i| *i < names.len()).map(|i| i as u32),
     })
 }
 

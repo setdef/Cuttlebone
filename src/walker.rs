@@ -77,6 +77,9 @@ pub struct ArgumentList {
     pub types: Option<Location>,
     /// The called method and the call's type arguments, if it resolved.
     pub method: Option<(MethodId, TypeArguments)>,
+    /// For a type's constructor (`Point(x: 1)`), the type it makes, if it
+    /// resolved.
+    pub constructed: Option<TypeRef>,
     pub arguments: Vec<ListArgument>,
 }
 
@@ -1385,6 +1388,10 @@ impl<'a> Walker<'a> {
                         types: n.type_arguments.last().map(|t| t.location()),
                         method: match &n.kind {
                             CallKind::Call(info) => Some((info.id, info.type_arguments.clone())),
+                            _ => None,
+                        },
+                        constructed: match &n.kind {
+                            CallKind::TypeInstance(info) => Some(info.resolved_type),
                             _ => None,
                         },
                         arguments: n

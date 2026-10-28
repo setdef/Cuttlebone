@@ -339,6 +339,8 @@ struct Support {
     import_folds: bool,
     /// The most folding ranges the client wants, if it says.
     folding_limit: Option<usize>,
+    /// Folding ranges' `collapsedText` (LSP 3.17).
+    collapsed_text: bool,
     /// Code actions as literals (`codeActionLiteralSupport`), rather than
     /// commands, which Cuttlebone has none of.
     code_actions: bool,
@@ -411,6 +413,7 @@ impl Support {
             folding_limit: at("/textDocument/foldingRange/rangeLimit")
                 .as_u64()
                 .map(|n| n as usize),
+            collapsed_text: yes("/textDocument/foldingRange/foldingRange/collapsedText"),
             code_actions: at("/textDocument/codeAction/codeActionLiteralSupport").is_object(),
             preferred_actions: yes("/textDocument/codeAction/isPreferredSupport"),
             will_rename: yes("/workspace/fileOperations/willRename"),
@@ -2363,6 +2366,10 @@ impl Server {
                         range["kind"] = json!(kind);
                     }
 
+                    if self.support.collapsed_text {
+                        range["collapsedText"] = json!(collapsed_text(&text, &fold));
+                    }
+
                     ranges.push(range);
                 }
 
@@ -3171,6 +3178,28 @@ fn completion(result: Result<Option<MembersAt>, Unavailable>, support: Support) 
 /// What LSP calls a completion of a kind. A client without the kinds past
 /// Reference (18) gets the nearest it has: Value for a constant, Class for
 /// a type parameter.
+/// What a client shows for a fold when it's collapsed: a comment's first
+/// line, `import ...` for the imports, and a block's brackets around
+/// `...` (`{...}`).
+fn collapsed_text(text: &str, fold: &syntax::Fold) -> String {
+    match fold.kind {
+        syntax::FoldKind::Comment => {
+            let rest = &text[fold.start..];
+
+            rest[..rest.find(['\n', '\r']).unwrap_or(rest.len())]
+                .trim_end()
+                .to_string()
+        }
+        syntax::FoldKind::Imports => "import ...".to_string(),
+        syntax::FoldKind::Block => match text[fold.start..].chars().next() {
+            Some('(') => "(...)",
+            Some('[') => "[...]",
+            _ => "{...}",
+        }
+        .to_string(),
+    }
+}
+
 /// Adds the keywords the grammar takes where a name is being typed
 /// (`query::Names::keywords`) to a completion of names, after the names
 /// (`sortText` 4), as Keyword.

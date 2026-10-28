@@ -787,6 +787,11 @@ parameter the argument at the position is for. `(` and `,` trigger it.
   parentheses contain the position: after the `(` and up to the `)`. On
   the method's name, before the `(` or after the `)`, it's the enclosing
   call's, if any. A call without parentheses (`counter.reset`) has none.
+- **A type's constructor** (`Point(x: 1, y: 2)`) has the type's fields as
+  its parameters, in the order the type declares them, labelled as the
+  type with its type arguments (as the call infers them) and the fields
+  with their types: `Box[String](value: String, size: Int)`. Arguments
+  are matched to them as to a method's, by position or by name.
 - **The signature** is the called method after the compiler's resolution,
   formatted as completion's `detail` is, with the call's type arguments
   filled in: `map` on an `Iter[ref Int]` given `fn (n) { n * 2 }` is
@@ -818,8 +823,8 @@ parameter the argument at the position is for. `(` and `,` trigger it.
   with the wrong number of arguments still resolve.
 
 The result is `null` when the position isn't in a call's parentheses, or
-the call doesn't resolve to a method (an undefined method, a closure call,
-or a type's constructor such as `Point(x: 1)`), and `null` with a
+the call doesn't resolve to a method or a type (an undefined method, or a
+closure call), and `null` with a
 [status](#status) reason when there's no answer.
 
 ## `textDocument/inlayHint`
@@ -1025,6 +1030,11 @@ documents that aren't files.
 - **Kinds** are sent only if the client's
   `foldingRange.foldingRangeKind.valueSet` lists them; without, the range
   has no `kind`. `region` isn't used: Inko has no region markers.
+- **`collapsedText`**, for a client with
+  `foldingRange.foldingRange.collapsedText`, is what it shows for a
+  collapsed range: a comment's first line (`# A counter.`), `import ...`
+  for the imports, and a block's brackets around `...` (`{...}`, `(...)`
+  or `[...]`).
 - **`rangeLimit`**, if the client gives one, is the most ranges sent: the
   first, in order of where they start.
 - **In code that doesn't parse**, brackets are matched as far as they

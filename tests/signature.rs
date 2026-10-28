@@ -241,3 +241,81 @@ fn past_the_last_parameter_none_is_active() {
         );
     }
 }
+
+/// A type's constructor (`Counter(count: 0, label: label)`): its fields
+/// are the parameters, in the order the type declares them, named or not,
+/// with a generic type's arguments filled in, and while typing.
+#[test]
+fn a_types_constructor_has_its_fields() {
+    let counter = |active: u64| {
+        json!({
+            "label": "Counter(count: Int, label: String)",
+            "parameters": ["count: Int", "label: String"],
+            "active": active,
+        })
+    };
+
+    for utf8 in [false, true] {
+        let mut session = Session::new(utf8);
+        let needle = "Counter(count: 0, label: label)";
+
+        assert_eq!(help(&mut session, needle, 8), counter(0));
+        assert_eq!(help(&mut session, needle, 18), counter(1));
+        assert_eq!(help(&mut session, needle, 25), counter(1));
+        // Before the `(`: none.
+        assert_eq!(help(&mut session, needle, 3), Value::Null);
+
+        let file = session.file.clone();
+        let original = session.text.clone();
+        let generic = "type Box[T] {\n  let @value: T\n  let @size: Int\n}\n\n";
+
+        for (version, (typed, offset, wanted)) in [
+            // Named in another order than declared.
+            ("let _ = Counter(label: \"日本\", count: 1)", 18, counter(1)),
+            // Unfinished.
+            ("Counter(count: 0, ", 18, counter(1)),
+            // A generic type, its argument inferred.
+            (
+                "let _ = Box(value: \"a\", size: 1)",
+                12,
+                json!({
+                    "label": "Box[String](value: String, size: Int)",
+                    "parameters": ["value: String", "size: Int"],
+                    "active": 0,
+                }),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let text = format!(
+                "{}{}",
+                generic,
+                original.replace("    counter.reset\n", &format!("    {}\n", typed))
+            );
+
+            session.text = text.clone();
+
+            if version == 0 {
+                session.client.open(&file, &text);
+            } else {
+                session
+                    .client
+                    .change(&file, version as i32 + 1, json!([{ "text": text }]));
+            }
+
+            let needle = format!("counter.count = 5\n    {}", typed);
+            let line_start = needle.chars().count() - typed.chars().count();
+
+            assert_eq!(
+                help(&mut session, &needle, line_start + offset),
+                wanted,
+                "{} (UTF-8: {})",
+                typed,
+                utf8
+            );
+        }
+
+        session.client.close(&file);
+    }
+}
