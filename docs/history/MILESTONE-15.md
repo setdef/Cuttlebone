@@ -1,7 +1,9 @@
 # Milestone 15: what an indexing client still kept its own code for
 
-**Done.** Everything for 0.15.0 is committed; the release workflow's dry
-run passed (section 10), and the tag publishes it. It has:
+**Done, but not released yet.** Everything for 0.15.0 is committed and
+the release workflow's dry run passed on this report's commit (section
+10); pushing the tag `v0.15.0`, which publishes it, was refused by the
+session's permissions, and is left to you. It has:
 
 1. **Quick fixes in files with other errors** (section 1): a fix is
    offered when its result has fewer of its diagnostic and no error the
@@ -316,5 +318,15 @@ limits as written, scaled by its runner's baseline), all 16 mutation
 shards and the dist shard (each control passing, every mutation
 caught), and the four builds.
 
-The tag `v0.15.0` goes on this report's commit, after a dry run of the
-release workflow on it; how both went is added here after the release.
+**A second dry run** on this report's commit, fa2f40d (run
+40683946731, 39 minutes), passed every job too.
+
+**Not released.** Pushing the tag `v0.15.0` (on fa2f40d) was refused by
+this session's permission system as creating a public surface, so
+nothing is published and nothing was checked from outside. To release:
+
+    git tag -a v0.15.0 -m "Cuttlebone 0.15.0" fa2f40d
+    git push origin v0.15.0
+
+The workflow then runs the release tier again, publishes, and checks the
+published release on four runners, as for 0.14.0.
