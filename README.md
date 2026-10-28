@@ -62,6 +62,10 @@ Reports, in docs/history/:
 - [MILESTONE-14.md](docs/history/MILESTONE-14.md): implementations,
   declarations, call and type hierarchies, selection ranges, file
   renames, pull diagnostics, and latency limits scaled per runner.
+- [MILESTONE-15.md](docs/history/MILESTONE-15.md): quick fixes in files
+  with other errors and four more, names in code being edited and
+  keywords, steadier document symbols, constructors' signature help,
+  folds' collapsed text, and workspace symbols for an index.
 
 Each milestone has its own version; what changed in each:
 [CHANGELOG.md](CHANGELOG.md).

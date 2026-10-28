@@ -1,6 +1,7 @@
 # Milestone 15: what an indexing client still kept its own code for
 
-STATUS
+**Done.** Everything for 0.15.0 is committed; the release workflow's dry
+run passed (section 10), and the tag publishes it. It has:
 
 1. **Quick fixes in files with other errors** (section 1): a fix is
    offered when its result has fewer of its diagnostic and no error the
@@ -28,7 +29,9 @@ STATUS
 Everything is standard LSP 3.18: no new extension, and no patch change.
 "Never a wrong answer" holds on the whole edit-replay corpus.
 
-TESTS
+**Tests:** 420 (52 unit, 344 integration, 24 latency, one of which only
+measures). `scripts/mutate.py` has 521 mutations, 51 of them new (and
+one removed: it guarded that `impl` blocks weren't workspace symbols).
 
 This milestone was requested: built by a coding agent with little or no
 review.
@@ -180,14 +183,138 @@ without it, and tests/folding.rs has one.
   extension, docs/lsp.md points to document symbols' `detail`, which is
   the declaration as written, `pub` and signature included.
 
-MEASUREMENTS
+## 8. Measurements
 
-PATCH
+Apple M1 Max (the reference machine), under `cargo test`, at load
+averages of 130 to 600 from other work on the machine, so upper bounds:
 
-PARAKEET
+| What | Measured | Limit (tests/latency.rs) |
+|---|---|---|
+| every workspace symbol (over 5,000), std-sized project, one response | 180 to 660 ms | 400 ms |
+| the same as partial results, until the empty response | 80 to 120 ms | 400 ms |
+| workspace symbols while a query is typed (unchanged) | 2 to 73 ms | 50 ms |
 
-DECISIONS
+The 660 ms was at a load average of 440, where the limit scales by the
+load; at 350, 180 to 290 ms. In the milestone tier's strict step this
+Mac's baseline measured 375 ms (scale 1.34), and every limit held. A
+quick fix's cost is unchanged: one full check of the documents, and one
+for each fix (at most 8), plus one more for a missing trait's methods.
 
-UNKNOWNS
+## 9. Tests and mutations
 
-RELEASE
+| File | What |
+|---|---|
+| tests/actions.rs | the oracle as "fewer of the diagnostic, no new error"; fixes in files with other errors, a fix that would add one, names from the range; missing fields, methods (in a block with a body and without, a trait's type parameter, a trait imported from std, several in one action), traits, unreachable statements and arms |
+| tests/names.rs | the narrower rule, answered and refused (another type, another module, the method's own type, a trait it implements, an imported name, the top of the file); keywords where expressions and types start |
+| tests/symbols.rs | an unclosed brace in a method keeps the type; `impl` blocks; every symbol for an empty query and as partial results |
+| tests/signature.rs | a type's constructor: positional, named in any order, unfinished, generic |
+| tests/folding.rs | collapsed text, a client without it, a lone `\r` |
+| tests/latency.rs | every workspace symbol, in one response and as partial results |
+| tests/common/spec.rs | `collapsedText` only for a client that takes it |
+| tests/lsp.rs | the test of a cancelled check kept by its worker cancels once a worker runs it (it raced on a loaded machine) |
+| src/query.rs, src/units.rs, src/syntax.rs | unit tests: the counting rule for fixes, what a change declares for names, braces opened in and outside bodies, which brace is left open |
+
+**The milestone tier, locally**: `scripts/check.sh --milestone 1fa7e3d`
+on f58fef0, at load averages of 130 to 500: every check passed
+(formatting 1 s, clippy 14 s, tests 137 s, the patch 0 s, the release
+build 31 s, the whole corpus 93 s, no kept checks 295 s, the selection
+13 s, the release tooling 73 s), and the strict latency step (advisory)
+passed, 72 s. Of its 449 selected mutations, 441 were caught and 8
+weren't (158 minutes in all). Each of the 8 needed a test case of its
+own (0e6db2d): with those, all 8 are caught (17 minutes).
+
+## Every patch line added, and why
+
+None: the patch is unchanged. Constructor calls' `TypeInstanceInfo`, the
+types' fields and implemented traits are public upstream.
+
+## What Parakeet can now delete
+
+Each item of the request, and the fallback it replaces (Parakeet's
+docs/history/SESSION-slimming.md, "Requests for Cuttlebone" and
+"Fallbacks kept"):
+
+1. **Quick fixes that don't need the whole file to type check** →
+   Parakeet's import, unused-import, `_x` and `let _ =` fixes
+   (`InkoImportFix`, `RemoveUnusedImportFix`, `PrefixUnderscoreFix`,
+   `DiscardResultFix`). A file with other errors gets them, and a client
+   that sends no diagnostics in the context still gets imports.
+2. **The fixes Parakeet has and Cuttlebone didn't** → `AddMissingFieldFix`,
+   `InkoImplementMethodsFix` (and Implement Methods, ⌃I, in an `impl`
+   block that lacks them), `ImplementMissingTraitFix`,
+   `RemoveUnreachableFix`. Unlike Parakeet's, each result type checks: a
+   missing field gets a value, a missing method a body.
+3. **Completion of names in code being edited, and keywords** →
+   Parakeet's own names completion and auto-import, and its keywords.
+   Names are refused only where a change can bind or hide one; where the
+   method being typed mentions what changed, they still are, so a client
+   that wants an answer there regardless keeps a fallback for that.
+4. **Stable document symbols** → `InkoOutline` for the Structure view and
+   breadcrumbs: an unclosed brace in a method leaves out only that method.
+5. **Signature help for a type's constructor** → parameter info's own
+   reading of the type's fields for `Point(x: 1)`.
+6. **`collapsedText` in folding ranges** → the placeholders Parakeet had
+   before (the comment's first line, `import ...`, `{...}`), now from the
+   server, for a client that declares `foldingRange.collapsedText`.
+7. **`workspace/symbol` for an index** → with implementations and type
+   hierarchy from milestone 14, `InkoDefinitionIndex` and
+   `InkoSourceDefinitions`: `impl` blocks are symbols, an empty query has
+   everything, and partial results page any query. Visibility and the
+   signature aren't in a workspace symbol (LSP has no place for them);
+   they're in document symbols' `detail`, per module.
+
+Still Parakeet's own: rename and refactorings as code actions (the next
+milestone).
+
+## Decisions you may want to revisit
+
+- **A fix counts errors by file, ID and message**, not position: two
+  errors with the same message in a file count as two, and a fix may
+  move one. Exact positions can't be compared once edits shift them.
+- **A missing field's value** is a literal for six types, or a variable
+  of the field's name; another type gets no fix rather than a guess.
+- **Stubs panic** (`panic('not implemented')`), which type checks for any
+  return type. Parakeet's left the body empty, which doesn't.
+- **A missing trait's fix costs a check more** (to learn the methods the
+  new block lacks), and a fix for an error of an early pass is refused
+  while the documents have errors later passes would report.
+- **The trait of an `impl` with an error is found from the syntax**
+  (the file, or the module it's imported from), not the type database.
+- **Names: the position's own method must still not mention what
+  changed.** That's the general rule for answers, and it's what refuses
+  most names in the corpus; the narrower rule doesn't relax it, since a
+  variable's type in a `detail` may depend on what changed.
+- **Keywords are the grammar's**, not the type checker's: `break`
+  outside a loop is offered.
+- **The method with the unclosed brace is left out** of document
+  symbols, since its end is ambiguous; everything else stays.
+- **The misindented brace's copy is used for outlines only**: for every
+  repaired copy it cost hover coverage in the corpus (12,651 answered,
+  fewer than the 12,673 measured).
+- **A query that isn't empty is still capped at 500** without a
+  `partialResultToken`; an exact name always ranks first.
+- **Visibility isn't sent in workspace symbols**: no extension, and
+  `containerName` stays the path.
+
+## Remaining unknowns
+
+1. **IntelliJ's handling of `collapsedText` and partial results** wasn't
+   tried; the tests are against the spec, its meta model and the
+   client's capabilities.
+2. **The machine was heavily loaded** (load averages up to 600) the
+   whole session; the latency measurements are upper bounds, and some
+   timing-sensitive tests failed under it and passed alone (one was made
+   robust: tests/lsp.rs, above).
+3. **The corpus doesn't exercise the narrower names rule**: its edits
+   are in the method being completed. The LSP tests cover each case.
+
+## 10. The 0.15.0 release
+
+**The dry run** on 0e6db2d (run 40678208743, workflow_dispatch, 42
+minutes) passed every job: the release checks, the latency job (the
+limits as written, scaled by its runner's baseline), all 16 mutation
+shards and the dist shard (each control passing, every mutation
+caught), and the four builds.
+
+The tag `v0.15.0` goes on this report's commit, after a dry run of the
+release workflow on it; how both went is added here after the release.

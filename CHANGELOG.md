@@ -10,11 +10,29 @@ versions here were given afterwards.
 
 ## 0.15.0
 
-Milestone 15: what a client that indexes Inko itself still needed: quick fixes in files with other errors and four more of them,
-completion of names in code being edited and keywords, document symbols
-that hold still while typing, signature help for constructors, folding
-ranges' collapsed text, and workspace symbols for clients that index.
+Milestone 15: what a client that indexes Inko itself still needed.
 [Report](docs/history/MILESTONE-15.md).
+
+- **Quick fixes in files with other errors**: a fix is offered when it
+  removes its diagnostic and adds no error, not only when the file then
+  has none. Imports are offered for the names in the requested range,
+  also for a client that sends no diagnostics in the context.
+- **Four more quick fixes**: `missing-field` (the field added with a
+  value of its type), `invalid-implementation` (every method the `impl`
+  block lacks, stubbed, in one action for all its diagnostics),
+  `missing-trait` (`impl R for T` with its methods), `unreachable` (the
+  code removed). Each still passes `inko check`.
+- **Completion of names in code being edited** is refused only where a
+  change or an error can bind or hide a name, not whenever any
+  declaration differs; and **keywords**, where the grammar takes them.
+- **Document symbols hold still**: a brace a method's body opens and
+  nothing closes yet leaves out only that method, not the type it's in.
+- **Signature help for a type's constructor** (`Point(x: 1)`), from its
+  fields.
+- **Folding ranges' `collapsedText`**, for clients that take it.
+- **Workspace symbols for an index**: `impl` blocks, every symbol for an
+  empty query, and every match of any query as partial results.
+- For Inko 0.21.1, as before. No patch change, no new extension.
 
 ## 0.14.0
 
