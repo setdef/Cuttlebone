@@ -1,7 +1,9 @@
 # Milestone 14: implementations, hierarchies, selection ranges, file renames, pull diagnostics, and latency limits scaled per runner
 
-**Done.** Cuttlebone 0.14.0 is released through the release workflow
-(section 9). It has:
+**Done, but not released yet.** Everything for 0.14.0 is committed and
+the release workflow's dry run passed on this report's commit (section
+9); tagging `v0.14.0`, which publishes it, was refused by the session's
+permissions, and is left to you. It has:
 
 1. **`textDocument/implementation`**: a trait's implementing types and a
    trait method's implementations, from the type database, across the
@@ -316,8 +318,8 @@ had found the same 14 first.
 the release checks, the latency job (scaled by its runner's baseline),
 the four builds, and 7 of the 16 mutation shards passed; the other 9
 failed only on the 14 skipped mutations above, every other mutation
-caught. A second dry run on this report's commit, with the snippets
-updated: section 9.
+caught. A second dry run, on this report's commit with the snippets
+updated, passed entirely: section 9.
 
 ## Every patch line added, and why
 
@@ -399,5 +401,17 @@ milestone).
 
 ## 9. The 0.14.0 release
 
-The tag `v0.14.0` goes on this report's commit, after a dry run of the
-release workflow on it; how both went is added here after the release.
+**The dry run** on 477a9f2 (run 40625340550, workflow_dispatch) passed
+every job: the release checks, the latency job (scaled by its runner's
+baseline), all 16 mutation shards (every one of the 471 mutations
+caught, each shard's control passing), and the four builds.
+
+**Not released.** Pushing the tag `v0.14.0` (on 477a9f2) was refused by
+this session's permission system as creating a public surface, so
+nothing is published and nothing was checked from outside. To release:
+
+    git tag -a v0.14.0 -m "Cuttlebone 0.14.0" 477a9f2
+    git push origin v0.14.0
+
+The workflow then runs the release tier again, publishes, and checks the
+published release on four runners, as for 0.13.0.
