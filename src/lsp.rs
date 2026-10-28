@@ -44,6 +44,9 @@ use url::Url;
 /// asks for it (docs/lsp.md, "Status").
 pub const STATUS: &str = "cuttlebone/status";
 
+/// The command of every code lens: show its locations.
+pub const LENS_COMMAND: &str = "cuttlebone.showLocations";
+
 /// How long `inko --version` and `inko print std` may take.
 const INKO_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -351,6 +354,10 @@ struct Support {
     preferred_actions: bool,
     /// `workspace/willRenameFiles`.
     will_rename: bool,
+    /// `textDocument/codeLens`.
+    code_lens: bool,
+    /// `window/showDocument`, for the code lenses' command.
+    show_document: bool,
     /// Pull diagnostics (`textDocument/diagnostic`): offered, and then
     /// never pushed.
     pull: bool,
@@ -420,6 +427,8 @@ impl Support {
             code_actions: at("/textDocument/codeAction/codeActionLiteralSupport").is_object(),
             preferred_actions: yes("/textDocument/codeAction/isPreferredSupport"),
             will_rename: yes("/workspace/fileOperations/willRename"),
+            code_lens: at("/textDocument/codeLens").is_object(),
+            show_document: yes("/window/showDocument/support"),
             pull: at("/textDocument/diagnostic").is_object(),
         }
     }
@@ -459,6 +468,8 @@ struct Server {
     parent: Option<u32>,
     /// Every module's declarations, for workspace symbols.
     index: Index,
+    /// How many `window/showDocument` requests it sent, for their ids.
+    shown: u64,
 }
 
 impl Server {
@@ -489,6 +500,7 @@ impl Server {
             shut_down: false,
             parent: None,
             index: Index::default(),
+            shown: 0,
         })
     }
 
@@ -566,6 +578,11 @@ impl Server {
         capabilities["implementationProvider"] = json!(true);
         capabilities["callHierarchyProvider"] = json!(true);
         capabilities["typeHierarchyProvider"] = json!(true);
+
+        if self.support.code_lens {
+            capabilities["codeLensProvider"] = json!({ "resolveProvider": false });
+            capabilities["executeCommandProvider"] = json!({ "commands": [LENS_COMMAND] });
+        }
 
         if self.support.pull {
             capabilities["diagnosticProvider"] = json!({
@@ -736,6 +753,8 @@ impl Server {
                 )
             }
             "workspace/symbol" => return self.workspace_symbols(connection, request),
+            "textDocument/codeLens" => ("textDocument/codeLens", Query::Lenses),
+            "workspace/executeCommand" => return self.execute_command(connection, request),
             "shutdown" => {
                 self.shut_down = true;
                 self.cancel_all(connection);
@@ -759,6 +778,11 @@ impl Server {
             }
         };
         let mut params = request.params.clone();
+
+        // A document's lenses are about no position in it.
+        if method == "textDocument/codeLens" {
+            params["position"] = json!({ "line": 0, "character": 0 });
+        }
 
         // An inlay hint request has a range instead of a position.
         if let Some(start) = params.pointer("/range/start").cloned() {
@@ -1783,6 +1807,21 @@ impl Server {
         // What an answer for a range covers of it (docs/lsp.md, "Status").
         let mut covered: Option<Vec<query::Range>> = None;
         let (result, status) = match outcome {
+            Outcome::Lenses(answer) => {
+                let status = status_of(&answer);
+                let result = match answer.result {
+                    Ok(Some(lenses)) => {
+                        covered = Some(lenses.covered);
+                        Value::Array(lenses.lenses.into_iter().map(lens).collect())
+                    }
+                    _ => {
+                        covered = Some(Vec::new());
+                        Value::Null
+                    }
+                };
+
+                (result, status)
+            }
             Outcome::Hover(answer) => {
                 let status = status_of(&answer);
 
@@ -2012,9 +2051,9 @@ impl Server {
                 params["files"] = files.clone();
             }
 
-            // Every answer for a range says what it covers: none of it,
-            // with no answer.
-            if let Query::InlayHints { .. } = pending.query {
+            // Every answer for a range (or a document's lenses) says what
+            // it covers: none of it, with no answer.
+            if let Query::InlayHints { .. } | Query::Lenses = pending.query {
                 let ranges: Vec<lsp::Range> =
                     covered.unwrap_or_default().into_iter().map(range).collect();
 
@@ -2781,6 +2820,58 @@ impl Server {
             moves,
             files: Some(files),
         });
+    }
+
+    /// `workspace/executeCommand` for a code lens's command
+    /// (`LENS_COMMAND`): shows its first location, with
+    /// `window/showDocument`, to a client that has it. LSP has no request
+    /// to show a list of them; a client that wants the list has it in the
+    /// command's arguments.
+    fn execute_command(&mut self, connection: &Connection, request: Request) {
+        let params: lsp::ExecuteCommandParams = match serde_json::from_value(request.params) {
+            Ok(p) => p,
+            Err(e) => {
+                return reply_error(
+                    connection,
+                    request.id,
+                    ErrorCode::InvalidParams,
+                    &e.to_string(),
+                );
+            }
+        };
+
+        if params.command != LENS_COMMAND {
+            return reply_error(
+                connection,
+                request.id,
+                ErrorCode::InvalidParams,
+                &format!("unknown command {:?}", params.command),
+            );
+        }
+
+        let first = params
+            .arguments
+            .first()
+            .and_then(|a| a.pointer("/locations/0"))
+            .cloned();
+
+        if let (true, Some(location)) = (self.support.show_document, first) {
+            self.shown += 1;
+
+            let _ = connection
+                .sender
+                .send(Message::Request(lsp_server::Request::new(
+                    RequestId::from(format!("cuttlebone-show-{}", self.shown)),
+                    "window/showDocument".to_string(),
+                    json!({
+                        "uri": location["uri"],
+                        "takeFocus": true,
+                        "selection": location["range"],
+                    }),
+                )));
+        }
+
+        reply(connection, request.id, Value::Null);
     }
 
     /// `textDocument/selectionRange`, answered at once from the document's
@@ -3618,6 +3709,29 @@ fn send_diagnostics(connection: &Connection, uri: &Url, diagnostics: Vec<lsp::Di
 /// anyway, and parsing them says so).
 /// A hierarchy's item (`CallHierarchyItem`, `TypeHierarchyItem`): the two
 /// have the same fields.
+/// A code lens, with `LENS_COMMAND` and its locations as the command's
+/// argument (docs/lsp.md, "textDocument/codeLens").
+fn lens(lens: query::Lens) -> Value {
+    let kind = match lens.kind {
+        query::LensKind::Implementations => "implementations",
+        query::LensKind::Supertypes => "supertypes",
+        query::LensKind::Trait => "trait",
+        query::LensKind::Declaration => "declaration",
+    };
+
+    json!({
+        "range": range(lens.range),
+        "command": {
+            "title": lens.title,
+            "command": LENS_COMMAND,
+            "arguments": [{
+                "kind": kind,
+                "locations": lens.places.into_iter().map(location).collect::<Vec<_>>(),
+            }],
+        },
+    })
+}
+
 fn item(item: query::Item) -> Value {
     let kind = match item.kind {
         query::ItemKind::Function => lsp::SymbolKind::FUNCTION,

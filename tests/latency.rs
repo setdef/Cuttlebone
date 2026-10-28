@@ -919,6 +919,74 @@ fn implementations_hierarchies_and_renames_across_std_are_fast_enough() {
     }
 }
 
+/// How long a document's code lenses may take across all of std past an
+/// error in a declaration: every module of the project that names one of
+/// the names they're about is looked at for a unit the error makes unsafe
+/// mentioning it (`hidden`), and in std, as its own project, that's nearly
+/// every module (`String`, `ToString`). A project's own modules are all
+/// that count, so this is the worst case.
+const PAST_AN_ERROR_LIMIT: Duration = Duration::from_millis(1500);
+
+/// A document's code lenses ask every declaration's implementations and
+/// supertypes, and its `impl`s' traits, in one request: one check of the
+/// whole project and one of the file, then a lookup each. Across all of
+/// std, for std's `string.inko` (12 traits and types, 40 `impl`s), and
+/// past an error in a declaration of another module, where each whole
+/// project question also looks for the units that could hide a part of
+/// it.
+#[test]
+fn code_lenses_across_std_are_fast_enough() {
+    let _shared = shared();
+    let std = upstream_std();
+    let file = std.join("std/string.inko");
+    let mut client = Client::initialized_with(
+        Launch {
+            env: vec![(NO_CACHE_VARIABLE, "1".to_string())],
+            unset: vec![],
+            cwd: None,
+        },
+        std.parent().unwrap(),
+        QUERIES_ONLY.clone(),
+        json!({ "textDocument": { "codeLens": {} } }),
+    );
+    let params = json!({ "textDocument": { "uri": uri(&file) } });
+    let lenses = client.request("textDocument/codeLens", params.clone());
+
+    assert!(
+        lenses["result"].as_array().unwrap().len() > 40,
+        "{}",
+        lenses
+    );
+
+    let other = std.join("std/stdio.inko");
+    let broken = std::fs::read_to_string(&other).unwrap().replacen(
+        "fn pub static new -> Stdin {",
+        "fn pub static new -> Stdinn {",
+        1,
+    );
+
+    for (what, open) in [("", None), (", past an error", Some(broken))] {
+        if let Some(text) = &open {
+            client.open(&other, text);
+        }
+
+        let times = request_times(&mut client, "textDocument/codeLens", params.clone());
+        let median = median(times.clone());
+
+        eprintln!(
+            "code lenses across std{}: {:?} (all: {:?})",
+            what, median, times
+        );
+
+        let max = match open {
+            None => limit(WHOLE_PROJECT_LIMIT),
+            Some(_) => limit(PAST_AN_ERROR_LIMIT),
+        };
+
+        assert!(median < max, "median {:?} exceeds {:?}", median, max);
+    }
+}
+
 /// Declaration, preparing the hierarchies' items, outgoing calls and
 /// supertypes check the file and what it imports, as definition does.
 #[test]

@@ -75,7 +75,34 @@ impl Spec {
 
         if let Some(name) = object.get("method").and_then(Value::as_str) {
             if object.contains_key("id") {
-                return Err(format!("the server sent a request, {}", name));
+                // A request to the client: one the spec has servers send,
+                // with its params, and only what the client says it
+                // supports.
+                let request = self
+                    .requests
+                    .get(name)
+                    .ok_or_else(|| format!("the server sent a request, {}", name))?;
+
+                if request["messageDirection"] == "clientToServer" {
+                    return Err(format!(
+                        "the server sent a request, {}, which clients send",
+                        name
+                    ));
+                }
+
+                if let Some(params) = request.get("params") {
+                    self.value(params, &message["params"], "params")?;
+                }
+
+                return match name {
+                    "window/showDocument"
+                        if !supports(capabilities, "window.showDocument.support") =>
+                    {
+                        Err("window/showDocument without window.showDocument.support".to_string())
+                    }
+                    "window/showDocument" => Ok(()),
+                    _ => Err(format!("the server sent a request, {}", name)),
+                };
             }
 
             if EXTENSIONS.contains(&name) {
@@ -353,6 +380,15 @@ fn gates(method: &str, value: &Value, capabilities: &Value) -> Result<(), String
                 && !offered.as_array().is_some_and(|o| o.contains(chosen))
             {
                 return Err(format!("positionEncoding {} wasn't offered", chosen));
+            }
+
+            // Code lenses and their command, only for a client with them.
+            for key in ["codeLensProvider", "executeCommandProvider"] {
+                if value["capabilities"].get(key).is_some()
+                    && !capability(capabilities, "textDocument.codeLens").is_object()
+                {
+                    return Err(format!("{} without textDocument.codeLens", key));
+                }
             }
         }
         "textDocument/hover" => {

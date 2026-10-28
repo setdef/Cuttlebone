@@ -227,6 +227,30 @@ fn the_checks_catch_what_they_check() {
 
     assert!(spec.check(&diagnostics, None, &full).is_ok());
     assert!(spec.check(&diagnostics, None, &bare).is_err());
+    // A request to the client: only one the spec has servers send, with
+    // its params, and what the client supports.
+    let show = serde_json::json!({ "jsonrpc": "2.0", "id": "s", "method": "window/showDocument", "params": {
+        "uri": "file:///a.inko", "takeFocus": true,
+    }});
+    let mut showing = full.clone();
+
+    showing["window"] = serde_json::json!({ "showDocument": { "support": true } });
+    assert!(spec.check(&show, None, &showing).is_ok());
+    assert!(spec.check(&show, None, &bare).is_err());
+
+    let mut wrong = show.clone();
+
+    wrong["params"]["takeFocus"] = serde_json::json!("yes");
+    assert!(spec.check(&wrong, None, &showing).is_err());
+
+    // One clients send, and one servers may send that Cuttlebone doesn't.
+    let mut other = show.clone();
+
+    other["method"] = serde_json::json!("textDocument/hover");
+    assert!(spec.check(&other, None, &showing).is_err());
+    other["method"] = serde_json::json!("workspace/applyEdit");
+    other["params"] = serde_json::json!({ "edit": {} });
+    assert!(spec.check(&other, None, &showing).is_err());
     // Responses need a result or an error, and errors their code.
     assert!(
         ok(

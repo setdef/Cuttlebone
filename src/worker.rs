@@ -13,7 +13,8 @@ use crate::edits::Fallback;
 use crate::position::Position;
 use crate::query::{
     self, Answer, Cache, Call, Diagnostic, Diagnostics, Fix, Highlight, Hints, HoverAt, ImportFix,
-    Item, MembersAt, ModuleUse, Place, Question, Reply, Request, Session, Signature, Unavailable,
+    Item, Lenses, MembersAt, ModuleUse, Place, Question, Reply, Request, Session, Signature,
+    Unavailable,
 };
 use crossbeam_channel::{RecvTimeoutError, Sender};
 use serde::{Deserialize, Serialize};
@@ -104,6 +105,8 @@ pub enum Query {
     /// `Question::ModuleUses`, of the request's file and the job's
     /// `files`.
     ModuleUses,
+    /// `query::lenses`, of the request's file.
+    Lenses,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -145,6 +148,7 @@ pub enum Outcome {
     Calls(Answer<Vec<Call>>),
     /// Each file's module's uses, in order.
     Uses(Answer<Uses>),
+    Lenses(Answer<Lenses>),
     /// The worker didn't produce an answer: it timed out, crashed or
     /// couldn't be started.
     Failed(Unavailable),
@@ -189,11 +193,16 @@ impl Job {
             Query::Supertypes => Question::Supertypes,
             Query::Subtypes => Question::Subtypes,
             Query::ModuleUses => return Outcome::Uses(self.module_uses(cache)),
+            Query::Lenses => {
+                return Outcome::Lenses(query::lenses(
+                    cache,
+                    &self.session,
+                    &self.request,
+                    repair(self),
+                ));
+            }
         };
-        #[cfg(feature = "fault-injection")]
-        let repair = fault(self).as_deref() != Some("norepair");
-        #[cfg(not(feature = "fault-injection"))]
-        let repair = true;
+        let repair = repair(self);
         let answer = query::ask_with(
             cache,
             &self.session,
@@ -248,11 +257,24 @@ impl Job {
             Query::InlayHints { .. }
             | Query::Diagnostics
             | Query::Fixes { .. }
-            | Query::ModuleUses => Outcome::Hints(answer.map(|r| match r {
+            | Query::ModuleUses
+            | Query::Lenses => Outcome::Hints(answer.map(|r| match r {
                 Reply::Hints(h) => Some(h),
                 _ => None,
             })),
         }
+    }
+}
+
+/// Whether a job may answer from repaired copies: always, but in tests
+/// with the `norepair` fault.
+fn repair(job: &Job) -> bool {
+    #[cfg(feature = "fault-injection")]
+    return fault(job).as_deref() != Some("norepair");
+    #[cfg(not(feature = "fault-injection"))]
+    {
+        let _ = job;
+        true
     }
 }
 
@@ -317,6 +339,7 @@ impl Outcome {
             Outcome::Items(a) => a.typed,
             Outcome::Calls(a) => a.typed,
             Outcome::Uses(a) => a.typed,
+            Outcome::Lenses(a) => a.typed,
             Outcome::Failed(_) => false,
         }
     }

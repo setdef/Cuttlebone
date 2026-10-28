@@ -1244,6 +1244,253 @@ fn references_in(
     }
 }
 
+/// What a code lens shows about a declaration (`lenses`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LensKind {
+    /// A trait's, or a trait's method's: what implements it
+    /// (`implementations_in`).
+    Implementations,
+    /// A type's: the traits it implements; a trait's: the traits it
+    /// requires (`supertypes_in`).
+    Supertypes,
+    /// An `impl` block's of a trait, at the trait's name: the trait.
+    Trait,
+    /// A method's in an `impl` block of a trait: the trait's method it
+    /// implements (`declaration_in`).
+    Declaration,
+}
+
+/// A code lens: where it's shown (a declaration's name), what it says, and
+/// where it goes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lens {
+    pub kind: LensKind,
+    pub range: Range,
+    pub title: String,
+    pub places: Vec<Place>,
+}
+
+/// A document's code lenses, and the names of the declarations whose
+/// lenses are all there are: those whose every question had an answer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lenses {
+    pub lenses: Vec<Lens>,
+    pub covered: Vec<Range>,
+}
+
+/// The questions a declaration's code lenses ask (`lenses`): where they're
+/// shown, each lens's kind and question and where it's asked, and the
+/// name a title shows.
+struct Asked {
+    range: Range,
+    questions: Vec<(LensKind, Question, Position)>,
+    verb: &'static str,
+    label: String,
+}
+
+/// `impl Named for Box`'s trait's name, and the byte it starts at; `None`
+/// for an `impl` block reopening a type.
+fn implemented(text: &str, d: &syntax::Declaration) -> Option<(String, usize)> {
+    let after = text[d.range.start..d.name_range.start].strip_prefix("impl")?;
+    let name = after.trim_start();
+    let start = d.range.start + "impl".len() + (after.len() - name.len());
+    let end = name.find(|c: char| !(c.is_alphanumeric() || c == '_'))?;
+
+    name[end..]
+        .trim_start()
+        .starts_with("for ")
+        .then(|| (name[..end].to_string(), start))
+}
+
+/// Every code lens of the request's file, for its declarations (from its
+/// text alone, `syntax::outline`): what implements each trait and trait's
+/// method, the supertypes of each type and trait, and for an `impl` block
+/// of a trait, the trait and each method's trait's method. All in one
+/// `ask_with`, so one check of the whole project and one of the file
+/// answer them all, from the documents as they are (or a repaired copy,
+/// where one may answer the question), never an older check's. A lens
+/// with nothing to show (no implementations, no supertypes) isn't given.
+pub fn lenses(cache: &Cache, session: &Session, request: &Request, repair: bool) -> Answer<Lenses> {
+    let start = Instant::now();
+    let none = |reason: Unavailable| Answer {
+        result: Err(reason),
+        elapsed: start.elapsed(),
+        source: Source::Fresh,
+        typed: false,
+        cached: false,
+    };
+    let text = match request.contents.get(&request.file) {
+        Some(text) => text.clone(),
+        None => match read(&request.file) {
+            Ok(text) => text,
+            Err(reason) => return none(reason),
+        },
+    };
+    let Some(outline) = syntax::outline(&text) else {
+        return none(Unavailable::new(
+            "noHir",
+            "the file couldn't be parsed, even with lines blank",
+        ));
+    };
+    let at = |offset: usize| position_at(&text, offset, request.encoding);
+    let span = |start: usize, end: usize| Range {
+        start: at(start),
+        end: at(end),
+    };
+    let mut asked: Vec<Asked> = Vec::new();
+
+    for (d, parents) in outline.all() {
+        let range = span(d.name_range.start, d.name_range.end);
+        let parent = parents.last().copied();
+        let one = |kind, question, verb, label: String| Asked {
+            range,
+            questions: vec![(kind, question, range.start)],
+            verb,
+            label,
+        };
+
+        asked.push(match (d.kind, parent.map(|p| p.kind)) {
+            (syntax::Kind::Trait, _) => Asked {
+                range,
+                questions: vec![
+                    (
+                        LensKind::Implementations,
+                        Question::Implementation,
+                        range.start,
+                    ),
+                    (LensKind::Supertypes, Question::Supertypes, range.start),
+                ],
+                verb: "requires",
+                label: d.name.clone(),
+            },
+            (syntax::Kind::Type | syntax::Kind::Enum, _) => one(
+                LensKind::Supertypes,
+                Question::Supertypes,
+                "implements",
+                d.name.clone(),
+            ),
+            (syntax::Kind::Method, Some(syntax::Kind::Trait)) => one(
+                LensKind::Implementations,
+                Question::Implementation,
+                "",
+                d.name.clone(),
+            ),
+            (syntax::Kind::Implementation, _) => match implemented(&text, d) {
+                Some((name, offset)) => {
+                    let range = span(offset, offset + name.len());
+
+                    Asked {
+                        range,
+                        questions: vec![(LensKind::Trait, Question::Definition, range.start)],
+                        verb: "",
+                        label: name,
+                    }
+                }
+                None => continue,
+            },
+            (
+                syntax::Kind::Method | syntax::Kind::StaticMethod,
+                Some(syntax::Kind::Implementation),
+            ) => match parent.and_then(|p| implemented(&text, p)) {
+                Some((name, _)) => one(
+                    LensKind::Declaration,
+                    Question::Declaration,
+                    "",
+                    format!("{}.{}", name, d.name),
+                ),
+                None => continue,
+            },
+            _ => continue,
+        });
+    }
+
+    let questions: Vec<(Question, Position)> = asked
+        .iter()
+        .flat_map(|a| a.questions.iter().map(|(_, q, p)| (*q, *p)))
+        .collect();
+    let mut answers = ask_with(cache, session, request, None, repair, &questions).into_iter();
+    let (mut lenses, mut covered) = (Vec::new(), Vec::new());
+    let mut reason: Option<Unavailable> = None;
+    let (mut typed, mut cached, mut repaired) = (false, true, false);
+
+    for a in asked {
+        let mut complete = true;
+
+        for (kind, _, _) in &a.questions {
+            let answer = answers.next().unwrap();
+
+            typed |= answer.typed;
+            cached &= answer.cached;
+
+            let reply = match answer.result {
+                Ok(reply) => reply,
+                Err(r) => {
+                    complete = false;
+                    reason.get_or_insert(r);
+                    continue;
+                }
+            };
+
+            repaired |= answer.source == Source::Repaired;
+
+            let (title, places) = match (kind, reply) {
+                (LensKind::Implementations, Some(Reply::Places(ps))) if !ps.is_empty() => (
+                    match ps.len() {
+                        1 => "1 implementation".to_string(),
+                        n => format!("{} implementations", n),
+                    },
+                    ps,
+                ),
+                (LensKind::Supertypes, Some(Reply::Items(items))) if !items.is_empty() => (
+                    format!(
+                        "{} {}",
+                        a.verb,
+                        items
+                            .iter()
+                            .map(|i| i.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    items.into_iter().map(|i| i.selection).collect(),
+                ),
+                (LensKind::Trait, Some(Reply::Places(ps))) if !ps.is_empty() => {
+                    (a.label.clone(), ps)
+                }
+                (LensKind::Declaration, Some(Reply::Places(ps))) if !ps.is_empty() => {
+                    (a.label.clone(), ps)
+                }
+                _ => continue,
+            };
+
+            lenses.push(Lens {
+                kind: *kind,
+                range: a.range,
+                title,
+                places,
+            });
+        }
+
+        if complete {
+            covered.push(a.range);
+        }
+    }
+
+    Answer {
+        result: match reason {
+            Some(reason) if covered.is_empty() => Err(reason),
+            _ => Ok(Some(Lenses { lenses, covered })),
+        },
+        elapsed: start.elapsed(),
+        source: if repaired {
+            Source::Repaired
+        } else {
+            Source::Fresh
+        },
+        typed,
+        cached,
+    }
+}
+
 /// A method, type or trait, as a call or type hierarchy shows it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
@@ -4052,6 +4299,53 @@ fn analyze(
         let versions = HashMap::new();
         let guard = Guard::new(&file, &own, &versions, &walker, encoding, false, errors)
             .ok_or_else(declaration_errors)?;
+        // Each module of the project's own guard, for the questions about
+        // the whole project (`hidden`), made once for all of them, and only
+        // for a module whose text has a name one of them is about: no other
+        // can mention one.
+        let wanted: Vec<String> = asked
+            .iter()
+            .zip(&positions)
+            .filter(|((q, _), _)| q.whole_project())
+            .filter_map(|((q, _), at)| about(&scope(at.clone().ok()?), *q))
+            .flatten()
+            .collect();
+        let modules: Vec<(PathBuf, Option<Rc<Walker>>, Version)> =
+            match positions.iter().find_map(|at| at.clone().ok()) {
+                Some(at) if !wanted.is_empty() => {
+                    let scope = scope(at);
+
+                    checked
+                        .modules
+                        .iter()
+                        .map(|m| m.module_id.file(checked.db))
+                        .filter(|f| *f == file || scope.in_project(f))
+                        .filter_map(|f| {
+                            let text = checked.text(&f);
+
+                            if !wanted.iter().any(|n| text.contains(n.as_str())) {
+                                return None;
+                            }
+
+                            let own = Version {
+                                old: text.clone(),
+                                changes: Changes::none(text.len()),
+                                new: text,
+                            };
+
+                            Some((f.clone(), checked.walker(&f), own))
+                        })
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+        // A module with no walk, or whose text doesn't parse, has no guard.
+        let guards: Vec<Option<Guard>> = modules
+            .iter()
+            .map(|(f, walker, own)| {
+                Guard::new(f, own, &versions, walker.as_ref()?, encoding, false, errors)
+            })
+            .collect();
 
         Ok((
             asked
@@ -4077,7 +4371,7 @@ fn analyze(
                     // once fixed or now.
                     if question.whole_project()
                         && found.is_some()
-                        && hidden(&scope, errors, *question)
+                        && hidden(&scope, &guards, *question)
                     {
                         return Err(declaration_errors());
                     }
@@ -4172,39 +4466,16 @@ fn about(scope: &Scope, question: Question) -> Option<Vec<String>> {
 /// check's errors in declarations (`Guard::safe`), mentions a name it's
 /// about (`about`). Such a unit may be a part of it once the error is
 /// fixed, or is now through what the error left untyped.
-fn hidden(scope: &Scope, errors: &[Cause], question: Question) -> bool {
+fn hidden(scope: &Scope, guards: &[Option<Guard>], question: Question) -> bool {
     let Some(names) = about(scope, question) else {
         return true;
     };
 
-    scope.modules.iter().any(|module| {
-        let file = module.module_id.file(scope.db);
-
-        if file != scope.file && !scope.in_project(&file) {
-            return false;
-        }
-
-        let Some(walker) = scope.checked.walker(&file) else {
-            return true;
-        };
-        let text = scope.checked.text(&file);
-        let own = Version {
-            old: text.clone(),
-            new: text.clone(),
-            changes: Changes::none(text.len()),
-        };
-        let versions = HashMap::new();
-
-        Guard::new(
-            &file,
-            &own,
-            &versions,
-            &walker,
-            scope.encoding,
-            false,
-            errors,
-        )
-        .is_none_or(|guard| names.iter().any(|name| guard.mentioned_unsafely(name)))
+    // A module with no guard may hide anything.
+    guards.iter().any(|guard| {
+        guard
+            .as_ref()
+            .is_none_or(|guard| names.iter().any(|name| guard.mentioned_unsafely(name)))
     })
 }
 
@@ -5102,6 +5373,9 @@ struct Guard<'a> {
     symbols: HashMap<usize, SymbolId>,
     /// Each unit's `limit`.
     limits: RefCell<HashMap<Unit, usize>>,
+    /// The names the units that aren't safe mention (`mentioned_unsafely`),
+    /// collected once for every name asked about.
+    mentioned: OnceCell<HashSet<String>>,
     encoding: Encoding,
 }
 
@@ -5188,6 +5462,7 @@ impl<'a> Guard<'a> {
             symbols,
             repaired,
             limits: RefCell::new(HashMap::new()),
+            mentioned: OnceCell::new(),
             encoding,
         })
     }
@@ -5518,28 +5793,36 @@ impl<'a> Guard<'a> {
     /// isn't safe: the check may not have seen a use of it there. A name
     /// that isn't an identifier (an operator) is looked for as text.
     fn mentioned_unsafely(&self, name: &str) -> bool {
-        let operator = names(name).next().is_none();
+        // The text of each unit that isn't safe, past its limit.
+        let texts = || {
+            (0..self.outline.items.len())
+                .map(Unit::Item)
+                .filter(|u| self.outline.unit_at_item(*u))
+                .flat_map(|u| {
+                    let limit = self.limit(u);
 
-        (0..self.outline.items.len())
-            .map(Unit::Item)
-            .filter(|u| self.outline.unit_at_item(*u))
-            .any(|u| {
-                let limit = self.limit(u);
+                    self.outline
+                        .own(u)
+                        .iter()
+                        .filter(|r| r.end > limit)
+                        .map(|r| &self.old[r.start.max(limit)..r.end])
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<&str>>()
+        };
 
-                self.outline
-                    .own(u)
+        if names(name).next().is_none() {
+            return texts().iter().any(|text| text.contains(name));
+        }
+
+        self.mentioned
+            .get_or_init(|| {
+                texts()
                     .iter()
-                    .filter(|r| r.end > limit)
-                    .any(|r| {
-                        let text = &self.old[r.start.max(limit)..r.end];
-
-                        if operator {
-                            text.contains(name)
-                        } else {
-                            names(text).any(|n| n == name)
-                        }
-                    })
+                    .flat_map(|text| names(text).map(str::to_string))
+                    .collect()
             })
+            .contains(name)
     }
 
     /// The hints that hold, mapped, with the parts of `start` to `end` (in

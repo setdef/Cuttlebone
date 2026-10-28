@@ -979,3 +979,255 @@ fn whole_project_answers_past_a_declaration_error_elsewhere() {
     assert!(!before.as_array().unwrap().is_empty());
     assert_eq!(callers("callers of total").1, shifted(before, 4));
 }
+
+fn lens_server(root: &Path, utf8: bool, capabilities: Value) -> Client {
+    let mut all = json!({
+        "general": { "positionEncodings": if utf8 { ["utf-8"] } else { ["utf-16"] } },
+        "textDocument": { "codeLens": {} },
+    });
+
+    crate::common::client::merge_deep(&mut all, capabilities);
+    Client::initialized_with(
+        Launch::default(),
+        root,
+        json!({ "statusNotifications": true, "diagnostics": false }),
+        all,
+    )
+}
+
+/// What a lens shows: where it is, its title, its kind, and where its
+/// locations are.
+fn shown(root: &Path, file: &Path, lens: &Value, utf8: bool) -> (Spot, String, String, Vec<Spot>) {
+    let args = &lens["command"]["arguments"][0];
+
+    assert_eq!(lens["command"]["command"], "cuttlebone.showLocations");
+    (
+        spot(root, &json!(uri(file)), &lens["range"], utf8),
+        lens["command"]["title"].as_str().unwrap().to_string(),
+        args["kind"].as_str().unwrap().to_string(),
+        locations(root, &args["locations"], utf8),
+    )
+}
+
+/// A document's code lenses, in one request: each is the answer of the
+/// request a client would otherwise send at the declaration's name
+/// (implementation, supertypes, definition at an `impl`'s trait,
+/// declaration at an `impl`'s method), in both encodings.
+#[test]
+fn code_lenses_are_each_declarations_answers() {
+    for utf8 in [false, true] {
+        let root = project(if utf8 { "lenses-utf8" } else { "lenses-utf16" });
+        let mut client = lens_server(&root, utf8, json!({}));
+        let shapes = root.join("src/shapes.inko");
+        let id = client.send_request(
+            "textDocument/codeLens",
+            json!({ "textDocument": { "uri": uri(&shapes) } }),
+        );
+        let lenses = client.response(id)["result"].clone();
+        let status = client.status(id).unwrap().clone();
+
+        assert_eq!(status["status"], "fresh", "{}", status);
+
+        let mut titles = Vec::new();
+
+        for lens in lenses.as_array().unwrap() {
+            let (at, title, kind, places) = shown(&root, &shapes, lens, utf8);
+            let position = json!({ "textDocument": { "uri": uri(&shapes) }, "position": lens["range"]["start"] });
+            let want = match kind.as_str() {
+                "implementations" => result(&mut client, "textDocument/implementation", position),
+                "trait" => result(&mut client, "textDocument/definition", position),
+                "declaration" => result(&mut client, "textDocument/declaration", position),
+                "supertypes" => {
+                    let items = result(&mut client, "textDocument/prepareTypeHierarchy", position);
+                    let supers = result(
+                        &mut client,
+                        "typeHierarchy/supertypes",
+                        json!({ "item": items[0] }),
+                    );
+
+                    Value::Array(
+                        supers
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|i| json!({ "uri": i["uri"], "range": i["selectionRange"] }))
+                            .collect(),
+                    )
+                }
+                other => panic!("a lens of kind {}", other),
+            };
+
+            assert_eq!(places, locations(&root, &want, utf8), "{:?} {}", at, title);
+            titles.push((at.2, title));
+        }
+
+        let has = |name: &str, title: &str| titles.contains(&(name.to_string(), title.to_string()));
+
+        for (name, title) in [
+            ("Named", "2 implementations"),
+            ("name", "2 implementations"),
+            ("Labelled", "2 implementations"),
+            ("Labelled", "requires Named"),
+            // Box redefines the default method, Circle inherits it.
+            ("label", "1 implementation"),
+            ("Circle", "implements Shape, Named, Labelled"),
+            // By where they're declared: std's first.
+            ("Box", "implements ToString, Named, Labelled"),
+            // An `impl`'s trait, and its methods' trait's methods.
+            ("Shape", "Shape"),
+            ("area", "Shape.area"),
+            ("ToString", "ToString"),
+            ("to_string", "ToString.to_string"),
+        ] {
+            assert!(
+                has(name, title),
+                "UTF-8 {}: no {} lens {:?} in {:?}",
+                utf8,
+                name,
+                title,
+                titles
+            );
+        }
+
+        // Every declaration a lens is asked for answered: its lenses are
+        // all there are.
+        let covered: Vec<String> = status["covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| spot(&root, &json!(uri(&shapes)), r, utf8).2)
+            .collect();
+
+        for name in [
+            "Named", "name", "Labelled", "label", "Circle", "Box", "Shape", "area",
+        ] {
+            assert!(
+                covered.contains(&name.to_string()),
+                "{} isn't covered: {:?}",
+                name,
+                covered
+            );
+        }
+    }
+}
+
+/// Past an error in a declaration elsewhere, the lenses it can't change
+/// are given, and the status's `covered` leaves out the declarations
+/// whose lenses it could; a client without code lenses isn't offered
+/// them; the lenses' command shows the first location to a client that
+/// can show documents.
+#[test]
+fn code_lenses_past_an_error_without_the_capability_and_their_command() {
+    let root = project("lenses-errors");
+    let shapes = root.join("src/shapes.inko");
+    let mut client = lens_server(
+        &root,
+        false,
+        json!({ "window": { "showDocument": { "support": true } } }),
+    );
+
+    std::fs::write(
+        root.join("src/other.inko"),
+        "import shapes (Named)\n\ntype pub Thing {}\n\nimpl Named for Thingg {}\n",
+    )
+    .unwrap();
+
+    let id = client.send_request(
+        "textDocument/codeLens",
+        json!({ "textDocument": { "uri": uri(&shapes) } }),
+    );
+    let lenses = client.response(id)["result"].clone();
+    let status = client.status(id).unwrap().clone();
+    // By line and text: `Named` is the trait's name on line 3, and an
+    // `impl`'s trait's elsewhere.
+    let covered: Vec<(u32, String)> = status["covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let (_, line, text) = spot(&root, &json!(uri(&shapes)), r, false);
+
+            (line, text)
+        })
+        .collect();
+    let titles: Vec<(u32, String, String)> = lenses
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            let (at, title, _, _) = shown(&root, &shapes, l, false);
+
+            (at.1, at.2, title)
+        })
+        .collect();
+    let named = (3, "Named".to_string());
+
+    assert_eq!(status["status"], "fresh", "{}", status);
+    // Named's implementations may miss Thingg's `impl`.
+    assert!(!covered.contains(&named), "{:?}", covered);
+    assert!(
+        !titles.iter().any(|(l, n, _)| (*l, n.clone()) == named),
+        "{:?}",
+        titles
+    );
+    // An `impl`'s trait is the file's own question, which the error
+    // elsewhere can't change; so is its method's trait's method.
+    assert!(
+        covered.contains(&(17, "Shape".to_string())),
+        "{:?}",
+        covered
+    );
+    assert!(
+        titles.contains(&(17, "Shape".to_string(), "Shape".to_string())),
+        "{:?}",
+        titles
+    );
+    assert!(
+        titles.iter().any(|(_, _, t)| t == "Shape.area"),
+        "{:?}",
+        titles
+    );
+
+    // The command shows its first location.
+    let lens = lenses
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["command"]["title"] == "Shape")
+        .unwrap()
+        .clone();
+    let response = client.request(
+        "workspace/executeCommand",
+        json!({ "command": lens["command"]["command"], "arguments": lens["command"]["arguments"] }),
+    );
+
+    assert_eq!(response["result"], Value::Null, "{}", response);
+
+    let shown = client.wait_for(|m| m["method"] == "window/showDocument");
+
+    assert_eq!(
+        shown["params"]["uri"],
+        lens["command"]["arguments"][0]["locations"][0]["uri"]
+    );
+    assert_eq!(
+        shown["params"]["selection"],
+        lens["command"]["arguments"][0]["locations"][0]["range"]
+    );
+
+    // Without the capability: no lenses offered.
+    let mut bare = Client::start();
+    let result = bare.initialize(&root, json!({}), json!({}));
+
+    assert!(
+        result["capabilities"].get("codeLensProvider").is_none(),
+        "{}",
+        result
+    );
+    assert!(
+        result["capabilities"]
+            .get("executeCommandProvider")
+            .is_none(),
+        "{}",
+        result
+    );
+}

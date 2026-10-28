@@ -100,7 +100,8 @@ UTF-16. `utf-32` isn't supported.
 ### What it advertises
 
 Only what works (`workspace.fileOperations` only for a client whose
-`workspace.fileOperations.willRename` is `true`):
+`workspace.fileOperations.willRename` is `true`, `codeLensProvider` and
+`executeCommandProvider` only for one with `textDocument.codeLens`):
 
 ```json
 {
@@ -125,6 +126,8 @@ Only what works (`workspace.fileOperations` only for a client whose
     "workspaceSymbolProvider": true,
     "callHierarchyProvider": true,
     "typeHierarchyProvider": true,
+    "codeLensProvider": {"resolveProvider": false},
+    "executeCommandProvider": {"commands": ["cuttlebone.showLocations"]},
     "workspace": {"fileOperations": {"willRename": {"filters": [
       {"scheme": "file", "pattern": {"glob": "**/*.inko", "matches": "file"}},
       {"scheme": "file", "pattern": {"glob": "**", "matches": "folder"}}]}}},
@@ -156,7 +159,7 @@ client's job, on its side:
   definition, implementation, references, call and type hierarchies,
   file renames, document highlight, signature help, inlay hints, document
   and workspace symbols, folding ranges, selection ranges, formatting, code
-  actions): don't send
+  actions, code lenses): don't send
   them, or don't show their answers. A client that registers capabilities
   through its own configuration can leave them out; one that can't can drop
   the server's capability from the `InitializeResult` before its LSP layer
@@ -711,6 +714,76 @@ unsafe mentions the type's or trait's name (an `impl` naming it, or a
 trait requiring it).
 The item is found again at its `selectionRange.start`, as for the call
 hierarchy.
+
+## `textDocument/codeLens`
+
+Every declaration's implementations and supertypes, and an `impl`'s
+traits, in one request: for a client that decorates each declaration (a
+gutter icon, a line above it) and would otherwise ask
+[implementation](#textdocumentimplementation),
+[supertypes](#type-hierarchy) and [declaration](#textdocumentdeclaration)
+once per declaration on every pass.
+
+```json
+→ {"jsonrpc": "2.0", "id": 12, "method": "textDocument/codeLens", "params": {
+    "textDocument": {"uri": "file:///home/me/hello/src/shapes.inko"}}}
+← {"jsonrpc": "2.0", "id": 12, "result": [
+    {"range": {"start": {"line": 3, "character": 10}, "end": {"line": 3, "character": 15}},
+     "command": {"title": "2 implementations", "command": "cuttlebone.showLocations",
+       "arguments": [{"kind": "implementations", "locations": [
+         {"uri": "file:///home/me/hello/src/shapes.inko", "range": ...},
+         {"uri": "file:///home/me/hello/src/shapes.inko", "range": ...}]}]}}
+]}
+```
+
+| At (the lens's `range`) | `kind` | `title` | `locations`: the answer of |
+|---|---|---|---|
+| a trait's name | `implementations` | `2 implementations` | `textDocument/implementation` there |
+| a trait's name | `supertypes` | `requires Named` | `typeHierarchy/supertypes` of its item (each trait's name) |
+| a trait's method's name, required or default | `implementations` | `1 implementation` | `textDocument/implementation` there |
+| a type's name | `supertypes` | `implements ToString, Named` | `typeHierarchy/supertypes` of its item |
+| an `impl` block's trait's name (`Named` in `impl Named for Box`) | `trait` | `Named` | `textDocument/definition` there |
+| a method's name in an `impl` block of a trait | `declaration` | `Named.name` | `textDocument/declaration` there: the trait's method |
+
+- **The same answers.** Each lens's locations are exactly what that
+  request would answer at its `range.start`, with the same rules for
+  where it answers: one check of the whole project answers every
+  implementation and supertype (kept, as for any query: [Kept
+  checks](#kept-checks)), and one of the file the rest. Never from the
+  last good check (an `impl` added since would be missing); from a
+  repaired copy only where that request may answer from one.
+- **Only lenses with something to show**: no lens for a trait no type
+  implements, or a type that implements no trait.
+- **What the answer covers.** Its [status](#status) has `covered`: the
+  name of every declaration whose lenses are all there are, because each
+  of its questions had an answer. A declaration missing from it may have
+  lenses that weren't given, for example past an
+  [error in a declaration](#errors-in-declarations) that could hide an
+  `impl` of a trait. With none covered, the result is `null` with the
+  first reason. A client can keep the decorations it had for those.
+- **The command** is `cuttlebone.showLocations`, with one argument: the
+  lens's `kind` and its `locations` (`Location[]`, in the negotiated
+  encoding). A client can read them from the lens, with no further
+  request. `workspace/executeCommand` with it shows the first location
+  with `window/showDocument` (`takeFocus`, the location's range
+  selected), to a client whose `window.showDocument.support` is `true`,
+  and answers `null`: LSP has no request for showing several locations.
+- **Not resolved:** `resolveProvider` is `false`; every lens has its
+  command. Lenses aren't refreshed by the server: a client asks again when
+  it wants them, such as after an edit or a save.
+
+The spec's other ways to get several answers in one request don't fit:
+JSON-RPC batches aren't part of LSP (and lsp-server doesn't take them),
+and `textDocument/implementation` and the hierarchies take one position
+each. A code lens is the spec's place for "an answer shown with a line of
+source", and its command's arguments are the server's to define, so this
+is no extension. tests/hierarchy.rs checks every lens against its
+request's answer.
+
+**Cost.** One request a document, whatever it declares: on an Apple M1
+Max, under `cargo test`, std's `string.inko` (as part of all of std)
+takes the whole project's check and a lookup for each question;
+tests/latency.rs holds it to the limit for other whole-project answers.
 
 ## `workspace/willRenameFiles`
 
@@ -1490,7 +1563,7 @@ a custom notification if the client opts in with
   declaration, type definition, implementation, references, the call and
   type hierarchies' requests, file renames, document highlight, signature help, inlay
   hints, document and workspace symbols, folding ranges, selection ranges,
-  formatting, code actions) that gets a result, just before the
+  formatting, code actions, code lenses) that gets a result, just before the
   response, with the request's `id`. Requests
   answered with an error (cancelled, invalid) get none. Document symbols,
   which need no check, are `fresh` (with `"repaired": true` if the text
@@ -1574,6 +1647,9 @@ being edited:
   are given).
 - **A client that ignores `covered`** sees what it did before: the hints
   given, and nothing else.
+
+A [code lens](#textdocumentcodelens) answer's `covered` is the names of
+the declarations whose lenses are all there are, the same way.
 
 Other requests' answers are whole or none: hover, definition, type
 definition and signature help are about one position, and document
@@ -1665,8 +1741,13 @@ the compiler requires), Cuttlebone checks again, stopping at the error as
 `inko check` does, and has no fresh answer.
 
 **Cost.** None: the passes after the error run on a check that would have
-stopped, and the rest is a lookup in each answer's unit (or, for
-references, the units of every module of the project).
+stopped, and the rest is a lookup in each answer's unit (or, for the
+answers about the whole project, the units of every module of the project
+whose text has a name they're about, once for all of a request's
+questions). Across all of std as the project, past an error, a document's
+[code lenses](#textdocumentcodelens) look at nearly every module, the
+worst case: tests/latency.rs holds them to 1.5 s, against 750 ms
+without the error.
 
 ## Answers in code being edited
 

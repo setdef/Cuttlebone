@@ -278,6 +278,7 @@ fn every_declaration_around_a_position_is_selected() {
     let mut files = Vec::new();
     let mut checked = 0;
     let mut documented = 0;
+    let mut trailing = 0;
 
     fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
@@ -363,6 +364,20 @@ fn every_declaration_around_a_position_is_selected() {
                     // And again with its doc comment, from its first `#`.
                     let from = text[d.header.start..].trim_start();
 
+                    // A comment after code on the line above, which `inko
+                    // doc` reads as its doc comment too, isn't a step.
+                    if d.documentation.is_some() && !from.starts_with('#') {
+                        trailing += 1;
+                        assert!(
+                            !chain.contains(&(text.len() - from.len()..d.range.end)),
+                            "{}: at {}: {} with the line above is selected: {:?}",
+                            file.display(),
+                            offset,
+                            d.name,
+                            chain
+                        );
+                    }
+
                     if d.documentation.is_some() && from.starts_with('#') {
                         let comment = text.len() - from.len();
 
@@ -383,4 +398,5 @@ fn every_declaration_around_a_position_is_selected() {
 
     assert!(checked > 20_000, "{}", checked);
     assert!(documented > 5_000, "{}", documented);
+    assert!(trailing > 0, "{}", trailing);
 }

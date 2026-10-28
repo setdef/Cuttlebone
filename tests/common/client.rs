@@ -203,8 +203,8 @@ impl Client {
         self.response(id)
     }
 
-    /// Waits for the response to request `id`, keeping notifications that
-    /// arrive first.
+    /// Waits for the response to request `id`, keeping notifications (and
+    /// requests the server sends, which `spec` checks) that arrive first.
     pub fn response(&mut self, id: i64) -> Value {
         loop {
             let message = self
@@ -216,8 +216,8 @@ impl Client {
             }
 
             assert!(
-                message.get("id").is_none(),
-                "an unexpected response or request: {}",
+                message.get("id").is_none() || message.get("method").is_some(),
+                "an unexpected response: {}",
                 message
             );
             self.notifications.push(message);
