@@ -59,6 +59,9 @@ Reports, in docs/history/:
 - [MILESTONE-13.md](docs/history/MILESTONE-13.md): answers after an undo
   and a closed file changed on disk, folding ranges, formatting, quick
   fixes, and the release tier in CI.
+- [MILESTONE-14.md](docs/history/MILESTONE-14.md): implementations,
+  declarations, call and type hierarchies, selection ranges, file
+  renames, pull diagnostics, and latency limits scaled per runner.
 
 Each milestone has its own version; what changed in each:
 [CHANGELOG.md](CHANGELOG.md).
