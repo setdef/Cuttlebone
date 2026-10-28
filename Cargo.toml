@@ -68,6 +68,13 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 3
 
+# Cuttlebone's own code too, a little: the latency limits measure it
+# closer to how it's released, and on CI runners, its unoptimized code
+# was slower against the baseline (scripts/latency.sh) than on the
+# reference machine (docs/history/MILESTONE-14.md).
+[profile.dev]
+opt-level = 1
+
 [lints.rust]
 unsafe_code = "forbid"
 
