@@ -63,9 +63,12 @@ fn limit(base: Duration) -> Duration {
 }
 
 /// A strict limit on a machine `scale` times as slow as the reference
-/// (`None`: the reference itself).
+/// (`None`: the reference itself). Never less than as written: a machine
+/// faster than the reference is held to the limits as written, since
+/// part of every answer (processes, pipes, files) is a cost the
+/// baseline's speed doesn't say much about.
 fn scaled(base: Duration, scale: Option<f64>) -> Duration {
-    base.mul_f64(scale.unwrap_or(1.0))
+    base.mul_f64(scale.unwrap_or(1.0).max(1.0))
 }
 
 /// The reference machine's baseline (`baseline`): an Apple M1 Max, under
@@ -126,7 +129,7 @@ fn measure_the_baseline() {
     let report = format!(
         "baseline {:.1} ms on this machine ({} cores, the median of {} runs)\n\
          reference {:.1} ms (an Apple M1 Max)\n\
-         scale {:.3}: every strict limit times this\n",
+         scale {:.3}: every strict limit times this, if it's over 1\n",
         measured.as_secs_f64() * 1000.0,
         cores,
         BASELINE_RUNS,
@@ -145,7 +148,7 @@ fn measure_the_baseline() {
 fn strict_limits_scale_by_the_baseline() {
     assert_eq!(scaled(LIMIT, None), LIMIT);
     assert_eq!(scaled(LIMIT, Some(1.2)), Duration::from_millis(600));
-    assert_eq!(scaled(LIMIT, Some(0.9)), Duration::from_millis(450));
+    assert_eq!(scaled(LIMIT, Some(0.9)), LIMIT);
 }
 
 /// The milestone tier and the mutations set `STRICT_VARIABLE`, and then
@@ -158,7 +161,7 @@ fn limits_are_as_written_when_strict() {
     ) {
         let scale: f64 = scale.parse().unwrap();
 
-        assert_eq!(limit(LIMIT), LIMIT.mul_f64(scale));
+        assert_eq!(limit(LIMIT), LIMIT.mul_f64(scale.max(1.0)));
     } else if std::env::var_os(STRICT_VARIABLE).is_some() {
         assert_eq!(limit(LIMIT), LIMIT);
         assert_eq!(limit(BURST_LIMIT), BURST_LIMIT);

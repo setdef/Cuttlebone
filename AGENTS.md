@@ -89,7 +89,7 @@ one the step calls for.
   machine (an Apple M1 Max): scripts/latency.sh first measures a fixed
   baseline workload (the upstream compiler alone) on the machine it runs
   on, prints it, and scales every strict limit by how it compares with
-  the reference's. They're advisory locally: the milestone tier runs
+  the reference's (up only: a faster machine meets them as written). They're advisory locally: the milestone tier runs
   them and reports a failure without failing. The release tier in CI
   holds every query to them, failing. Ratios between two measurements
   taken in the same run (a question after a cancel, a second lookup)
