@@ -67,6 +67,10 @@ Reports, in docs/history/:
   with other errors and four more, names in code being edited and
   keywords, steadier document symbols, constructors' signature help,
   folds' collapsed text, and workspace symbols for an index.
+- [MILESTONE-16.md](docs/history/MILESTONE-16.md): diagnostics past a
+  module that doesn't parse, whole-project answers past a declaration
+  error elsewhere, code lenses, a status for every file rename, a
+  selection step with doc comments, and a trait's default methods.
 
 Each milestone has its own version; what changed in each:
 [CHANGELOG.md](CHANGELOG.md).

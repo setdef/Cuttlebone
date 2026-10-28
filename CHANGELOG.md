@@ -18,6 +18,24 @@ request, a status for every file rename, a selection step with a
 declaration's doc comment, and a trait's required and default methods.
 [Report](docs/history/MILESTONE-16.md).
 
+- **Diagnostics past a module that doesn't parse**: the rest of the
+  project is checked without it and what imports it, as `inko check`
+  checks a copy of the project without them; those keep `inko check`'s.
+- **Implementations, incoming calls, supertypes, subtypes and file
+  renames past a declaration error elsewhere**: refused only where a unit
+  the error makes unsafe names what they're about, as references; so
+  callers also in a document being edited.
+- **Code lenses** (`textDocument/codeLens`, for a client with them):
+  every declaration's implementations and supertypes, and each `impl`'s
+  trait and its methods' trait's methods, in one request, with their
+  locations in the command's arguments, and `covered` in the status.
+- **A status for every file rename**, `fresh` where no module's name
+  changes, naming the request's `files`.
+- **A selection step with a declaration's doc comment.**
+- **A trait's default methods** have ` { ... }` after the signature in
+  document symbols' `detail`; required ones don't.
+- For Inko 0.21.1, as before. Seven patch lines (a project check can leave files out), no new extension.
+
 ## 0.15.0
 
 Milestone 15: what a client that indexes Inko itself still needed.

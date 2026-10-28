@@ -1017,7 +1017,28 @@ fn shown(root: &Path, file: &Path, lens: &Value, utf8: bool) -> (Spot, String, S
 fn code_lenses_are_each_declarations_answers() {
     for utf8 in [false, true] {
         let root = project(if utf8 { "lenses-utf8" } else { "lenses-utf16" });
+        let lonely = root.join("src/lonely.inko");
+
+        std::fs::write(&lonely, "trait pub Lonely {\n  fn pub alone -> Int\n}\n").unwrap();
+
         let mut client = lens_server(&root, utf8, json!({}));
+
+        // Nothing implements it, and it requires nothing: no lens to show,
+        // but answered.
+        let id = client.send_request(
+            "textDocument/codeLens",
+            json!({ "textDocument": { "uri": uri(&lonely) } }),
+        );
+
+        assert_eq!(client.response(id)["result"], json!([]));
+        assert_eq!(
+            client.status(id).unwrap()["covered"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+
         let shapes = root.join("src/shapes.inko");
         let id = client.send_request(
             "textDocument/codeLens",
