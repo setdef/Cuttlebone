@@ -714,7 +714,12 @@ fn whole_project_answers_are_complete_or_none() {
     let main = root.join("src/main.inko");
     let other = root.join("src/other.inko");
 
-    std::fs::write(&other, "fn pub broken -> Strin {\n  'x'\n}\n").unwrap();
+    // An `impl` of the trait with an error may be missing.
+    std::fs::write(
+        &other,
+        "import shapes (Named)\n\ntype pub Thing {}\n\nimpl Named for Thingg {}\n",
+    )
+    .unwrap();
 
     let id = client.send_at("textDocument/implementation", &shapes, 3, 10);
 
@@ -754,4 +759,223 @@ fn whole_project_answers_are_complete_or_none() {
 
     assert_eq!(client.response(id)["result"], Value::Null);
     assert_eq!(client.status(id).unwrap()["reason"]["code"], "noHir");
+}
+
+/// The whole-project answers a client asks for, by the request and its
+/// status: implementations of a trait and of its method, the callers of
+/// `helper` and of `total`, a type's supertypes, a trait's subtypes, and
+/// a file rename.
+/// `main` is main's text in the client, if it's open with other text.
+fn whole_project(
+    client: &mut Client,
+    root: &Path,
+    main: Option<&str>,
+) -> Vec<(String, Value, Value)> {
+    let shapes = root.join("src/shapes.inko");
+    let main_text = main.map(str::to_string);
+    let main = root.join("src/main.inko");
+    let mut out = Vec::new();
+    let mut record = |client: &mut Client, what: &str, method: &str, params: Value| {
+        let id = client.send_request(method, params);
+        let response = client.response(id);
+
+        assert!(response.get("error").is_none(), "{}", response);
+
+        let status = client.status(id).unwrap().clone();
+
+        out.push((what.to_string(), response["result"].clone(), status));
+    };
+    let position = |file: &Path, needle: &str, offset: usize| {
+        let text = match &main_text {
+            Some(text) if file.ends_with("main.inko") => text.clone(),
+            _ => std::fs::read_to_string(file).unwrap(),
+        };
+        let (line, character) = at(&text, needle, offset, false);
+
+        json!({ "textDocument": { "uri": uri(file) }, "position": { "line": line, "character": character } })
+    };
+
+    record(
+        client,
+        "implementations of Named",
+        "textDocument/implementation",
+        position(&shapes, "Named {", 0),
+    );
+    record(
+        client,
+        "implementations of Named.name",
+        "textDocument/implementation",
+        position(&shapes, "name -> String\n}", 0),
+    );
+
+    for (what, needle) in [
+        ("callers of helper", "helper -> Int"),
+        ("callers of total", "total(c: "),
+    ] {
+        let items = result(
+            client,
+            "textDocument/prepareCallHierarchy",
+            position(&main, needle, 0),
+        );
+
+        record(
+            client,
+            what,
+            "callHierarchy/incomingCalls",
+            json!({ "item": items[0] }),
+        );
+    }
+
+    for (what, method, needle) in [
+        ("supertypes of Box", "typeHierarchy/supertypes", "Box {}"),
+        ("subtypes of Named", "typeHierarchy/subtypes", "Named {"),
+    ] {
+        let items = result(
+            client,
+            "textDocument/prepareTypeHierarchy",
+            position(&shapes, needle, 0),
+        );
+
+        record(client, what, method, json!({ "item": items[0] }));
+    }
+
+    record(
+        client,
+        "renaming shapes",
+        "workspace/willRenameFiles",
+        json!({ "files": [{ "oldUri": uri(&shapes), "newUri": uri(&root.join("src/forms.inko")) }] }),
+    );
+    out
+}
+
+/// With an error in a declaration elsewhere, implementations, the
+/// hierarchies' lists and file renames are answered, fresh and the same as
+/// without it, wherever no unit the error makes unsafe names what they're
+/// about, and refused only there; callers too in a document being edited
+/// (as references are, docs/lsp.md, "Errors in declarations").
+#[test]
+fn whole_project_answers_past_a_declaration_error_elsewhere() {
+    let root = project("past-errors");
+    let mut client = server(&root, false);
+    let other = root.join("src/other.inko");
+    let main = root.join("src/main.inko");
+    let clean = whole_project(&mut client, &root, None);
+
+    for (what, result, status) in &clean {
+        assert_eq!(status["status"], "fresh", "{}: {}", what, status);
+        assert!(
+            result.is_array() || result.is_object(),
+            "{}: {}",
+            what,
+            result
+        );
+    }
+
+    let answered = |got: &[(String, Value, Value)], refused: &[&str]| {
+        for ((what, result, status), (_, want, _)) in got.iter().zip(&clean) {
+            if refused.contains(&what.as_str()) {
+                assert_eq!(*result, Value::Null, "{}", what);
+                assert_eq!(
+                    status["reason"]["code"], "declarationErrors",
+                    "{}: {}",
+                    what, status
+                );
+            } else {
+                assert_eq!(status["status"], "fresh", "{}: {}", what, status);
+                assert_eq!(result, want, "{}", what);
+            }
+        }
+    };
+
+    // An error that's about none of them.
+    std::fs::write(&other, "fn pub broken -> Strin {\n  'x'\n}\n").unwrap();
+    answered(&whole_project(&mut client, &root, None), &[]);
+
+    // An `impl` of Named with an error: Named's implementations and
+    // subtypes may miss it; the callers don't. Box's supertypes are
+    // refused too: its own `impl Named for Box` mentions Named, so it isn't
+    // safe, and it names Box. So is renaming shapes: other imports Named
+    // from it.
+    std::fs::write(
+        &other,
+        "import shapes (Named)\n\ntype pub Thing {}\n\nimpl Named for Thing {\n  fn pub name -> Strin {\n    'x'\n  }\n}\n",
+    )
+    .unwrap();
+    answered(
+        &whole_project(&mut client, &root, None),
+        &[
+            "implementations of Named",
+            "implementations of Named.name",
+            "supertypes of Box",
+            "subtypes of Named",
+            "renaming shapes",
+        ],
+    );
+    // An `impl` of Named for a type that doesn't exist, with a method of
+    // the trait's: it's missing from Named's implementations, and so is
+    // its `name` from Named.name's, until the type is fixed.
+    std::fs::write(
+        &other,
+        "import shapes (Named)\n\nimpl Named for Thingg {\n  fn pub name -> String {\n    'x'\n  }\n}\n",
+    )
+    .unwrap();
+
+    let got = whole_project(&mut client, &root, None);
+
+    for what in ["implementations of Named", "implementations of Named.name"] {
+        let (_, result, status) = got.iter().find(|(w, _, _)| w == what).unwrap();
+
+        assert_eq!(*result, Value::Null, "{}", what);
+        assert_eq!(
+            status["reason"]["code"], "declarationErrors",
+            "{}: {}",
+            what, status
+        );
+    }
+
+    std::fs::remove_file(&other).unwrap();
+
+    // Being typed in main, unsaved: a method whose signature doesn't
+    // check yet, calling `helper`. Its callers may miss it, `total`'s
+    // don't.
+    let edited = MAIN.replace(
+        "fn helper -> Int {",
+        "fn added -> Strin {\n  helper\n}\n\nfn helper -> Int {",
+    );
+
+    client.open(&main, &edited);
+
+    let got = whole_project(&mut client, &root, Some(&edited));
+    let callers = |what: &str| got.iter().find(|(w, _, _)| w == what).unwrap();
+
+    assert_eq!(callers("callers of helper").1, Value::Null);
+    assert_eq!(
+        callers("callers of helper").2["reason"]["code"],
+        "declarationErrors"
+    );
+    assert_eq!(callers("callers of total").2["status"], "fresh");
+    // Moved down by the four lines added above it.
+    fn shifted(value: &Value, by: u64) -> Value {
+        match value {
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| match (k.as_str(), v.as_u64()) {
+                        ("line", Some(line)) => (k.clone(), json!(line + by)),
+                        _ => (k.clone(), shifted(v, by)),
+                    })
+                    .collect(),
+            ),
+            Value::Array(list) => Value::Array(list.iter().map(|v| shifted(v, by)).collect()),
+            other => other.clone(),
+        }
+    }
+
+    let before = &clean
+        .iter()
+        .find(|(w, _, _)| w == "callers of total")
+        .unwrap()
+        .1;
+
+    assert!(!before.as_array().unwrap().is_empty());
+    assert_eq!(callers("callers of total").1, shifted(before, 4));
 }

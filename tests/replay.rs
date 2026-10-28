@@ -692,6 +692,7 @@ const REQUESTS: &[&str] = &[
     "prepareTypeHierarchy",
     "implementation",
     "incomingCalls",
+    "supertypes",
     "subtypes",
 ];
 
@@ -711,6 +712,7 @@ fn request_name(q: Question) -> &'static str {
         Question::TypeItem => "prepareTypeHierarchy",
         Question::Implementation => "implementation",
         Question::IncomingCalls => "incomingCalls",
+        Question::Supertypes => "supertypes",
         Question::Subtypes => "subtypes",
         other => panic!("not asked: {:?}", other),
     }
@@ -1456,6 +1458,7 @@ fn replay(scenario: &Scenario, memory: bool, repair: bool) -> Tally {
                     },
                     Question::Implementation,
                     Question::IncomingCalls,
+                    Question::Supertypes,
                     Question::Subtypes,
                 ]
                 .map(|q| (q, at(*b)))
@@ -1769,9 +1772,10 @@ const SAMPLE_COVERAGE: &[(&str, usize)] = &[
     ("prepareCallHierarchy", 2127),
     ("outgoingCalls", 1914),
     ("prepareTypeHierarchy", 2145),
-    ("implementation", 270),
-    ("incomingCalls", 270),
-    ("subtypes", 270),
+    ("implementation", 350),
+    ("incomingCalls", 347),
+    ("supertypes", 347),
+    ("subtypes", 347),
 ];
 const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("hover", 1873),
@@ -1789,9 +1793,10 @@ const SAMPLE_COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("prepareCallHierarchy", 1894),
     ("outgoingCalls", 1678),
     ("prepareTypeHierarchy", 1901),
-    ("implementation", 270),
-    ("incomingCalls", 270),
-    ("subtypes", 270),
+    ("implementation", 358),
+    ("incomingCalls", 354),
+    ("supertypes", 354),
+    ("subtypes", 354),
 ];
 const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("hover", 1882),
@@ -1809,9 +1814,10 @@ const SAMPLE_COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("prepareCallHierarchy", 1914),
     ("outgoingCalls", 1914),
     ("prepareTypeHierarchy", 1914),
-    ("implementation", 270),
-    ("incomingCalls", 270),
-    ("subtypes", 270),
+    ("implementation", 350),
+    ("incomingCalls", 347),
+    ("supertypes", 347),
+    ("subtypes", 347),
 ];
 
 const COVERAGE: &[(&str, usize)] = &[
@@ -1832,6 +1838,7 @@ const COVERAGE: &[(&str, usize)] = &[
     ("prepareTypeHierarchy", 13097),
     ("implementation", 1065),
     ("incomingCalls", 1065),
+    ("supertypes", 1065),
     ("subtypes", 1065),
 ];
 
@@ -1855,6 +1862,7 @@ const COVERAGE_WITHOUT_MEMORY: &[(&str, usize)] = &[
     ("prepareTypeHierarchy", 11337),
     ("implementation", 1065),
     ("incomingCalls", 1065),
+    ("supertypes", 1065),
     ("subtypes", 1065),
 ];
 
@@ -1877,6 +1885,7 @@ const COVERAGE_WITHOUT_REPAIR: &[(&str, usize)] = &[
     ("prepareTypeHierarchy", 10830),
     ("implementation", 1065),
     ("incomingCalls", 1065),
+    ("supertypes", 1065),
     ("subtypes", 1065),
 ];
 

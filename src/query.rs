@@ -363,8 +363,9 @@ impl Question {
     /// Whether the question is about the whole project (and its
     /// dependencies and std, as far as the project imports them), so it
     /// checks the whole project, as references do, and needs a complete
-    /// answer: never from a repaired copy or an older check, nor past an
-    /// error in a declaration, which may hide a part of it.
+    /// answer: never from a repaired copy or an older check, and past an
+    /// error in a declaration only where it can't hide a part of it
+    /// (`hidden`).
     pub fn whole_project(self) -> bool {
         matches!(
             self,
@@ -4058,21 +4059,25 @@ fn analyze(
                 .zip(&positions)
                 .map(|((question, position), at)| {
                     let scope = scope(at.clone()?);
-                    let offset = byte_offset(&text, *position, encoding)
-                        .ok_or_else(|| invalid_position(*position))?;
-                    let found = through(&guard, *question, *position, offset, &scope)
-                        .unwrap_or_else(|| Err(declaration_errors()))?;
+                    // A module's uses are about the module, not a position
+                    // in it (they're asked at its start).
+                    let found = match question {
+                        Question::ModuleUses => inspect(*question, &scope)?,
+                        _ => {
+                            let offset = byte_offset(&text, *position, encoding)
+                                .ok_or_else(|| invalid_position(*position))?;
 
-                    if matches!(question, Question::References { .. })
+                            through(&guard, *question, *position, offset, &scope)
+                                .unwrap_or_else(|| Err(declaration_errors()))?
+                        }
+                    };
+
+                    // The error may hide a reference, an implementation, a
+                    // call or a use of the module anywhere it could be one,
+                    // once fixed or now.
+                    if question.whole_project()
                         && found.is_some()
-                        && hidden(&scope, errors)
-                    {
-                        return Err(declaration_errors());
-                    }
-
-                    // The error may hide an implementation, a call or a
-                    // use of the module anywhere.
-                    if question.whole_project() && !matches!(question, Question::References { .. })
+                        && hidden(&scope, errors, *question)
                     {
                         return Err(declaration_errors());
                     }
@@ -4131,29 +4136,46 @@ fn declaration_changes(now: &Request, fallback: &Fallback) -> Option<Vec<Cause>>
     Some(out)
 }
 
-/// Whether an error in a declaration could hide a reference to the symbol
-/// at the scope's position: whether a unit of the project's modules that
-/// isn't safe, because of the check's errors in declarations
-/// (`Guard::safe`), mentions its name. Such a unit may refer to it once
-/// the error is fixed, or does now through what the error left untyped.
-fn hidden(scope: &Scope, errors: &[Cause]) -> bool {
-    let Some(reference) = symbol_at(
+/// The names a whole-project question's answer is about (`hidden`): the
+/// symbol at the position's, for references and incoming calls (its uses),
+/// implementations and supertypes and subtypes (an `impl` or a trait's
+/// requirement names it); for a module's uses, the module's own last name
+/// (an import's path and a use by name end with it). `None` if there's no
+/// symbol at the position.
+fn about(scope: &Scope, question: Question) -> Option<Vec<String>> {
+    if question == Question::ModuleUses {
+        let name = scope.module.name(scope.db).to_string();
+
+        return Some(vec![name.rsplit('.').next().unwrap_or(&name).to_string()]);
+    }
+
+    let reference = symbol_at(
         &scope.walker.references,
         &scope.walker.declarations,
         scope.at,
-    ) else {
-        return true;
-    };
+    )?;
     let text = scope.checked.text(&scope.file);
     let lines = Lines::new(&text);
     let l = &reference.location;
-    let (Some(start), Some(end)) = (
-        lines.offset(l.line_start, l.column_start),
-        lines.offset(l.line_end, l.column_end + 1),
-    ) else {
+    let (start, end) = (
+        lines.offset(l.line_start, l.column_start)?,
+        lines.offset(l.line_end, l.column_end + 1)?,
+    );
+    // A trait's method in an `impl` with an error names the method itself.
+    Some(vec![text[start..end].to_string()])
+}
+
+/// Whether an error in a declaration could hide a part of a whole-project
+/// question's answer (a reference to the symbol at the scope's position, an
+/// implementation, a call, a supertype or subtype, a use of the module):
+/// whether a unit of the project's modules that isn't safe, because of the
+/// check's errors in declarations (`Guard::safe`), mentions a name it's
+/// about (`about`). Such a unit may be a part of it once the error is
+/// fixed, or is now through what the error left untyped.
+fn hidden(scope: &Scope, errors: &[Cause], question: Question) -> bool {
+    let Some(names) = about(scope, question) else {
         return true;
     };
-    let name = text[start..end].to_string();
 
     scope.modules.iter().any(|module| {
         let file = module.module_id.file(scope.db);
@@ -4182,7 +4204,7 @@ fn hidden(scope: &Scope, errors: &[Cause]) -> bool {
             false,
             errors,
         )
-        .is_none_or(|guard| guard.mentioned_unsafely(&name))
+        .is_none_or(|guard| names.iter().any(|name| guard.mentioned_unsafely(name)))
     })
 }
 

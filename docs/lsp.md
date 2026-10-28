@@ -619,9 +619,17 @@ position:
   could use it, as references do. A type in a std module that no project
   imports isn't found: it isn't part of what the project compiles.
 - **Complete or none:** only from the documents as they are, never from a
-  repaired copy or the last good check, and not while any declaration has
-  an error (reason `declarationErrors`): an `impl` with an error may be
-  missing from the database.
+  repaired copy or the last good check. Past an error in a declaration
+  anywhere in the project, as references are
+  ([Errors in declarations](#errors-in-declarations)): refused (reason
+  `declarationErrors`) only if a unit the error makes unsafe mentions
+  the trait's name (or the method's, for a trait's method): an `impl`
+  with an error may be missing from the database, and it names the trait
+  (and its methods, which then go untyped, name themselves). An error elsewhere can't hide one, and the answer is
+  `fresh`.
+- **Why never stale:** an answer from the last good check would miss an
+  `impl` added since, wherever it is, so it couldn't be complete for the
+  documents as they are.
 
 ## `textDocument/declaration`
 
@@ -667,7 +675,11 @@ finds them), grouped by the method each call is in, as
 the calls' names in its file. Sorted by where the callers are. Like
 references, it checks the whole project; distinct ids are distinct
 methods, so a call through a bound calls the trait's method, not an
-implementation. Complete or none, as for implementations.
+implementation. Complete or none, as for references: past an error in a
+declaration elsewhere, refused only if a unit it makes unsafe mentions
+the method's name, so also in a document being edited, where a method
+whose signature doesn't check yet refuses only the callers of what it
+calls.
 
 `callHierarchy/outgoingCalls`: every method the method's body calls, as
 `CallHierarchyOutgoingCall[]`: `to` is the called method's item,
@@ -693,7 +705,10 @@ hierarchy), or `null`.
 Each is sorted by where it's declared, from the type database
 (`TypeId::implemented_traits`, `TraitId::required_traits`,
 `TraitId::implemented_by`), checking the whole project as implementations
-do (tests/corpus_hierarchy.rs checks it against the database over std).
+do (tests/corpus_hierarchy.rs checks it against the database over std),
+and past an error in a declaration, refused only where a unit it makes
+unsafe mentions the type's or trait's name (an `impl` naming it, or a
+trait requiring it).
 The item is found again at its `selectionRange.start`, as for the call
 hierarchy.
 
@@ -718,8 +733,11 @@ there are none. Inko resolves a module from its path in its project's
 Only a client whose `workspace.fileOperations.willRename` is `true` is
 asked to send it: the server registers for files matching `**/*.inko` and
 folders. It checks the whole project, as references do, and answers only
-from the documents as they are, with no error in a declaration (reason
-`declarationErrors` or `noHir` otherwise, and `null`). Nothing is written,
+from the documents as they are (reason `noHir` otherwise, and `null`).
+Past an error in a declaration, it answers, `fresh`, unless a unit the
+error makes unsafe mentions the module's last name (`util`, which an
+import's path and a use by name end with): reason `declarationErrors`.
+Never from a repaired copy or the last good check: its edits change code. Nothing is written,
 and the files aren't moved: the client does both. tests/rename_files.rs
 applies the edits, moves the files, and checks the project.
 
@@ -1623,13 +1641,18 @@ each error as a change of the item it's in:
   couldn't type gets no answers.
 - **Complete lists.** Document highlights are given only if no unit that
   gets no answers mentions the name. References are given only if no unit
-  of the project that gets no answers mentions it, in any module. Inlay
+  of the project that gets no answers mentions it, in any module, and so
+  are the other answers about the whole project, each for the names it's
+  about: implementations of a trait (its name) or a trait's method (the
+  method's), incoming calls (the method's), supertypes
+  and subtypes (the type's or trait's), and file renames (the module's
+  last name). Inlay
   hints cover the units that get answers, and the status's `covered` says
   which ([What an answer covers](#what-an-answer-covers)).
 
 This holds for errors in the file asked about, in a module it imports, in
-one that imports it and in one that's unrelated (which only references
-check). Errors in method bodies don't count: nothing outside a method
+one that imports it and in one that's unrelated (which only the answers
+about the whole project check). Errors in method bodies don't count: nothing outside a method
 depends on its body. Answers are `fresh`: they come from the documents as
 they are. Elsewhere the answer is `null`, with reason
 `declarationErrors`, and Cuttlebone tries a repaired copy and the last
@@ -1686,7 +1709,7 @@ two other checks, in this order:
 | outgoing calls | the documents as they are, or else the last good check (`stale`): every call in the method must be there |
 | completion | the documents as they are, or else a repaired copy: its items are inserted into the code, so never stale. Names only from a copy whose blank lines are in method bodies ([Completion](#in-code-being-edited)) |
 | document symbols | the text as it is, or else a copy with the lines in the way blank, from the syntax alone ([`textDocument/documentSymbol`](#textdocumentdocumentsymbol)) |
-| references, implementations, incoming calls, supertypes and subtypes, file renames | the documents as they are only, with no error in a declaration (but references, [Errors in declarations](#errors-in-declarations)): a rename relies on them, and a blank line (or an error) may hide a use or an `impl` |
+| references, implementations, incoming calls, supertypes and subtypes, file renames | the documents as they are only, past an error in a declaration only where it can't hide a part of the answer ([Errors in declarations](#errors-in-declarations)): a rename relies on them, and a blank line may hide a use or an `impl` |
 | diagnostics | the documents as they are, always |
 
 Either way, an answer is only given where it holds for the documents as
