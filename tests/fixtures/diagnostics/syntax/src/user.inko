@@ -1,0 +1,7 @@
+# Left out with the module it imports, which imports one that can't be
+# found.
+import other
+
+fn pub user -> String {
+  other.other
+}

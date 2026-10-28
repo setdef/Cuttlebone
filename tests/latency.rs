@@ -1088,6 +1088,65 @@ fn pulling_diagnostics_on_a_std_sized_project_is_fast_enough() {
     assert!(median < max, "median {:?} exceeds {:?}", median, max);
 }
 
+/// While a module doesn't parse, a pull checks the project again without
+/// it and what imports it: the first check stops before any type checking,
+/// so the two cost about one, under the same limit.
+#[test]
+fn pulling_diagnostics_past_a_module_that_doesnt_parse_is_fast_enough() {
+    let _alone = alone();
+    let (root, text) = std_sized_project();
+    let file = root.join("src/main.inko");
+    let typing = root.join("src/typing.inko");
+
+    std::fs::write(&typing, "fn pub typing -> Int {\n  1\n}\n").unwrap();
+
+    let mut client = Client::initialized_with(
+        Launch {
+            env: vec![(NO_CACHE_VARIABLE, "1".to_string())],
+            unset: vec![],
+            cwd: None,
+        },
+        &root,
+        json!({ "diagnosticsDebounceMs": 0 }),
+        json!({ "textDocument": { "diagnostic": {} } }),
+    );
+    let mut times = Vec::new();
+
+    client.open(&file, &text);
+    client.open(&typing, "fn pub typing -> Int {\n  1\n}\n");
+
+    for run in 0..RUNS {
+        // A new text each time, which doesn't parse.
+        client.change(
+            &typing,
+            run as i32 + 2,
+            json!([{ "text": format!("fn pub typing -> Int {{\n  {} +\n", run) }]),
+        );
+
+        let start = Instant::now();
+        let id = client.send_request(
+            "textDocument/diagnostic",
+            json!({ "textDocument": { "uri": uri(&file) } }),
+        );
+        let response = client.response(id);
+
+        times.push(start.elapsed());
+        assert_eq!(response["result"]["kind"], "full", "{}", response);
+    }
+
+    let _ = std::fs::remove_file(&typing);
+    let median = median(times.clone());
+
+    eprintln!(
+        "a document's diagnostics pulled, past a module that doesn't parse: {:?} (all: {:?})",
+        median, times
+    );
+
+    let max = limit(PULL_LIMIT);
+
+    assert!(median < max, "median {:?} exceeds {:?}", median, max);
+}
+
 /// Queries don't wait for diagnostics, and stay under hover's limit while a
 /// diagnostics check of the same std-sized project runs in another worker.
 /// Each round edits the document, which starts a full check at once

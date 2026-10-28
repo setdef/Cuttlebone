@@ -551,3 +551,104 @@ fn diagnostics_wait_for_running_queries() {
     );
     assert_eq!(client.diagnostics_status()["status"], "fresh");
 }
+
+/// While a module doesn't parse, the others keep their diagnostics: those
+/// of a check without it and the modules that import it, which get what
+/// `inko check` reports, as tests/diagnostics.rs holds the core to. In
+/// both encodings, at their positions after non-ASCII text.
+#[test]
+fn a_module_that_doesnt_parse_leaves_the_others_diagnostics() {
+    for utf8 in [false, true] {
+        let root = crate::common::tmp().join(format!("publish-unparsed-{}", utf8));
+        let _ = std::fs::remove_dir_all(&root);
+
+        std::fs::create_dir_all(root.join("src")).unwrap();
+
+        let helper_text = "fn pub helper -> Int {\n  let s = '日本 😀'\n\n  s + 1\n}\n";
+        let broken_text = "fn pub broken -> Int {\n  1\n}\n";
+        let files = [
+            ("helper.inko", helper_text),
+            ("broken.inko", broken_text),
+            (
+                "main.inko",
+                "import helper\n\nfn pub main -> Int {\n  helper.helper\n}\n",
+            ),
+            // Imports the module that won't parse, and has an error of its
+            // own until then.
+            (
+                "user.inko",
+                "import broken\n\nfn pub user -> Int {\n  broken.broken\n  'x'\n}\n",
+            ),
+        ];
+
+        for (name, text) in files {
+            std::fs::write(root.join("src").join(name), text).unwrap();
+        }
+
+        let root = root.canonicalize().unwrap();
+        let (helper, broken, user) = (
+            root.join("src/helper.inko"),
+            root.join("src/broken.inko"),
+            root.join("src/user.inko"),
+        );
+        let mut client = Client::initialized_with(
+            Launch::default(),
+            &root,
+            options(json!({})),
+            json!({ "general": { "positionEncodings": if utf8 { ["utf-8"] } else { ["utf-16"] } } }),
+        );
+        let before = next_check(&mut client);
+        let error = before[&uri(&helper)].clone();
+
+        assert_eq!(
+            codes(&error),
+            ["invalid-type", "invalid-type"],
+            "{:?}",
+            before
+        );
+
+        // The first is at the `1`, after the non-ASCII text.
+        let (line, character) = at(helper_text, "s + 1", 4, utf8);
+
+        assert_eq!(
+            error[0]["range"]["start"],
+            json!({ "line": line, "character": character })
+        );
+        assert_eq!(
+            codes(&before[&uri(&user)]),
+            ["unused-result", "invalid-type"]
+        );
+
+        // Being typed: it doesn't parse.
+        client.open(&broken, broken_text);
+        client.change(
+            &broken,
+            2,
+            json!([{ "text": "fn pub broken -> Int {\n  1 +\n" }]),
+        );
+
+        let during = next_check(&mut client);
+
+        assert_eq!(
+            codes(&during[&uri(&broken)]),
+            ["invalid-syntax"],
+            "{:?}",
+            during
+        );
+        // Unchanged, and in the same place.
+        assert_eq!(during[&uri(&helper)], error, "UTF-8 {}", utf8);
+        // What imports it is left out, as `inko check` leaves it.
+        assert_eq!(during[&uri(&user)], Vec::<Value>::new());
+
+        client.change(&broken, 3, json!([{ "text": broken_text }]));
+
+        let after = next_check(&mut client);
+
+        assert_eq!(after[&uri(&broken)], Vec::<Value>::new());
+        assert_eq!(
+            codes(&after[&uri(&user)]),
+            ["unused-result", "invalid-type"]
+        );
+        assert!(!after.contains_key(&uri(&helper)) || after[&uri(&helper)] == error);
+    }
+}

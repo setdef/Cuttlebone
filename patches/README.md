@@ -18,9 +18,9 @@ line can't be added without updating this table and justifying it below.
 |---|---|---|
 | compiler/src/lib.rs | +1 -1 | `mod hir` becomes `pub mod hir`, so Cuttlebone can read the typed HIR. |
 | compiler/src/hir.rs | +469 -469 | Every `pub(crate)` becomes `pub`, except `struct LowerToHir`. Mechanical. |
-| compiler/src/compiler.rs | +43 -23 | The `check_with` hook, which doesn't sync `dep/` and passes the diagnostics too, the `diagnostics` accessor, and the pass chain running on after an error when asked. |
+| compiler/src/compiler.rs | +46 -23 | The `check_with` hook, which doesn't sync `dep/` and passes the diagnostics too, the `diagnostics` accessor, the pass chain running on after an error when asked, and leaving out the files a project's check is told to. |
 | compiler/src/diagnostics.rs | +7 -7 | `Diagnostic` and the accessors Cuttlebone reads become `pub`. |
-| compiler/src/config.rs | +8 | The overlay field, and the setting to run every pass. |
+| compiler/src/config.rs | +12 | The overlay field, the setting to run every pass, and the files to leave out. |
 | compiler/src/modules_parser.rs | +5 -1 | Reading the overlay. |
 | compiler/src/type_check/define_types.rs | +5 -2 | Skipping an `impl` whose trait or type didn't resolve. |
 | compiler/src/type_check/methods.rs | +5 -2 | The same, one pass later. |
@@ -304,6 +304,34 @@ stay `pub(crate)` (`is_error` says the same as `kind`), and so do
 Editors type check unsaved buffers. The field is the input; its default is
 empty, so nothing changes for the `inko` command. It's an `IndexMap` because
 config.rs already imports one, which saves a `use` line.
+
+### compiler/src/config.rs and compiler.rs (leaving files out)
+
+```diff
++
++    /// Source files a check of the whole project leaves out.
++    pub exclude: Vec<PathBuf>,
+```
+```diff
++            exclude: Vec::new(),
+```
+```diff
+             all_source_modules(&self.state.config, true)
+                 .map_err(CompileError::Internal)?
++                .into_iter()
++                .filter(|(_, p)| !self.state.config.exclude.contains(p))
++                .collect()
+```
+
+A module that doesn't parse stops the compiler before it checks any
+other, so one file being typed blanks every other file's diagnostics.
+Cuttlebone then checks the project again without that module and the
+modules that import it (docs/lsp.md, "Diagnostics"), which is what
+`inko check` reports for a copy of the project without those files: the
+oracle tests/diagnostics.rs holds it to. Copying the project would write
+to disk, which no check may. The default is empty, so the `inko`
+command checks every module as before; only a check of the whole project
+(`check_with(None)`) reads it, and a `Vec` needs no import.
 
 ### compiler/src/modules_parser.rs
 

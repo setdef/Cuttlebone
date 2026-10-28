@@ -138,6 +138,120 @@ fn ours(dir: &Path, std: &Path, contents: HashMap<PathBuf, String>) -> Vec<Value
         .collect()
 }
 
+/// Every `.inko` file under a directory.
+fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten() {
+        let path = entry.unwrap().path();
+
+        if path.is_dir() {
+            sources(&path, out);
+        } else if path.extension().is_some_and(|e| e == "inko") {
+            out.push(path);
+        }
+    }
+}
+
+/// What Cuttlebone must report for the project in `dir`: `inko check`'s
+/// diagnostics, except where a module doesn't parse or imports one that
+/// can't be found, which stops `inko check` before it checks any other.
+/// Then the files with errors, and the modules that import them, directly
+/// or not, have what `inko check` reports in them, and every other file
+/// what it reports for a copy of the project without those files.
+fn expected(dir: &Path) -> Vec<Value> {
+    let theirs = inko_check(dir);
+    let stopped = theirs.iter().any(|d| {
+        d["level"] == "error" && (d["id"] == "invalid-syntax" || d["id"] == "invalid-file")
+    });
+
+    if !stopped {
+        return theirs;
+    }
+
+    let dir = dir.canonicalize().unwrap();
+    let mut files = Vec::new();
+
+    for sub in ["src", "test"] {
+        sources(&dir.join(sub), &mut files);
+    }
+
+    // Each module's name, and the modules its `import` lines name.
+    let module = |file: &Path| -> String {
+        let relative = file
+            .strip_prefix(dir.join("src"))
+            .or_else(|_| file.strip_prefix(dir.join("test")))
+            .unwrap();
+
+        relative
+            .with_extension("")
+            .to_str()
+            .unwrap()
+            .replace('/', ".")
+    };
+    let imports = |file: &Path| -> Vec<String> {
+        std::fs::read_to_string(file)
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.strip_prefix("import "))
+            .map(|l| l.split([' ', '(']).next().unwrap().to_string())
+            .collect()
+    };
+    let mut left_out: Vec<PathBuf> = theirs
+        .iter()
+        .filter(|d| d["level"] == "error")
+        .map(|d| PathBuf::from(d["file"].as_str().unwrap()))
+        .collect();
+
+    loop {
+        let names: Vec<String> = left_out.iter().map(|f| module(f)).collect();
+        let more: Vec<PathBuf> = files
+            .iter()
+            .filter(|f| !left_out.contains(f) && imports(f).iter().any(|i| names.contains(i)))
+            .cloned()
+            .collect();
+
+        if more.is_empty() {
+            break;
+        }
+
+        left_out.extend(more);
+    }
+
+    let copy = crate::common::tmp().join(format!(
+        "oracle-without-{}",
+        dir.file_name().unwrap().to_str().unwrap()
+    ));
+
+    let _ = std::fs::remove_dir_all(&copy);
+
+    for file in files.iter().filter(|f| !left_out.contains(f)) {
+        let to = copy.join(file.strip_prefix(&dir).unwrap());
+
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(file, to).unwrap();
+    }
+
+    let mut out: Vec<Value> = theirs
+        .into_iter()
+        .filter(|d| left_out.contains(&PathBuf::from(d["file"].as_str().unwrap())))
+        .collect();
+
+    if copy.is_dir() {
+        let copy = copy.canonicalize().unwrap();
+
+        out.extend(inko_check(&copy).into_iter().map(|mut d| {
+            let file = PathBuf::from(d["file"].as_str().unwrap());
+
+            if let Ok(relative) = file.strip_prefix(&copy) {
+                d["file"] = json!(dir.join(relative));
+            }
+
+            d
+        }));
+    }
+
+    out
+}
+
 fn projects() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(fixture("diagnostics"))
         .unwrap()
@@ -153,9 +267,10 @@ fn projects() -> Vec<PathBuf> {
 fn every_fixture_project_matches_inko_check() {
     let std = installed_std();
     let mut ids = BTreeSet::new();
+    let mut past = false;
 
     for dir in projects() {
-        let theirs = inko_check(&dir);
+        let theirs = expected(&dir);
 
         assert!(!theirs.is_empty(), "{}: no diagnostics", dir.display());
         assert_eq!(
@@ -166,9 +281,17 @@ fn every_fixture_project_matches_inko_check() {
         );
 
         for d in theirs {
+            past |= d["file"]
+                .as_str()
+                .unwrap()
+                .ends_with("syntax/src/fine.inko");
             ids.insert(d["id"].as_str().unwrap().to_string());
         }
     }
+
+    // A module that imports none that doesn't parse has its diagnostics,
+    // which `inko check` of the whole project doesn't report.
+    assert!(past);
 
     // The fixtures produce every diagnostic `inko check` can.
     assert_eq!(ids, IDS.iter().map(|s| s.to_string()).collect());

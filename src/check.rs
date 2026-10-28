@@ -125,10 +125,10 @@ pub struct Run<R> {
 }
 
 /// Refuses a project that requires a newer Inko than the one linked, as
-/// `Compiler::prepare` does (compiler/src/compiler.rs:796-811) for `inko
+/// `Compiler::prepare` does (compiler/src/compiler.rs:799-814) for `inko
 /// check`. `prepare` reads the manifests relative to the working directory
 /// (compiler/src/pkg/manifest.rs:11-34), and then syncs `dep/` if `inko.pkg`
-/// changed (compiler/src/compiler.rs:813), which can download packages, and
+/// changed (compiler/src/compiler.rs:816), which can download packages, and
 /// which first creates and locks the packages directory under the user's
 /// data directory even when nothing changed (compiler/src/pkg/sync.rs:22-31,
 /// compiler/src/pkg/util.rs:11-23). Queries mustn't have side effects, so
@@ -321,14 +321,20 @@ pub struct Diagnosis {
 /// inko/src/command/check.rs:62-70), including lowering to MIR, where some
 /// errors (e.g. moves) and warnings are found, and returns every diagnostic.
 /// Like `run`, it has no side effects. `inspect` sees the typed HIR before
-/// MIR, if there is any.
+/// MIR, if there is any. A check of the whole project leaves out the
+/// source files in `exclude`, as if they weren't there.
 pub fn diagnose(
     target: &Target,
+    exclude: &[PathBuf],
     inspect: impl FnOnce(&Database, &[hir::Module]),
 ) -> Result<Diagnosis, String> {
     check_required_version(target)?;
 
-    let mut compiler = Compiler::new(target.config()?);
+    let mut config = target.config()?;
+
+    config.exclude = exclude.to_vec();
+
+    let mut compiler = Compiler::new(config);
     // The compiler is only read after a panic, to collect what it reported
     // before it.
     let res = catch_unwind(AssertUnwindSafe(|| {

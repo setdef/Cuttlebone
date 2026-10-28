@@ -1,0 +1,7 @@
+# Parses, but imports a module that doesn't exist, which stops `inko check`
+# before it checks any other module.
+import app.nope
+
+type async Main {
+  fn async main {}
+}

@@ -3051,13 +3051,44 @@ pub fn diagnostics(session: &Session, request: &Request) -> Answer<Diagnostics> 
         };
 
         // The panic hook records the message on the thread that panicked.
-        guarded(|| {
-            diagnose(&target, |_, modules| typed = expressions_pass_ran(modules))
+        let full = |exclude: &[PathBuf]| {
+            let mut typed = false;
+
+            guarded(|| {
+                diagnose(&target, exclude, |_, modules| {
+                    typed = expressions_pass_ran(modules)
+                })
                 .map(|d| (d, PANIC.with(|p| p.borrow_mut().take())))
-        })
-        .map_err(|message| Unavailable::new("compilerPanic", message))?
-        .map_err(|e| Unavailable::new("compilerError", e))
-        .map(|(diagnosis, panic)| {
+            })
+            .map_err(|message| Unavailable::new("compilerPanic", message))?
+            .map_err(|e| Unavailable::new("compilerError", e))
+            .map(|(diagnosis, panic)| (diagnosis, panic, typed))
+        };
+        let (mut diagnosis, mut panic, first_typed) = full(&[])?;
+
+        typed = first_typed;
+
+        // A module that doesn't parse, or imports one that can't be found,
+        // stopped the compiler before it checked any other module: check
+        // the others again without it and what imports it, and take each
+        // file's diagnostics from the check that had it.
+        if !diagnosis.panicked
+            && let Some(left_out) = unparsed(&target, &diagnosis.diagnostics)
+        {
+            let (rest, rest_panic, rest_typed) = full(&left_out)?;
+
+            diagnosis.diagnostics.retain(|d| left_out.contains(&d.file));
+            diagnosis.diagnostics.extend(
+                rest.diagnostics
+                    .into_iter()
+                    .filter(|d| !left_out.contains(&d.file)),
+            );
+            diagnosis.panicked = rest.panicked;
+            panic = rest_panic;
+            typed = rest_typed;
+        }
+
+        Ok::<_, Unavailable>((diagnosis, panic)).map(|(diagnosis, panic)| {
             let incomplete = diagnosis.panicked.then(|| {
                 Unavailable::new(
                     "compilerPanic",
@@ -3104,6 +3135,110 @@ pub fn diagnostics(session: &Session, request: &Request) -> Answer<Diagnostics> 
         typed,
         cached: false,
     }
+}
+
+/// The source files a check of a whole project (`target`) should leave
+/// out, when it stopped before type checking because a module doesn't
+/// parse or imports one that can't be found (`diagnostics`): every file of
+/// the project with an error then, and every module that imports one of
+/// them, directly or not. `None` if nothing stopped it so, an error is
+/// outside the project's `src/` and `test/`, or no module would be left.
+fn unparsed(target: &Target, diagnostics: &[Reported]) -> Option<Vec<PathBuf>> {
+    if target.file.is_some()
+        || !diagnostics
+            .iter()
+            .any(|d| d.error && (d.id == "invalid-syntax" || d.id == "invalid-file"))
+    {
+        return None;
+    }
+
+    let mut dirs = vec![target.root.join("src")];
+
+    if target.tests {
+        dirs.push(target.root.join("test"));
+    }
+
+    // Every module of the project, by name, with its file.
+    let mut modules: Vec<(String, PathBuf)> = Vec::new();
+
+    for dir in &dirs {
+        let mut pending = vec![dir.clone()];
+
+        while let Some(at) = pending.pop() {
+            for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+                let path = entry.path();
+
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|e| e == "inko") {
+                    let name = path
+                        .strip_prefix(dir)
+                        .ok()?
+                        .with_extension("")
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join(".");
+
+                    modules.push((name, path));
+                }
+            }
+        }
+    }
+
+    let mut left_out: Vec<PathBuf> = Vec::new();
+
+    for d in diagnostics.iter().filter(|d| d.error) {
+        if !modules.iter().any(|(_, p)| *p == d.file) {
+            return None;
+        }
+
+        if !left_out.contains(&d.file) {
+            left_out.push(d.file.clone());
+        }
+    }
+
+    // What each module imports, from its text.
+    let imports: Vec<(PathBuf, Vec<String>)> = modules
+        .iter()
+        .filter(|(_, p)| !left_out.contains(p))
+        .map(|(_, p)| {
+            let text = target
+                .overlay
+                .get(p)
+                .cloned()
+                .or_else(|| std::fs::read_to_string(p).ok())
+                .unwrap_or_default();
+            let names = syntax::parse(&text)
+                .map(|o| o.imports.iter().map(|i| i.path.join(".")).collect())
+                .unwrap_or_default();
+
+            (p.clone(), names)
+        })
+        .collect();
+
+    loop {
+        let names: Vec<&String> = modules
+            .iter()
+            .filter(|(_, p)| left_out.contains(p))
+            .map(|(n, _)| n)
+            .collect();
+        let more: Vec<PathBuf> = imports
+            .iter()
+            .filter(|(p, imported)| {
+                !left_out.contains(p) && imported.iter().any(|i| names.contains(&i))
+            })
+            .map(|(p, _)| p.clone())
+            .collect();
+
+        if more.is_empty() {
+            break;
+        }
+
+        left_out.extend(more);
+    }
+
+    (left_out.len() < modules.len()).then_some(left_out)
 }
 
 /// How a highlighted name uses its symbol.

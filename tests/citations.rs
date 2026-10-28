@@ -35,9 +35,9 @@ const CITATIONS: &[(&str, &str)] = &[
         "compiler/src/compiler.rs:258-261",
         "self.check_with(file, |_, _, _| true)",
     ),
-    ("compiler/src/compiler.rs:796-811", "fn prepare(&mut self)"),
+    ("compiler/src/compiler.rs:799-814", "fn prepare(&mut self)"),
     (
-        "compiler/src/compiler.rs:813",
+        "compiler/src/compiler.rs:816",
         "sync_if_needed(&self.state.config.dependencies)?;",
     ),
     (

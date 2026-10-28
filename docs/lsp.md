@@ -1405,7 +1405,9 @@ that pulls them, answers `textDocument/diagnostic` and
   `inko check --format json` reports for the project, in the same order, with
   the same range, severity (`1` for an error, `2` for a warning), `code` (the
   compiler's ID, e.g. `invalid-symbol`) and `message`. tests/diagnostics.rs
-  checks this against the installed `inko check`. That includes warnings,
+  checks this against the installed `inko check` (and, past a module that
+  doesn't parse, against `inko check` of the project without it:
+  [below](#where-it-differs-from-inko-check)). That includes warnings,
   and the errors only lowering to MIR finds (moves, patterns that don't
   cover every case, and invalid constant expressions), so diagnostics come
   from a **full check**, not the queries' type check. The exceptions are
@@ -1536,6 +1538,21 @@ tests/diagnostics.rs holds to the installed `inko check`.
   `inko check` then crashes without printing anything. Cuttlebone publishes
   what the compiler reported before the panic (such as the type checker's
   warnings), and its status is `unavailable` with reason `compilerPanic`.
+- **Past a module that doesn't parse.** A module that doesn't parse, or
+  imports one that can't be found, stops `inko check` before it checks any
+  other, so while one file is being typed every other file would have
+  nothing. Cuttlebone then checks the project again without the files with
+  errors and the modules that import them, directly or not (found from
+  their imports' text): those files get `inko check`'s diagnostics (the
+  syntax error, the module not found), and every other file what `inko
+  check` reports for a copy of the project without those files.
+  tests/diagnostics.rs holds both to the installed `inko check`, and
+  tests/publish.rs the published lists while a module is typed. So `inko
+  check`'s own answer, where it has one, is unchanged. This takes a second
+  full check, but the first stops at once. It's only for a project: a
+  lone file is checked with what it imports, as `inko check FILE` does.
+  Nothing is written: the second check is told which files to leave out
+  (patches/README.md).
 - **The standard library and dependencies** aren't checked as targets of
   their own (see above). A diagnostic `inko check` reports in one of their
   files while checking the user's project is still published.

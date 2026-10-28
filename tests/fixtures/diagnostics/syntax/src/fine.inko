@@ -1,0 +1,6 @@
+# Checked although other modules don't parse: it imports none of them.
+import std.string (ToString)
+
+fn pub fine -> Int {
+  'not an Int'
+}
