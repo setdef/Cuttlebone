@@ -1081,11 +1081,14 @@ the whole document. From the inside out:
 | inside the bracket | from the first token after the `(`, `[`, `{` or quote to the last before the one that closes it |
 | the bracket | with its pair; then the same again for the bracket around it |
 | each declaration | around the position, as [document symbols](#textdocumentdocumentsymbol) have it (from a copy with lines blank where the text doesn't parse) |
+| the declaration with its doc comment | from the doc comment's first `#` to the declaration's end, for one with a doc comment on lines of its own |
 | the document | all of it |
 
 - Each range contains the one before it and is larger: a range that
   would overlap without containing it is left out, and so is one equal
-  to it.
+  to it. A declaration and its doc comment's range win: a statement that
+  runs on past one's edge (a trait's required method has no body to end
+  it) is left out.
 - **In code that doesn't parse**, a bracket nothing closes is a token
   like any other, as for [folding](#textdocumentfoldingrange): typing
   `foo(` doesn't change what's around it elsewhere.
@@ -1094,7 +1097,8 @@ the whole document. From the inside out:
 
 The tests check every declaration's name in std and the fixtures, and
 every token in a sixteenth of the modules: each chain nested, and every
-declaration around the position in it (tests/selection.rs).
+declaration around the position in it, and again with its doc comment
+(tests/selection.rs).
 
 **Cost.** No check: answered at once, by the server itself.
 
@@ -1470,6 +1474,13 @@ a custom notification if the client opts in with
   text doesn't parse; selection ranges `invalidPosition` for a position
   past the end). Workspace
   symbols are always `fresh`, and their status has no `textDocument`.
+- **What it's about:** every status has the request's `id` and
+  `method`, and its document as `textDocument`, the one the request
+  names (a hierarchy's item's, for the hierarchies' requests). A file
+  rename names no document: its status has the request's own `files`
+  instead, as it sent them (`[{"oldUri": ..., "newUri": ...}]`). One
+  where no module's name changes, answered `null` without a check, is
+  `fresh` too, so `null` with `fresh` means no edits, not no answer.
 - **For diagnostics:** after each diagnostics check, with
   `"method": "textDocument/publishDiagnostics"`, no `id`, and the checked
   target's URI (a project directory, or a file) as `target` instead of

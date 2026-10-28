@@ -222,6 +222,9 @@ struct Pending {
     /// For `workspace/willRenameFiles`: each module moved, the first
     /// `uri`'s.
     moves: Vec<Move>,
+    /// For `workspace/willRenameFiles`: the request's own `files`, which
+    /// its status names instead of a document.
+    files: Option<Value>,
 }
 
 /// A module whose file moves, and its name before and after.
@@ -809,6 +812,7 @@ impl Server {
             frozen: None,
             imports,
             moves: Vec::new(),
+            files: None,
         });
     }
 
@@ -2001,6 +2005,13 @@ impl Server {
                 params["reason"] = json!({ "code": reason.code, "message": reason.message });
             }
 
+            // A file rename is about its files, not the first module that
+            // moves.
+            if let Some(files) = &pending.files {
+                params.as_object_mut().unwrap().remove("textDocument");
+                params["files"] = files.clone();
+            }
+
             // Every answer for a range says what it covers: none of it,
             // with no answer.
             if let Query::InlayHints { .. } = pending.query {
@@ -2731,7 +2742,26 @@ impl Server {
             }
         }
 
+        let files = serde_json::to_value(&params.files).unwrap();
         let Some(first) = moves.first() else {
+            // No module's name changes: nothing to edit, for the documents
+            // as they are, with no check.
+            if self.options.status {
+                let params = json!({
+                    "id": request.id,
+                    "method": "workspace/willRenameFiles",
+                    "files": files,
+                    "status": "fresh",
+                    "elapsedMs": 0.0,
+                });
+                let _ = connection
+                    .sender
+                    .send(Message::Notification(Notification::new(
+                        STATUS.to_string(),
+                        params,
+                    )));
+            }
+
             return reply(connection, request.id, Value::Null);
         };
         let uri = Url::from_file_path(&first.file).unwrap();
@@ -2749,6 +2779,7 @@ impl Server {
             frozen: None,
             imports: Vec::new(),
             moves,
+            files: Some(files),
         });
     }
 

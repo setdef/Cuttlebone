@@ -1483,8 +1483,23 @@ pub fn selections(text: &str, offsets: &[usize]) -> Vec<Vec<Range<usize>>> {
         dissolve(&mut open);
     }
 
+    // Each declaration, and one with a doc comment again with the comment,
+    // from its first `#`.
     let declarations: Vec<Range<usize>> = outline(text)
-        .map(|o| o.all().iter().map(|(d, _)| d.range.clone()).collect())
+        .map(|o| {
+            o.all()
+                .iter()
+                .flat_map(|(d, _)| {
+                    // Not a comment after code on the line above, which
+                    // `inko doc` reads too.
+                    let from = text[d.header.start..].trim_start();
+                    let documented = (d.documentation.is_some() && from.starts_with('#'))
+                        .then(|| text.len() - from.len()..d.range.end);
+
+                    std::iter::once(d.range.clone()).chain(documented)
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let starts = crate::position::line_starts(text);
 
@@ -1567,6 +1582,16 @@ fn select_at(
 
         found.push(units[from].range.start..units[to].range.end);
     }
+
+    // A statement may run on past a declaration without a body (a trait's
+    // required method) into the next: declarations win over what crosses
+    // one's edge, so each is selected, with its doc comment too.
+    found.retain(|r| {
+        !declarations.iter().any(|d| {
+            (r.start < d.start && d.start < r.end && r.end < d.end)
+                || (d.start < r.start && r.start < d.end && d.end < r.end)
+        })
+    });
 
     for declaration in declarations {
         if declaration.start <= offset && offset <= declaration.end {

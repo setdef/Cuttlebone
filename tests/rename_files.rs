@@ -157,15 +157,15 @@ fn moving_a_module_or_its_directory_renames_its_imports() {
 
     assert_eq!(got["src/main.inko"], MAIN.replace("app.util", "core.util"));
 
-    // Out of src/, or to a name no module can have: nothing.
-    assert_eq!(
-        will_rename(&mut client, &util, &root.join("util.inko")).1,
-        Value::Null
-    );
-    assert_eq!(
-        will_rename(&mut client, &util, &root.join("src/app/My-Util.inko")).1,
-        Value::Null
-    );
+    // Out of src/, or to a name no module can have: nothing, and a fresh
+    // status says it's no edits, not no answer.
+    for to in [root.join("util.inko"), root.join("src/app/My-Util.inko")] {
+        let (id, edit) = will_rename(&mut client, &util, &to);
+
+        assert_eq!(edit, Value::Null);
+        assert_eq!(client.status(id).unwrap()["status"], "fresh");
+    }
+
     // A module nothing imports.
     assert_eq!(
         will_rename(
@@ -176,6 +176,35 @@ fn moving_a_module_or_its_directory_renames_its_imports() {
         .1,
         Value::Null
     );
+}
+
+/// Every file rename's status names the request's own files, whether a
+/// module's name changes or not, never the first module that moves.
+#[test]
+fn every_file_rename_has_a_status_naming_its_files() {
+    let root = project("status");
+    let mut client = server(&root, false, true);
+    let files = |from: &Path, to: &Path| json!([{ "oldUri": uri(from), "newUri": uri(to) }]);
+    let cases = [
+        // A directory: its first module moves, not the directory.
+        (root.join("src/app"), root.join("src/core")),
+        (
+            root.join("src/app/util.inko"),
+            root.join("src/app/tools.inko"),
+        ),
+        // No module's name changes.
+        (root.join("src/main.inko"), root.join("main.inko")),
+    ];
+
+    for (from, to) in &cases {
+        let (id, _) = will_rename(&mut client, from, to);
+        let status = client.status(id).unwrap();
+
+        assert_eq!(status["status"], "fresh", "{}", status);
+        assert_eq!(status["method"], "workspace/willRenameFiles");
+        assert_eq!(status["files"], files(from, to), "{}", status);
+        assert!(status.get("textDocument").is_none(), "{}", status);
+    }
 }
 
 /// The edits are applied, the files moved, and the project still has no

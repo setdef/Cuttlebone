@@ -182,6 +182,9 @@ fn expected() -> Vec<Vec<&'static str>> {
             "{\n  let @count: Int\n\n  fn pub mut add(amount: Int, times: Int) {\n    \
              @count += amount * times\n  }\n}",
             COUNTER,
+            // With its doc comment.
+            "# A doc comment.\ntype pub Counter {\n  let @count: Int\n\n  \
+             fn pub mut add(amount: Int, times: Int) {\n    @count += amount * times\n  }\n}",
             TEXT,
         ],
     ]
@@ -274,6 +277,7 @@ fn every_declaration_around_a_position_is_selected() {
     let std = upstream_std();
     let mut files = Vec::new();
     let mut checked = 0;
+    let mut documented = 0;
 
     fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
@@ -355,10 +359,28 @@ fn every_declaration_around_a_position_is_selected() {
                         d.range,
                         chain
                     );
+
+                    // And again with its doc comment, from its first `#`.
+                    let from = text[d.header.start..].trim_start();
+
+                    if d.documentation.is_some() && from.starts_with('#') {
+                        let comment = text.len() - from.len();
+
+                        documented += 1;
+                        assert!(
+                            chain.contains(&(comment..d.range.end)),
+                            "{}: at {}: {} with its doc comment isn't selected: {:?}",
+                            file.display(),
+                            offset,
+                            d.name,
+                            chain
+                        );
+                    }
                 }
             }
         }
     }
 
     assert!(checked > 20_000, "{}", checked);
+    assert!(documented > 5_000, "{}", documented);
 }
