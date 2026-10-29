@@ -18,17 +18,23 @@ fi
 fresh=$(mktemp -d)
 trap 'rm -rf "$fresh"' EXIT
 
-git -C "$dir" archive "$version" | tar -x -C "$fresh"
+# Every git command runs without the repository's environment: a hook in a
+# linked worktree has GIT_DIR set, and `git commit -a` sets GIT_INDEX_FILE
+# to its own index, so `git apply` would check against the repository
+# instead of the fresh copy, and `git diff` would read Cuttlebone's index
+# as .upstream/inko's.
+bare() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git "$@"
+}
 
-# Without the repository's environment: a hook in a linked worktree has
-# GIT_DIR set, and `git apply` would then check against the repository
-# instead of the fresh copy.
-if ! (cd "$fresh" && env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git apply --check "$patch"); then
+bare -C "$dir" archive "$version" | tar -x -C "$fresh"
+
+if ! (cd "$fresh" && bare apply --check "$patch"); then
     echo "patches/upstream.patch doesn't apply to a fresh $version" >&2
     exit 1
 fi
 
-if ! git -C "$dir" diff | cmp -s - "$patch"; then
+if ! bare -C "$dir" diff | cmp -s - "$patch"; then
     echo "patches/upstream.patch isn't what .upstream/inko has applied;" \
         "run scripts/refresh-patch.sh, or scripts/upstream.sh on a fresh clone" >&2
     exit 1
