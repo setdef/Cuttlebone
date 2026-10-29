@@ -431,6 +431,57 @@ fn locations_in_std_are_in_the_installed_std() {
     }
 }
 
+/// Answers in a file of an installed std laid out as Inko installs it,
+/// `lib/inko/std/std/float.inko`, with no `src/` in its path: checked as
+/// the module its importers name (`std.float`), so its intrinsics are
+/// std's, and in a module the project doesn't import too.
+#[test]
+fn answers_in_a_file_of_an_installed_std() {
+    let installed = crate::common::tmp().join("installed-inko-std");
+    let _ = std::fs::remove_dir_all(&installed);
+
+    copy_dir(&upstream_std(), &installed.join("lib/inko/std"));
+
+    let std = installed.join("lib/inko/std").canonicalize().unwrap();
+    let inko = fake_inko_with_std(upstream_version(), &std, "installed-inko-std-bin");
+
+    for utf8 in [false, true] {
+        let (mut client, _, _) = start(utf8, json!({ "inko": inko }));
+
+        for (module, needle, offset, expected) in [
+            ("float", "_INKO.float_from_bits(bits)", 22, "Int"),
+            (
+                "float",
+                "fn pub inline static from_bits",
+                21,
+                "Defined in `std.float.Float`",
+            ),
+            (
+                "net/http/server",
+                "fn pub static new -> Self {",
+                14,
+                "Defined in `std.net.http.server",
+            ),
+        ] {
+            let file = std.join(format!("std/{}.inko", module));
+            let text = std::fs::read_to_string(&file).unwrap();
+            let (line, character) = at(&text, needle, offset, utf8);
+            let (_, response) = client.hover(&file, line, character);
+            let value = response["result"]["contents"]["value"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{} at {}: {}", module, needle, response));
+
+            assert!(
+                value.contains(expected),
+                "{} at {}: {}",
+                module,
+                needle,
+                value
+            );
+        }
+    }
+}
+
 #[test]
 fn locations_in_dependencies_are_in_the_projects_dep_directory() {
     let root = crate::common::tmp().join("navigation-dep");

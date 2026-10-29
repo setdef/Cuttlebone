@@ -60,6 +60,7 @@ M = [
  ("no required-version check", "src/check.rs", "    check_required_version(target)?;\n\n    let mut config = target.config()?;\n\n    config.check_after_errors", "    let mut config = target.config()?;\n\n    config.check_after_errors", "--test manifest"),
  ("diagnostics skip the required-version check", "src/check.rs", "    check_required_version(target)?;\n\n    let mut config = target.config()?;\n\n    config.exclude", "    let mut config = target.config()?;\n\n    config.exclude", "--test manifest diagnostics_refuse"),
  ("dependency manifests ignored", "src/check.rs", "paths.push(version.join(MANIFEST_FILE));", "let _ = version;", "--test manifest"),
+ ("an installed std's file checked as main", "src/check.rs", "            config.source = self.std.clone();\n", "", "--test navigation answers_in_a_file_of_an_installed_std"),
  ("always UTF-16", "src/lsp.rs", '"utf-8" => Some(Encoding::Utf8),', '"utf-8" => Some(Encoding::Utf16),', "--test lsp utf8"),
  ("UTF-8 counts chars", "src/position.rs", "Encoding::Utf8 => text.len() as u32,", "Encoding::Utf8 => text.chars().count() as u32,", "--test lsp non_ascii"),
  ("incremental edits replace everything", "src/lsp.rs", "    let Some(r) = change.range else {", "    let Some(r) = None::<lsp::Range> else {", "--test lsp several_changes"),

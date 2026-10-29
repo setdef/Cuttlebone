@@ -16,6 +16,10 @@ signature, doc comment, and whether it's static, public or a trait's
 required method, from standard fields.
 [Report](docs/history/MILESTONE-17.md).
 
+- **Answers in a file of an installed std** (fixed): its file was checked
+  as a module named `main`, not std's, so its intrinsics were errors and
+  most answers there were `null` after a compiler panic.
+
 ## 0.16.0
 
 Milestone 16: answers a client that relies on Cuttlebone lost:

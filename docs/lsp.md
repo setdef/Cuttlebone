@@ -221,7 +221,11 @@ with `\n\n---\n\n` between them:
    none.
 
 - **Where:** declarations in the project, in dependencies (`dep/`) and in
-  the standard library alike, from the file the compiler read.
+  the standard library alike, from the file the compiler read. In a file
+  of the standard library itself (after going to a definition there),
+  every answer checks it as the module its importers name (`std.float`),
+  also as Inko installs it (`lib/inko/std/std/float.inko`, with no `src/`
+  in its path), and also where the project doesn't import it.
 - **The format** is the first of `markdown` and `plaintext` in the
   client's `textDocument.hover.contentFormat`, its order of preference. A
   client that lists neither, or sends no `contentFormat`, gets plain text:

@@ -35,6 +35,10 @@ const CITATIONS: &[(&str, &str)] = &[
         "compiler/src/compiler.rs:258-261",
         "self.check_with(file, |_, _, _| true)",
     ),
+    (
+        "compiler/src/compiler.rs:51-73",
+        "fn module_name_from_path(config: &Config, file: &Path) -> ModuleName {",
+    ),
     ("compiler/src/compiler.rs:799-814", "fn prepare(&mut self)"),
     (
         "compiler/src/compiler.rs:816",

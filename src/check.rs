@@ -80,6 +80,20 @@ impl Target {
             .map(|(path, text)| (path.clone(), text.clone().into_bytes()))
             .collect();
 
+        // A file of the standard library is named from its directory
+        // (`std.float`), as its importers name it. The compiler names a
+        // file outside `source` and `tests` from a `src` or `test` in its
+        // path (`module_name_from_path`, compiler/src/compiler.rs:51-73),
+        // which an installed std has none of, or else `main`, which isn't
+        // std, so that its intrinsics are errors.
+        if let Some(file) = &self.file
+            && file.starts_with(&self.std)
+            && !file.starts_with(&config.source)
+            && !file.starts_with(&config.tests)
+        {
+            config.source = self.std.clone();
+        }
+
         if self.tests && config.tests.is_dir() {
             config.add_source_directory(config.tests.clone());
         } else {
