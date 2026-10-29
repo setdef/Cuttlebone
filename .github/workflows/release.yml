@@ -1,7 +1,7 @@
 # Builds, verifies and publishes the prebuilt binaries (docs/releases.md),
 # after the release tier passes (AGENTS.md, "Checks").
 #
-# A pushed version tag (v0.16.0) runs the release checks on macOS (every
+# A pushed version tag (v0.17.0) runs the release checks on macOS (every
 # test, the whole corpus, every test again without kept checks:
 # scripts/check.sh --release), the latency limits as written on a macOS
 # runner of their own, scaled by how fast it measures a fixed baseline

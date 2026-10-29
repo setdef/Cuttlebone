@@ -8,6 +8,14 @@ the entry links to the milestone's report, which its last commit adds
 (AGENTS.md, "Versions"). Milestones 1 to 6 were all built as 0.1.0; their
 versions here were given afterwards.
 
+## 0.17.0
+
+Milestone 17: what a client needs to drop its own index of
+declarations: modules as workspace symbols, and each declaration's
+signature, doc comment, and whether it's static, public or a trait's
+required method, from standard fields.
+[Report](docs/history/MILESTONE-17.md).
+
 ## 0.16.0
 
 Milestone 16: answers a client that relies on Cuttlebone lost:
