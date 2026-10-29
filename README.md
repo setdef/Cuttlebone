@@ -71,6 +71,10 @@ Reports, in docs/history/:
   module that doesn't parse, whole-project answers past a declaration
   error elsewhere, code lenses, a status for every file rename, a
   selection step with doc comments, and a trait's default methods.
+- [MILESTONE-17.md](docs/history/MILESTONE-17.md): modules as workspace
+  symbols, where an index finds each part of a declaration, std's builtin
+  types public, cheaper document symbols, and answers in an installed
+  std's files.
 
 Each milestone has its own version; what changed in each:
 [CHANGELOG.md](CHANGELOG.md).
@@ -196,7 +200,7 @@ also fast enough for the latency limits.
 | `tests/conformance.rs` | LSP 3.18: the checks every test over LSP makes of each message it receives (tests/common/spec.rs: its shape against the spec's meta model, in tests/fixtures/lsp, and what the client's capabilities allow), and what a client with no optional capabilities gets |
 | `tests/lsp.rs` | the real binary as an LSP server over stdio: `--version`, initialize, exiting when the client's process is gone, encodings, documents, hover, completion, status, panics, timeouts, aborts, cancellation (a running check cancelled finishes in its worker, and is killed only after a query waits for it, or at the timeout), debouncing, side effects |
 | `tests/definition.rs` | definition, type definition and references on every kind of name, same-named symbols in different modules, broken code, both encodings |
-| `tests/navigation.rs` | the same over LSP, in UTF-8 and UTF-16, with status reasons, an installed std that isn't `.upstream/`, and a package in `dep/` |
+| `tests/navigation.rs` | the same over LSP, in UTF-8 and UTF-16, with status reasons, an installed std that isn't `.upstream/` (and answers in its files), and a package in `dep/` |
 | `tests/corpus_definition.rs` | every reference in std/src selects its own symbol, and goes to a declaration of the same id and name |
 | `tests/diagnostics.rs` | the oracle: diagnostics match the installed `inko check --format json` exactly (file, lines, columns, level, ID, message, order) for every project in tests/fixtures/diagnostics, which between them produce every diagnostic `inko check` can, for std, and for unsaved text; past a module that doesn't parse, `inko check` of the project without it and what imports it |
 | `tests/publish.rs` | diagnostics over LSP: every file published without opening it, ranges in both encodings, every fixture project, edits that add and fix errors (and clear them), a module that doesn't parse leaving the others', the debounce, queries first, superseded and hung checks, a compiler panic, what's a target, turning them off |
@@ -214,8 +218,8 @@ also fast enough for the latency limits.
 | `tests/names.rs` | completion of names over LSP in both encodings: variables, arguments, closures' and cases' bindings in scope and not out of it, `self`'s methods, fields after `@`, types in a signature, symbols to import with their edits (not private, not a test module's), modules and symbols in an `import`, keywords, and code being edited, past declarations that can't change the names |
 | `tests/hover.rs` | hover over LSP in both encodings: the type, the declaration as written and where it is, and its doc comment, for the project, a dependency and std, an implementation with its trait's doc comment, a module, a declaration's own name, plain text, and a stale hover after its doc comment changed |
 | `tests/syntax.rs` | outlines from the syntax alone: names and ranges against the compiler's declarations in every module of std and the fixtures, and doc comments against the installed `inko doc` |
-| `tests/symbols.rs` | document and workspace symbols over LSP in both encodings: every kind of declaration, `impl` blocks, every symbol for an empty query and as partial results, code that doesn't parse, an unclosed brace in a method, documents that aren't files, a dependency, files changed on disk, clients without hierarchy or the newer kinds |
-| `tests/corpus_symbols.rs` | every declaration document symbols report, in std and the fixtures, is found by workspace symbols at the same place, and is its own definition; every trait's required and default methods are the type database's |
+| `tests/symbols.rs` | document and workspace symbols over LSP in both encodings: every kind of declaration, `impl` blocks, every symbol for an empty query and as partial results, modules, code that doesn't parse, an unclosed brace in a method, documents that aren't files, a dependency, files changed on disk (also after the index read them), clients without hierarchy or the newer kinds |
+| `tests/corpus_symbols.rs` | every declaration document symbols report, in std and the fixtures, is found by workspace symbols at the same place, and is its own definition; every trait's required and default methods, and whether each declaration is public and static, are the type database's |
 | `tests/folding.rs` | folding ranges over LSP in both encodings: blocks, comment lines, imports, the text shown collapsed, code that doesn't parse, `\r\n` and lone `\r`, clients without kinds, collapsed text or with a limit; every declaration's body and doc comment in std folds |
 | `tests/formatting.rs` | formatting against the installed `inko fmt` over every module of std and the fixtures, as they are and flattened; over LSP in both encodings, with nothing written, and text that doesn't parse |
 | `tests/selection.rs` | selection ranges over LSP in both encodings: tokens, chains, elements, statements, brackets, declarations, code that doesn't parse; every declaration around every name in std is selected, nested, and again with its doc comment |
