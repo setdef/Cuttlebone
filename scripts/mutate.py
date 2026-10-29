@@ -433,7 +433,7 @@ M = [
  ("a module's workspace symbol is a file", "src/lsp.rs", "                        \"kind\": lsp::SymbolKind::MODULE,", "                        \"kind\": lsp::SymbolKind::FILE,", "--test symbols workspace_symbols_of_modules"),
  ("a module's workspace symbol named by its file", "src/lsp.rs", "                        \"name\": f.module.name,", "                        \"name\": f.module.name.rsplit('.').next(),", "--test symbols workspace_symbols_of_modules"),
  ("newer workspace symbol kinds for every client", "src/lsp.rs", "            symbol_kinds: self.support.workspace_symbol_kinds,", "            symbol_kinds: true,", "--test symbols workspace_symbols_for_a_client"),
- ("workspace symbols at the whole declaration", "src/lsp.rs", "                let r = &f.declaration.name_range;", "                let r = &f.declaration.range;", "--test symbols workspace_symbols_from"),
+ ("workspace symbols at the whole declaration", "src/lsp.rs", "                let r = &declaration.name_range;", "                let r = &declaration.range;", "--test symbols workspace_symbols_from"),
  ("workspace symbols' containers without the module", "src/index.rs", "        let mut out = self.module.name.clone();", "        let mut out = String::new();", "--test symbols workspace_symbols_from"),
  # Hover with declarations and doc comments (milestone 12).
  ("hover shows no declaration", "src/query.rs", "    let declared = name.and_then(|r| declared(scope, r.symbol));", "    let declared = name.and_then(|_| None::<Declared>);", "--test hover hovers_show"),

@@ -579,7 +579,8 @@ fn workspace_symbols_of_modules() {
         let broken = root.join("src/app/broken.inko");
 
         std::fs::create_dir_all(broken.parent().unwrap()).unwrap();
-        std::fs::write(&broken, "fn pub broken( {\n").unwrap();
+        // More lines in the way than a copy blanks: no copy parses.
+        std::fs::write(&broken, "fn pub broken( {\n".repeat(20)).unwrap();
 
         let mut client = session(&root, utf8);
 
