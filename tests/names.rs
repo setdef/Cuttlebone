@@ -322,6 +322,29 @@ fn symbols_to_import() {
             ]
         );
 
+        // A builtin type of std's, which the type database makes public
+        // (all but `CheckedIntResult`), as importing it does.
+        let typed = text.replacen(
+            "    counter.add(NAMES.size)\n",
+            "    Tupl\n    counter.add(NAMES.size)\n",
+            1,
+        );
+        let (result, _) = e.complete(&typed, "    Tupl\n");
+
+        assert_eq!(
+            apply(&typed, item(&result, "Tuple2"), utf8).lines().nth(3),
+            Some("import std.tuple (Tuple2)")
+        );
+
+        let typed = text.replacen(
+            "    counter.add(NAMES.size)\n",
+            "    CheckedI\n    counter.add(NAMES.size)\n",
+            1,
+        );
+        let (result, _) = e.complete(&typed, "    CheckedI\n");
+
+        assert!(!labels(&result).contains(&"CheckedIntResult".to_string()));
+
         // Into the module's list.
         let typed = text.replacen(
             "    counter.add(NAMES.size)\n",

@@ -234,6 +234,11 @@ impl Index {
         }
     }
 
+    /// The module of a file (canonical), as the last `refresh` read it.
+    pub fn module(&self, file: &Path) -> Option<&Module> {
+        self.modules.get(file).map(|(_, m)| m)
+    }
+
     /// Every module, sorted by name, then file.
     pub fn modules(&self) -> Vec<&Module> {
         let mut out: Vec<&Module> = self.modules.values().map(|(_, m)| m).collect();
@@ -242,10 +247,11 @@ impl Index {
         out
     }
 
-    /// Every declaration that matches `query` (`matches`; an `impl` block
-    /// by its header, `impl Area for Shape`), best first (and of equal
-    /// matches, the projects', then their dependencies', then std's), at
-    /// most `limit`: each with its module and the declarations it's in.
+    /// Every module and declaration that matches `query` (`matches`; a
+    /// module by its name, `std.string`, an `impl` block by its header,
+    /// `impl Area for Shape`), best first (and of equal matches, the
+    /// projects', then their dependencies', then std's), at most `limit`:
+    /// each with its module and the declarations it's in.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Found<'_>> {
         let mut found: Vec<(Score, Found)> = Vec::new();
 
@@ -263,7 +269,7 @@ impl Index {
                         score,
                         Found {
                             module,
-                            declaration,
+                            declaration: Some(declaration),
                             parents: parents.clone(),
                         },
                     ));
@@ -276,6 +282,18 @@ impl Index {
         }
 
         for module in self.modules() {
+            // A module that doesn't parse is one all the same.
+            if let Some(score) = matches(query, &module.name) {
+                found.push((
+                    score,
+                    Found {
+                        module,
+                        declaration: None,
+                        parents: Vec::new(),
+                    },
+                ));
+            }
+
             if let Some(outline) = &module.outline {
                 walk(
                     module,
@@ -298,9 +316,10 @@ impl Index {
         let order = |(a, x): &(Score, Found), (b, y): &(Score, Found)| {
             a.cmp(b)
                 .then_with(|| rank(x).cmp(&rank(y)))
-                .then_with(|| x.declaration.name.cmp(&y.declaration.name))
+                .then_with(|| x.name().cmp(y.name()))
                 .then_with(|| x.module.name.cmp(&y.module.name))
-                .then_with(|| x.declaration.range.start.cmp(&y.declaration.range.start))
+                .then_with(|| x.start().cmp(&y.start()))
+                .then_with(|| x.module.file.cmp(&y.module.file))
         };
 
         // Only the best `limit` need sorting.
@@ -314,15 +333,26 @@ impl Index {
     }
 }
 
-/// A declaration `Index::search` found.
+/// A module or declaration `Index::search` found.
 pub struct Found<'a> {
     pub module: &'a Module,
-    pub declaration: &'a Declaration,
+    /// `None` for the module itself.
+    pub declaration: Option<&'a Declaration>,
     /// The declarations it's in, outermost first.
     pub parents: Vec<&'a Declaration>,
 }
 
 impl Found<'_> {
+    /// Its name: the module's (`std.string`), or the declaration's.
+    pub fn name(&self) -> &str {
+        self.declaration.map_or(&self.module.name, |d| &d.name)
+    }
+
+    /// Where it starts in its module: a module at its start.
+    fn start(&self) -> usize {
+        self.declaration.map_or(0, |d| d.range.start)
+    }
+
     /// What it's in: its module's name, and the names of the declarations
     /// around it, with `.` between them (`std.string.String`). An `impl`
     /// block counts as its type.
@@ -479,6 +509,7 @@ mod tests {
         index.refresh(&roots, &HashMap::new());
         assert_eq!(index.parsed, 1);
         assert_eq!(index.search("other", 10).len(), 0);
+        assert_eq!(index.search("app.util", 10)[0].name(), "app.util");
 
         std::fs::remove_file(dir.join("src/app/util.inko")).unwrap();
         index.refresh(&roots, &HashMap::new());

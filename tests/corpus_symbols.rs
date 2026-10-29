@@ -3,7 +3,8 @@
 //! the same place, and definition there goes to itself: in every module of
 //! std, and of the fixtures with something to declare. Definition is asked
 //! as `query::definition` does: the symbol at the name
-//! (`query::symbols_at`), and where the check declares it.
+//! (`query::symbols_at`), and where the check declares it. Whether each is
+//! public and static, as `detail` says, is the type database's.
 use cuttlebone::check::{Target, run};
 use cuttlebone::dump::upstream_std;
 use cuttlebone::index::{self, Index};
@@ -13,6 +14,9 @@ use cuttlebone::syntax::{self, Kind};
 use cuttlebone::walker::{SymbolId, Walker};
 use std::collections::HashMap;
 use std::path::Path;
+
+/// The words that can come between a method's `fn` and its name.
+const MODIFIERS: [&str; 7] = ["pub", "static", "mut", "move", "async", "extern", "inline"];
 
 /// Checks the modules of `root` under `only`, and returns how many
 /// declarations it compared.
@@ -69,7 +73,7 @@ fn compare(root: &Path, only: &Path) -> (usize, usize) {
                         index
                             .search(&d.name, usize::MAX)
                             .iter()
-                            .map(|f| (f.module.file.clone(), f.declaration.name_range.start))
+                            .filter_map(|f| Some((f.module.file.clone(), f.declaration?.name_range.start)))
                             .collect()
                     })
                     .contains(&(file.clone(), d.name_range.start));
@@ -101,6 +105,63 @@ fn compare(root: &Path, only: &Path) -> (usize, usize) {
                             ))
                         })
                         .collect();
+
+                // Whether it's public and static, as a client reads them
+                // from `detail` (docs/lsp.md, "What a client that indexes
+                // declarations gets"), by the type database.
+                let symbol = symbols_at(&walker.references, &walker.declarations, at)
+                    .into_iter()
+                    .map(|r| r.symbol)
+                    .next();
+                let detail = d.detail();
+                let words: Vec<&str> = detail.split_whitespace().collect();
+                let public = words.get(1) == Some(&"pub") || (words.get(..2) == Some(&["type", "builtin"][..]) && d.name != "CheckedIntResult");
+                let modifiers = words
+                    .iter()
+                    .skip(1)
+                    .take_while(|w| MODIFIERS.contains(w))
+                    .collect::<Vec<_>>();
+                let flags = match symbol {
+                    Some(SymbolId::Method(id)) => Some((
+                        id.is_public(db),
+                        (d.kind != Kind::ModuleMethod).then(|| id.is_static(db)),
+                    )),
+                    Some(SymbolId::Type(id)) => Some((id.is_public(db), None)),
+                    Some(SymbolId::Trait(id)) => Some((id.is_public(db), None)),
+                    Some(SymbolId::Field(id)) => Some((id.is_public(db), None)),
+                    Some(SymbolId::Constant(id)) => Some((id.is_public(db), None)),
+                    // As public as its type, the declaration it's in.
+                    Some(SymbolId::Constructor(_)) => None,
+                    _ => {
+                        problems.push(format!("{}: no symbol at its name", what));
+                        None
+                    }
+                };
+
+                if let Some((db_public, db_static)) = flags {
+                    if d.public != db_public {
+                        problems.push(format!(
+                            "{}: public {} by the type database, {} by the syntax",
+                            what, db_public, d.public
+                        ));
+                    }
+
+                    if public != db_public {
+                        problems.push(format!(
+                            "{}: public {} by the type database, {} by {:?}",
+                            what, db_public, public, detail
+                        ));
+                    }
+
+                    if let Some(db_static) = db_static
+                        && db_static != modifiers.contains(&&"static")
+                    {
+                        problems.push(format!(
+                            "{}: static {} by the type database, not by {:?}",
+                            what, db_static, detail
+                        ));
+                    }
+                }
 
                 // A trait's required methods are those without a body, by
                 // the type database: what document symbols mark as default

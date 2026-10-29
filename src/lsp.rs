@@ -2311,6 +2311,19 @@ impl Server {
         };
         let uri = params.text_document.uri;
         let read = self.document_text(&uri).and_then(|text| {
+            // The index's outline of the same text, if it has one: a
+            // client that indexes asks for every module's.
+            let kept = uri
+                .to_file_path()
+                .ok()
+                .and_then(|path| self.index.module(&path))
+                .filter(|m| m.text == text)
+                .and_then(|m| m.outline.clone());
+
+            if let Some(outline) = kept {
+                return Ok((text, outline));
+            }
+
             let outline = query::guarded(|| syntax::outline(&text))
                 .map_err(|message| Unavailable::new("compilerPanic", message))?
                 .ok_or_else(|| {
@@ -3067,11 +3080,20 @@ impl Server {
                         ))
                     })
                     .as_ref()?;
-                let r = &f.declaration.name_range;
+                // A module is at the start of its file, with an empty
+                // range, as definition locates one.
+                let Some(declaration) = f.declaration else {
+                    return Some(json!({
+                        "name": f.module.name,
+                        "kind": lsp::SymbolKind::MODULE,
+                        "location": { "uri": uri, "range": lsp::Range::default() },
+                    }));
+                };
+                let r = &declaration.name_range;
 
                 Some(json!({
-                    "name": f.declaration.name,
-                    "kind": symbol_kind(f.declaration.kind, kinds),
+                    "name": declaration.name,
+                    "kind": symbol_kind(declaration.kind, kinds),
                     "containerName": f.container(),
                     "location": {
                         "uri": uri,

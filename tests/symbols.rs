@@ -463,7 +463,8 @@ fn workspace_with(
                 "{} {} {} {}:{}:{}",
                 s["kind"],
                 s["name"].as_str().unwrap(),
-                s["containerName"].as_str().unwrap(),
+                // A module has none.
+                s["containerName"].as_str().unwrap_or("-"),
                 file,
                 range["start"]["line"],
                 slice(&text, range, utf8)
@@ -564,6 +565,86 @@ fn workspace_symbols_from_the_project_its_dependencies_and_std() {
         let (_, found) = workspace(&mut client, &root, "NAMES", utf8);
 
         assert_eq!(found[0], "14 NAMES main src/main.inko:6:NAMES");
+    }
+}
+
+/// Modules are symbols too, of kind Module, named as an import names
+/// them, at the start of their files: the project's (its tests' too), a
+/// dependency's, std's, and one that doesn't parse. So a client finds a
+/// module's file from its name, the best match for the whole name first.
+#[test]
+fn workspace_symbols_of_modules() {
+    for utf8 in [false, true] {
+        let root = project_with_a_dependency(&format!("workspace-modules-{}", utf8));
+        let broken = root.join("src/app/broken.inko");
+
+        std::fs::create_dir_all(broken.parent().unwrap()).unwrap();
+        std::fs::write(&broken, "fn pub broken( {\n").unwrap();
+
+        let mut client = session(&root, utf8);
+
+        for (query, wanted) in [
+            ("main", "2 main - src/main.inko:0:"),
+            ("shapes", "2 shapes - src/shapes.inko:0:"),
+            ("test_main", "2 test_main - test/test_main.inko:0:"),
+            ("geo", "2 geo - dep/example.com-acme-geo/v1/src/geo.inko:0:"),
+            ("std.string", "2 std.string - std/std/string.inko:0:"),
+            ("std.net.http", "2 std.net.http - std/std/net/http.inko:0:"),
+            ("app.broken", "2 app.broken - src/app/broken.inko:0:"),
+        ] {
+            let (_, found) = workspace(&mut client, &root, query, utf8);
+            let wanted = wanted.replace("example.com-acme-geo", &dep_dir());
+
+            assert_eq!(found.first(), Some(&wanted), "{}: {:?}", query, found);
+        }
+
+        // Matched as any name: `stdstr` finds std.string, and more.
+        let (_, found) = workspace(&mut client, &root, "stdstr", utf8);
+
+        assert!(
+            found.contains(&"2 std.string - std/std/string.inko:0:".to_string()),
+            "{:?}",
+            found
+        );
+    }
+}
+
+/// Document symbols of a module the index read (by workspace symbols)
+/// are the module's text as it is now: changed on disk since, or open
+/// with other text, or both and then closed.
+#[test]
+fn document_symbols_after_the_index_read_older_text() {
+    for utf8 in [false, true] {
+        let root = project_with_a_dependency(&format!("symbols-after-index-{}", utf8));
+        let file = root.join("src/other.inko");
+
+        std::fs::write(&file, "fn pub first {}\n").unwrap();
+
+        let mut client = session(&root, utf8);
+        let names = |client: &mut Client| -> Vec<String> {
+            let (_, result) = symbols(client, &uri(&file));
+
+            result
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        workspace(&mut client, &root, "", utf8);
+        assert_eq!(names(&mut client), ["first"]);
+
+        std::fs::write(&file, "fn pub second {}\n").unwrap();
+        assert_eq!(names(&mut client), ["second"]);
+
+        workspace(&mut client, &root, "", utf8);
+        client.open(&file, "fn pub third {}\n");
+        assert_eq!(names(&mut client), ["third"]);
+
+        workspace(&mut client, &root, "", utf8);
+        client.close(&file);
+        assert_eq!(names(&mut client), ["second"]);
     }
 }
 
@@ -679,6 +760,38 @@ fn every_workspace_symbol_for_an_index() {
             "12 area geo dep/example.com-acme-geo/v1/src/geo.inko:3:area",
         ] {
             let wanted = wanted.replace("example.com-acme-geo", &dep_dir());
+
+            assert!(all.contains(&wanted), "{} isn't in them", wanted);
+        }
+
+        // Every module of std, named by its path.
+        let std = cuttlebone::dump::upstream_std().canonicalize().unwrap();
+        let mut files = Vec::new();
+        let mut dirs = vec![std.clone()];
+
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "inko") {
+                    files.push(path);
+                }
+            }
+        }
+
+        assert!(files.len() > 100, "{}", files.len());
+
+        for file in files {
+            let relative = file.strip_prefix(&std).unwrap();
+            let name = relative
+                .with_extension("")
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(".");
+            let wanted = format!("2 {} - std/{}:0:", name, relative.display());
 
             assert!(all.contains(&wanted), "{} isn't in them", wanted);
         }

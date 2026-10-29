@@ -39,6 +39,14 @@ const CITATIONS: &[(&str, &str)] = &[
         "compiler/src/compiler.rs:51-73",
         "fn module_name_from_path(config: &Config, file: &Path) -> ModuleName {",
     ),
+    (
+        "compiler/src/type_check/define_types.rs:69-81",
+        "if let Some(id) = self.db().builtin_type(&name) {",
+    ),
+    (
+        "types/src/lib.rs:6258-6264",
+        "CHECKED_INT_RESULT_NAME.to_string(),",
+    ),
     ("compiler/src/compiler.rs:799-814", "fn prepare(&mut self)"),
     (
         "compiler/src/compiler.rs:816",

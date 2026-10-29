@@ -632,6 +632,129 @@ fn every_workspace_symbol_is_fast_enough_for_an_index() {
     );
 }
 
+/// The limit for everything a client that indexes a std-sized project
+/// asks for (docs/lsp.md, "What a client that indexes declarations
+/// gets"): every workspace symbol as partial results, then each module's
+/// document symbols.
+const INDEX_LIMIT: Duration = Duration::from_millis(1000);
+
+/// The limit for the median hover at a declaration's name, in modules of
+/// std a client has open or not, for its doc comment.
+const DECLARATION_HOVER_LIMIT: Duration = Duration::from_millis(250);
+
+#[test]
+fn indexing_every_declaration_with_its_signature_is_fast_enough() {
+    let _alone = alone();
+    let (root, _) = std_sized_project();
+    let mut client = Client::initialized_with(
+        Launch::default(),
+        &root,
+        QUERIES_ONLY.clone(),
+        json!({ "textDocument": { "documentSymbol": { "hierarchicalDocumentSymbolSupport": true } } }),
+    );
+    let mut times = Vec::new();
+    let mut declarations = Vec::new();
+
+    for run in 0..3 {
+        let start = Instant::now();
+        let response = client.request(
+            "workspace/symbol",
+            json!({ "query": "", "partialResultToken": "index" }),
+        );
+
+        assert_eq!(response["result"], json!([]));
+
+        let symbols: Vec<serde_json::Value> = client
+            .notifications
+            .iter()
+            .filter(|n| n["method"] == "$/progress")
+            .flat_map(|n| n["params"]["value"].as_array().unwrap().clone())
+            .collect();
+
+        client.notifications.clear();
+
+        let modules: Vec<&serde_json::Value> = symbols.iter().filter(|s| s["kind"] == 2).collect();
+
+        assert!(modules.len() > 100, "{}", modules.len());
+
+        for module in &modules {
+            let uri = &module["location"]["uri"];
+            let response = client.request(
+                "textDocument/documentSymbol",
+                json!({ "textDocument": { "uri": uri } }),
+            );
+
+            assert!(response["result"].is_array(), "{}: {}", uri, response);
+        }
+
+        times.push(start.elapsed());
+
+        if run == 0 {
+            // Every 150th declaration of std's, for hovers below.
+            declarations = symbols
+                .iter()
+                .filter(|s| {
+                    s["kind"] != 2 && s["containerName"].as_str().unwrap().starts_with("std.")
+                })
+                .step_by(150)
+                .cloned()
+                .collect();
+        }
+    }
+
+    let index = median(times.clone());
+
+    eprintln!(
+        "every workspace symbol and every module's document symbols, std-sized: {:?} (all: {:?})",
+        index, times
+    );
+
+    let mut hovers = Vec::new();
+
+    for symbol in &declarations {
+        let start = Instant::now();
+        let response = client.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": symbol["location"]["uri"] },
+                "position": symbol["location"]["range"]["start"],
+            }),
+        );
+
+        hovers.push(start.elapsed());
+        assert!(
+            response["result"]["contents"]["value"]
+                .as_str()
+                .is_some_and(|v| v.contains("Defined in")),
+            "{}: {}",
+            symbol,
+            response
+        );
+    }
+
+    let hover = median(hovers.clone());
+
+    eprintln!(
+        "a hover at {} declarations' names in std: median {:?}, slowest {:?}",
+        hovers.len(),
+        hover,
+        hovers.iter().max().unwrap()
+    );
+
+    let max = limit(INDEX_LIMIT);
+
+    assert!(
+        index < max,
+        "the index: median {:?} exceeds {:?}",
+        index,
+        max
+    );
+
+    let max = limit(DECLARATION_HOVER_LIMIT);
+
+    assert!(hover < max, "hovers: median {:?} exceeds {:?}", hover, max);
+}
+
 #[test]
 fn completion_on_a_std_sized_project_is_fast_enough() {
     let _shared = shared();

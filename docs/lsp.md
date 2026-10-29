@@ -1328,6 +1328,16 @@ whose names match the query:
 ]}
 ```
 
+- **Modules are symbols too**, of kind Module (2), named as an import
+  names them (`std.string`, `app.util`; a project's test module by its
+  path in `test/`), with no `containerName`, located at the start of the
+  file with an empty range, as [definition](#textdocumentdefinition)
+  locates a module. So a client finds a module's file from its name, for
+  an `import`'s path, without working out where modules live: the
+  symbol named exactly that, of kind Module (the whole name is the best
+  match, so it comes first). A module that doesn't parse is one too.
+  Two workspace folders can each have a module of a name; each is
+  listed, the client's own project first by location.
 - **Which modules:** the standard library's (in the directory `inko print
   std` printed), each workspace folder's own, in its `src/` and `test/`,
   and its dependencies', in its `dep/`, where its `inko.pkg` says the
@@ -1353,14 +1363,9 @@ whose names match the query:
   gets every match of any query as partial results: `$/progress`
   notifications with that token, 500 symbols each, in the same order,
   and then an empty response, as the spec says partial results end.
-- **Whether a declaration is public** isn't in a workspace symbol: LSP
-  has no way to say it there. `SymbolTag` has only `Deprecated`,
-  `WorkspaceSymbol` has no `detail`, and `containerName` is the qualifier
-  clients show (and Cuttlebone's is the path, `std.string.String`).
-  Rather than an extension, the standard alternative is the module's
-  [document symbols](#textdocumentdocumentsymbol), whose `detail` is the
-  declaration as written, with its `pub` and its signature: a client
-  that indexes can ask for those of the modules it needs.
+- **A declaration's module** is the module symbol with the same `uri`
+  (`containerName` alone can't say where the module's name ends and a
+  type's begins, `std.string.String`).
 - **`location`** is the name, as definition's ranges are, in the
   negotiated encoding. **`containerName`** is the module and what the
   declaration is in: `std.string.String` for `String.size`. A method of an
@@ -1368,7 +1373,54 @@ whose names match the query:
 - **`kind`** is as for document symbols. A client whose
   `workspace.symbol.symbolKind.valueSet` doesn't have EnumMember gets
   Constructor (9) for an enum's constructor.
-- Every result has a range, so `workspaceSymbol/resolve` isn't needed.
+- Every result has a range, so `workspaceSymbol/resolve` isn't needed
+  ([below](#what-a-client-that-indexes-declarations-gets-and-where)).
+
+### What a client that indexes declarations gets, and where
+
+Everything a client needs to list Inko's declarations itself is in
+standard fields, from the syntax alone (no check, so also in code that
+doesn't type check):
+
+| What | Where | How |
+|---|---|---|
+| every module, its name and its file | `workspace/symbol` | kind Module (2), `name`, `location.uri` |
+| every declaration, its kind, its name, where it is and what it's in | `workspace/symbol` | `kind`, `name`, `location`, `containerName` (`std.string.String`) |
+| a declaration's module | `workspace/symbol` | the module symbol with the same `uri` |
+| its signature as written | [document symbols](#textdocumentdocumentsymbol) of its module | `detail`, on one line (`fn pub static new(label: String) -> Counter`) |
+| whether it's public | the same | `pub` after its first keyword in `detail` (`fn pub`, `type pub`, `trait pub`, `let pub`), or a `type builtin` of std's other than `CheckedIntResult` (`type builtin String`: the compiler's type database makes those public); a constructor is as public as its type (its parent); an `impl` block is neither |
+| whether a method is static | the same | `static` among the words between `fn` and the name in `detail` (`fn pub static new`, `fn static new`); kind Method either way |
+| whether a trait's method is required | the same | no ` { ... }` at the end of `detail` (a default one has it) |
+| a type's fields, constructors and methods, a trait's methods | the same | `children` |
+| its doc comment | [hover](#textdocumenthover) at its name (the symbol's `location`, or `selectionRange`) | the last section, as `inko doc` reads it |
+
+A workspace symbol and a document symbol are the same declaration when
+the workspace symbol's `location` is the document symbol's
+`selectionRange` in the same `uri`.
+
+**Why these fields, and not an extension:** a `WorkspaceSymbol` has
+`name`, `kind`, `tags`, `containerName`, `location` and `data`, and
+nothing else. `SymbolTag` has only `Deprecated`; `data` is the server's
+own, kept for `workspaceSymbol/resolve`, and not for a client to read;
+and `workspaceSymbol/resolve` fills in only what a `WorkspaceSymbol`
+has, of which Cuttlebone leaves out nothing (every result has its range
+at once, so `resolveProvider` isn't advertised). `DocumentSymbol` has
+`detail`, which is the declaration as written, and so says `pub` and
+`static` as the code does, and no field for documentation; hover is the
+spec's place for that. A client asks for document symbols once a module
+(a request per module, not per declaration), and for a doc comment when
+it shows one.
+
+**Cost**, for a client that indexes all of std (124 modules, about
+7,500 symbols), on an Apple M1 Max at load averages of 40 to 300: every
+workspace symbol as partial results, 100 to 280 ms, then every module's
+document symbols, a request each, 76 to 214 ms in all (a module the
+index has read, with the same text, is answered from the outline it
+keeps rather than parsed again: 120 to 540 ms before). A hover at a
+declaration's name in std, for its doc comment, takes 38 to 67 ms (the
+median of 41 across std; the first in a module checks it). For a
+std-sized project, tests/latency.rs holds the index (both steps) to
+1 s, and the median hover at a declaration's name to 250 ms.
 
 **Freshness.** The server keeps every module's declarations between
 requests. Before each answer it looks at the files again (their size and

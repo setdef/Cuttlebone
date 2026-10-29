@@ -16,6 +16,17 @@ signature, doc comment, and whether it's static, public or a trait's
 required method, from standard fields.
 [Report](docs/history/MILESTONE-17.md).
 
+- **Modules as workspace symbols**, of kind Module, named as an import
+  names them, at the start of their files: a module's file from its name.
+- **What a client that indexes declarations gets, and where**
+  (docs/lsp.md): a declaration's module, signature, doc comment, and
+  whether it's public, static or a trait's required method, each in a
+  standard field; their costs for all of std, and limits for them.
+- **Document symbols of a module the index has read** come from its kept
+  outline, if the text is the same: 2 to 4 times faster for a client that
+  asks for every module's.
+- **std's builtin types are public** (all but `CheckedIntResult`), as the
+  compiler's type database makes them: completion imports `Tuple2`.
 - **Answers in a file of an installed std** (fixed): its file was checked
   as a module named `main`, not std's, so its intrinsics were errors and
   most answers there were `null` after a compiler panic.

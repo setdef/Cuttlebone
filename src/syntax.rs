@@ -843,12 +843,20 @@ impl Builder<'_> {
                     ast::nodes::TypeKind::Enum => Kind::Enum,
                     _ => Kind::Type,
                 };
+                // A builtin type is the type database's own, as public as
+                // the database made it, whatever its declaration says
+                // (compiler/src/type_check/define_types.rs:69-81): every
+                // one but `CheckedIntResult` (types/src/lib.rs:6258-6264).
+                let public = match t.kind {
+                    ast::nodes::TypeKind::Builtin => t.name.name != "CheckedIntResult",
+                    _ => t.public,
+                };
                 let mut d = self.declaration(
                     kind,
                     &t.location,
                     (&t.name.name, &t.name.location),
                     Some(&t.body.location),
-                    t.public,
+                    public,
                     comments,
                 );
                 let mut members = Comments::default();
